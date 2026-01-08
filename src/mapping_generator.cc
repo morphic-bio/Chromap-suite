@@ -2,6 +2,25 @@
 
 namespace chromap {
 
+namespace {
+thread_local const std::unordered_set<uint32_t> *tls_y_contig_rids = nullptr;
+thread_local std::vector<uint32_t> *tls_y_hit_read_ids = nullptr;
+}  // namespace
+
+void SetThreadYHitTracking(const std::unordered_set<uint32_t> *y_contig_rids,
+                           std::vector<uint32_t> *thread_y_hit_read_ids) {
+  tls_y_contig_rids = y_contig_rids;
+  tls_y_hit_read_ids = thread_y_hit_read_ids;
+}
+
+const std::unordered_set<uint32_t> *GetThreadYContigRids() {
+  return tls_y_contig_rids;
+}
+
+std::vector<uint32_t> *GetThreadYHitReadIds() {
+  return tls_y_hit_read_ids;
+}
+
 // For strand, kPositive is 1, kNegative is 0;
 template <>
 void MappingGenerator<MappingWithoutBarcode>::EmplaceBackSingleEndMappingRecord(
@@ -44,13 +63,6 @@ template <>
 void MappingGenerator<SAMMapping>::EmplaceBackSingleEndMappingRecord(
     MappingInMemory &mapping_in_memory,
     std::vector<std::vector<SAMMapping>> &mappings_on_diff_ref_seqs) {
-  
-  // Y-hit detection at creation time
-  if (y_contig_rids_ && thread_y_hit_read_ids_ &&
-      y_contig_rids_->count(mapping_in_memory.rid) > 0) {
-    thread_y_hit_read_ids_->push_back(mapping_in_memory.read_id);
-  }
-  
   mappings_on_diff_ref_seqs[mapping_in_memory.rid].emplace_back(
       mapping_in_memory.read_id, std::string(mapping_in_memory.read_name),
       mapping_in_memory.barcode_key, /*num_dups=*/1,
@@ -92,17 +104,6 @@ template <>
 void MappingGenerator<SAMMapping>::EmplaceBackPairedEndMappingRecord(
     PairedEndMappingInMemory &paired_end_mapping_in_memory,
     std::vector<std::vector<SAMMapping>> &mappings_on_diff_ref_seqs) {
-  
-  // Y-hit detection: check both mates' rids (pair-level filtering)
-  if (y_contig_rids_ && thread_y_hit_read_ids_) {
-    uint32_t rid1 = paired_end_mapping_in_memory.mapping_in_memory1.rid;
-    uint32_t rid2 = paired_end_mapping_in_memory.mapping_in_memory2.rid;
-    if (y_contig_rids_->count(rid1) > 0 || y_contig_rids_->count(rid2) > 0) {
-      thread_y_hit_read_ids_->push_back(
-          paired_end_mapping_in_memory.mapping_in_memory1.read_id);
-    }
-  }
-  
   int tlen = (int)paired_end_mapping_in_memory.GetFragmentLength();
   for (int i = 0; i < 2; ++i) {
     MappingInMemory &mapping_in_memory = (i == 0 ? paired_end_mapping_in_memory.mapping_in_memory1 :

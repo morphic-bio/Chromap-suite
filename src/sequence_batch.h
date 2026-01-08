@@ -71,8 +71,20 @@ class SequenceBatch {
     return sequence_batch_[sequence_index]->name.l;
   }
 
+  inline const char *GetSequenceCommentAt(uint32_t sequence_index) const {
+    return sequence_batch_[sequence_index]->comment.s;
+  }
+
+  inline uint32_t GetSequenceCommentLengthAt(uint32_t sequence_index) const {
+    return sequence_batch_[sequence_index]->comment.l;
+  }
+
   inline const char *GetSequenceQualAt(uint32_t sequence_index) const {
     return sequence_batch_[sequence_index]->qual.s;
+  }
+
+  inline uint32_t GetSequenceQualLengthAt(uint32_t sequence_index) const {
+    return sequence_batch_[sequence_index]->qual.l;
   }
   inline uint32_t GetSequenceIdAt(uint32_t sequence_index) const {
     return sequence_batch_[sequence_index]->id;

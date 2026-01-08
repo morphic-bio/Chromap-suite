@@ -26,6 +26,11 @@
 
 namespace chromap {
 
+void SetThreadYHitTracking(const std::unordered_set<uint32_t> *y_contig_rids,
+                           std::vector<uint32_t> *thread_y_hit_read_ids);
+const std::unordered_set<uint32_t> *GetThreadYContigRids();
+std::vector<uint32_t> *GetThreadYHitReadIds();
+
 // Class to process draft mappings and generate best mappings and alignments. It
 // supports multi-threadidng as only the parameters are owned by the class.
 template <typename MappingRecord>
@@ -45,13 +50,6 @@ class MappingGenerator {
     return mapping_parameters_.mapping_output_format == MAPPINGFORMAT_SAM ||
            mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM ||
            mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM;
-  }
-
-  // Configure Y-hit tracking (call once per thread before mapping)
-  void SetYHitTracking(const std::unordered_set<uint32_t> *y_contig_rids,
-                       std::vector<uint32_t> *thread_y_hit_read_ids) {
-    y_contig_rids_ = y_contig_rids;
-    thread_y_hit_read_ids_ = thread_y_hit_read_ids;
   }
 
   void GenerateBestMappingsForSingleEndRead(
@@ -125,10 +123,6 @@ class MappingGenerator {
 
   const MappingParameters mapping_parameters_;
   const std::vector<int> pairs_custom_rid_rank_;
-  
-  // Y-hit tracking (null if disabled)
-  const std::unordered_set<uint32_t> *y_contig_rids_ = nullptr;
-  std::vector<uint32_t> *thread_y_hit_read_ids_ = nullptr;
 };
 
 template <typename MappingRecord>
@@ -312,6 +306,9 @@ void MappingGenerator<MappingRecord>::ProcessBestMappingsForSingleEndRead(
       mapping_strand == kPositive ? read : negative_read.data();
   mapping_in_memory.read_length = read_length;
 
+  const std::unordered_set<uint32_t> *y_contig_rids = GetThreadYContigRids();
+  std::vector<uint32_t> *thread_y_hit_read_ids = GetThreadYHitReadIds();
+
   for (uint32_t mi = 0; mi < mappings.size(); ++mi) {
     if (mappings[mi].GetNumErrors() > mapping_metadata.min_num_errors_) {
       continue;
@@ -346,6 +343,11 @@ void MappingGenerator<MappingRecord>::ProcessBestMappingsForSingleEndRead(
         mapping_in_memory.SAM_flag = flag;
         mapping_in_memory.qual_sequence =
             read_batch.GetSequenceQualAt(read_index);
+      }
+
+      if (y_contig_rids && thread_y_hit_read_ids &&
+          y_contig_rids->count(mapping_in_memory.rid) > 0) {
+        thread_y_hit_read_ids->push_back(mapping_in_memory.read_id);
       }
 
       EmplaceBackSingleEndMappingRecord(mapping_in_memory,
@@ -530,6 +532,8 @@ void MappingGenerator<MappingRecord>::
   const std::string &negative_read2 =
       read_batch2.GetNegativeSequenceAt(pair_index);
   const uint32_t read_id = read_batch1.GetSequenceIdAt(pair_index);
+  const std::unordered_set<uint32_t> *y_contig_rids = GetThreadYContigRids();
+  std::vector<uint32_t> *thread_y_hit_read_ids = GetThreadYHitReadIds();
 
   paired_end_mapping_in_memory.mapping_in_memory1.read_id = read_id;
   paired_end_mapping_in_memory.mapping_in_memory2.read_id = read_id;
@@ -655,6 +659,11 @@ void MappingGenerator<MappingRecord>::
             read_batch2.GetSequenceQualAt(pair_index);
         paired_end_mapping_in_memory.mapping_in_memory1.is_unique = is_unique;
         paired_end_mapping_in_memory.mapping_in_memory2.is_unique = is_unique;
+      }
+
+      if (y_contig_rids && thread_y_hit_read_ids &&
+          (y_contig_rids->count(rid1) > 0 || y_contig_rids->count(rid2) > 0)) {
+        thread_y_hit_read_ids->push_back(read_id);
       }
 
       EmplaceBackPairedEndMappingRecord(paired_end_mapping_in_memory,

@@ -250,6 +250,36 @@ Output mappings in BAM format.
 .BR --CRAM
 Output mappings in CRAM format (requires -r reference file).
 .TP
+.BR --emit-noY-bam
+Emit additional stream excluding Y-chromosome reads (requires --SAM/--BAM/--CRAM).
+.TP
+.BI --noY-output \ FILE
+Explicit path for noY output [default: <output>.noY.sam/.bam/.cram].
+.TP
+.BR --emit-Y-bam
+Emit additional stream with only Y-chromosome reads (requires --SAM/--BAM/--CRAM).
+.TP
+.BI --Y-output \ FILE
+Explicit path for Y-only output [default: <output>.Y.sam/.bam/.cram].
+.TP
+.BR --emit-Y-read-names
+Emit list of read names with Y-chromosome alignments.
+.TP
+.BI --Y-read-names-output \ FILE
+Explicit path for Y read names output [default: <output>.Y.names.txt].
+.TP
+.BR --emit-Y-noY-fastq
+Emit Y/noY FASTQ files split by Y-chromosome alignment status.
+.TP
+.BI --emit-Y-noY-fastq-compression \ STR
+Compression for Y/noY FASTQ files [gz|none, default: gz].
+.TP
+.BI --Y-fastq-output-prefix \ PREFIX
+Prefix for Y FASTQ output files (overrides auto-naming).
+.TP
+.BI --noY-fastq-output-prefix \ PREFIX
+Prefix for noY FASTQ output files (overrides auto-naming).
+.TP
 .BR --sort-bam
 Enable coordinate sorting for BAM/CRAM output. Sets @HD SO:coordinate. Required for --write-index. Sort key: (tid,pos,flag,mtid,mpos,isize,read_id). Note: differs from samtools sort ordering.
 .TP

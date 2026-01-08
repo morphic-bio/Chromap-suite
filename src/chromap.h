@@ -34,6 +34,8 @@
 #include "temp_mapping.h"
 #include "utils.h"
 #include "y_contig_detector.h"
+#include "y_read_names_writer.h"
+#include "fastq_split_writer.h"
 
 #define CHROMAP_VERSION "0.3.3-r519"
 
@@ -231,9 +233,10 @@ void Chromap::MapSingleEndReads() {
     reference.ReorderSequences(custom_rid_rank_);
   }
 
-  // Build Y contig mask if Y-filtering is enabled
+  // Build Y contig mask if Y-filtering is enabled (BAM streams, read names, or FASTQ)
   std::unordered_set<uint32_t> y_contig_rids;
-  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream) {
+  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream ||
+      mapping_parameters_.emit_y_read_names || mapping_parameters_.emit_y_noy_fastq) {
     y_contig_rids = BuildYContigRidMask(num_reference_sequences, reference);
   }
 
@@ -260,7 +263,8 @@ void Chromap::MapSingleEndReads() {
 
   // Thread-local Y-hit read IDs (persist across low-memory spills and all input files)
   std::vector<std::vector<uint32_t>> thread_y_hit_read_ids;
-  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream) {
+  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream ||
+      mapping_parameters_.emit_y_read_names || mapping_parameters_.emit_y_noy_fastq) {
     thread_y_hit_read_ids.resize(mapping_parameters_.num_threads);
   }
 
@@ -300,6 +304,12 @@ void Chromap::MapSingleEndReads() {
   }
   mapping_writer.OutputHeader(num_reference_sequences, reference);
 
+  std::unique_ptr<YReadNamesWriter> y_read_names_writer;
+  if (mapping_parameters_.emit_y_read_names) {
+    y_read_names_writer.reset(new YReadNamesWriter(
+        mapping_parameters_.y_read_names_output_path));
+  }
+
   uint32_t num_mappings_in_mem = 0;
   uint64_t max_num_mappings_in_mem =
       1 * ((uint64_t)1 << 30) / sizeof(MappingRecord);
@@ -334,6 +344,17 @@ void Chromap::MapSingleEndReads() {
   for (size_t read_file_index = 0;
        read_file_index < mapping_parameters_.read_file1_paths.size();
        ++read_file_index) {
+    std::unique_ptr<FastqSplitWriter> fastq_split_writer;
+    if (mapping_parameters_.emit_y_noy_fastq) {
+      if (read_file_index >= mapping_parameters_.y_fastq_output_paths_per_file.size() ||
+          read_file_index >= mapping_parameters_.noy_fastq_output_paths_per_file.size()) {
+        ExitWithMessage("FASTQ output paths not initialized for input file index");
+      }
+      fastq_split_writer.reset(new FastqSplitWriter(
+          mapping_parameters_.y_fastq_output_paths_per_file[read_file_index],
+          mapping_parameters_.noy_fastq_output_paths_per_file[read_file_index],
+          mapping_parameters_.y_noy_fastq_compression));
+    }
     read_batch_for_loading.InitializeLoading(
         mapping_parameters_.read_file1_paths[read_file_index]);
 
@@ -387,9 +408,12 @@ void Chromap::MapSingleEndReads() {
       MappingMetadata mapping_metadata;
       
       // Configure Y-hit tracking for this thread
-      if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream) {
-        mapping_generator.SetYHitTracking(&y_contig_rids, 
-                                         &thread_y_hit_read_ids[omp_get_thread_num()]);
+      if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream ||
+          mapping_parameters_.emit_y_read_names || mapping_parameters_.emit_y_noy_fastq) {
+        SetThreadYHitTracking(&y_contig_rids,
+                              &thread_y_hit_read_ids[omp_get_thread_num()]);
+      } else {
+        SetThreadYHitTracking(nullptr, nullptr);
       }
 #pragma omp single
       {
@@ -541,6 +565,37 @@ void Chromap::MapSingleEndReads() {
             // By default, set the lowest bit to 1 (whether the barcode is in the whitelist)
             memset(read_map_summary, 1, sizeof(*read_map_summary)*read_batch_size_);
           }
+
+          std::unordered_set<uint32_t> batch_y_hit_read_ids;
+          if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream ||
+              mapping_parameters_.emit_y_read_names || mapping_parameters_.emit_y_noy_fastq) {
+            for (auto &thread_vec : thread_y_hit_read_ids) {
+              batch_y_hit_read_ids.insert(thread_vec.begin(), thread_vec.end());
+              reads_with_y_hit.insert(thread_vec.begin(), thread_vec.end());
+              thread_vec.clear();
+            }
+          }
+
+          // Write Y read names for this batch (before batch swap)
+          if (mapping_parameters_.emit_y_read_names && y_read_names_writer &&
+              !batch_y_hit_read_ids.empty()) {
+            for (uint32_t read_index = 0; read_index < num_loaded_reads; ++read_index) {
+              uint32_t read_id = read_batch.GetSequenceIdAt(read_index);
+              if (batch_y_hit_read_ids.count(read_id) > 0) {
+                y_read_names_writer->WriteReadName(
+                    read_id, read_batch.GetSequenceNameAt(read_index));
+              }
+            }
+          }
+
+          // Write FASTQ for this batch (before batch swap)
+          if (mapping_parameters_.emit_y_noy_fastq && fastq_split_writer) {
+            for (uint32_t read_index = 0; read_index < num_loaded_reads; ++read_index) {
+              uint32_t read_id = read_batch.GetSequenceIdAt(read_index);
+              bool has_y_hit = batch_y_hit_read_ids.count(read_id) > 0;
+              fastq_split_writer->WriteRead(read_index, read_batch, has_y_hit, 0);
+            }
+          }
           num_loaded_reads = num_loaded_reads_for_loading;
           read_batch_for_loading.SwapSequenceBatch(read_batch);
           barcode_batch_for_loading.SwapSequenceBatch(barcode_batch);
@@ -605,17 +660,6 @@ void Chromap::MapSingleEndReads() {
     }
 #endif
 
-    // Merge thread-local Y-hit read IDs into global set (accumulate across all input files)
-    if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream) {
-      for (const auto &thread_vec : thread_y_hit_read_ids) {
-        reads_with_y_hit.insert(thread_vec.begin(), thread_vec.end());
-      }
-      // Clear thread vectors for next input file iteration
-      for (auto &thread_vec : thread_y_hit_read_ids) {
-        thread_vec.clear();
-      }
-    }
-
     read_batch_for_loading.FinalizeLoading();
     if (!mapping_parameters_.is_bulk_data) {
       barcode_batch_for_loading.FinalizeLoading();
@@ -624,7 +668,8 @@ void Chromap::MapSingleEndReads() {
 
   // Set Y-hit filter after all input files processed (before output phase)
   // Set even if empty (no Y contigs found) so routing works correctly
-  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream) {
+  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream ||
+      mapping_parameters_.emit_y_read_names || mapping_parameters_.emit_y_noy_fastq) {
     if (y_contig_rids.empty()) {
       std::cerr << "WARNING: No Y chromosome contigs found in reference, "
                 << "but Y-filtering flags were set. Y-only output will be empty; "
@@ -755,9 +800,10 @@ void Chromap::MapPairedEndReads() {
         num_reference_sequences, reference, pairs_custom_rid_rank_);
   }
 
-  // Build Y contig mask if Y-filtering is enabled
+  // Build Y contig mask if Y-filtering is enabled (BAM streams, read names, or FASTQ)
   std::unordered_set<uint32_t> y_contig_rids;
-  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream) {
+  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream ||
+      mapping_parameters_.emit_y_read_names || mapping_parameters_.emit_y_noy_fastq) {
     y_contig_rids = BuildYContigRidMask(num_reference_sequences, reference);
   }
 
@@ -851,7 +897,8 @@ void Chromap::MapPairedEndReads() {
 
   // Thread-local Y-hit read IDs (persist across low-memory spills and all input files)
   std::vector<std::vector<uint32_t>> thread_y_hit_read_ids;
-  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream) {
+  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream ||
+      mapping_parameters_.emit_y_read_names || mapping_parameters_.emit_y_noy_fastq) {
     thread_y_hit_read_ids.resize(mapping_parameters_.num_threads);
   }
 
@@ -891,6 +938,12 @@ void Chromap::MapPairedEndReads() {
   }
   mapping_writer.OutputHeader(num_reference_sequences, reference);
 
+  std::unique_ptr<YReadNamesWriter> y_read_names_writer;
+  if (mapping_parameters_.emit_y_read_names) {
+    y_read_names_writer.reset(new YReadNamesWriter(
+        mapping_parameters_.y_read_names_output_path));
+  }
+
   uint32_t num_mappings_in_mem = 0;
   uint64_t max_num_mappings_in_mem =
       1 * ((uint64_t)1 << 30) / sizeof(MappingRecord);
@@ -914,6 +967,17 @@ void Chromap::MapPairedEndReads() {
   for (size_t read_file_index = 0;
        read_file_index < mapping_parameters_.read_file1_paths.size();
        ++read_file_index) {
+    std::unique_ptr<FastqSplitWriter> fastq_split_writer;
+    if (mapping_parameters_.emit_y_noy_fastq) {
+      if (read_file_index >= mapping_parameters_.y_fastq_output_paths_per_file.size() ||
+          read_file_index >= mapping_parameters_.noy_fastq_output_paths_per_file.size()) {
+        ExitWithMessage("FASTQ output paths not initialized for input file index");
+      }
+      fastq_split_writer.reset(new FastqSplitWriter(
+          mapping_parameters_.y_fastq_output_paths_per_file[read_file_index],
+          mapping_parameters_.noy_fastq_output_paths_per_file[read_file_index],
+          mapping_parameters_.y_noy_fastq_compression));
+    }
     // Set read batches to the current read files.
     read_batch1_for_loading.InitializeLoading(
         mapping_parameters_.read_file1_paths[read_file_index]);
@@ -972,9 +1036,12 @@ void Chromap::MapPairedEndReads() {
       PairedEndMappingMetadata paired_end_mapping_metadata;
 
       // Configure Y-hit tracking for this thread
-      if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream) {
-        mapping_generator.SetYHitTracking(&y_contig_rids, 
-                                         &thread_y_hit_read_ids[omp_get_thread_num()]);
+      if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream ||
+          mapping_parameters_.emit_y_read_names || mapping_parameters_.emit_y_noy_fastq) {
+        SetThreadYHitTracking(&y_contig_rids,
+                              &thread_y_hit_read_ids[omp_get_thread_num()]);
+      } else {
+        SetThreadYHitTracking(nullptr, nullptr);
       }
 
       std::vector<int> best_mapping_indices(
@@ -1348,6 +1415,38 @@ void Chromap::MapPairedEndReads() {
             memset(read_map_summary, 1, sizeof(*read_map_summary)*read_batch_size_);
           }
 
+          std::unordered_set<uint32_t> batch_y_hit_read_ids;
+          if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream ||
+              mapping_parameters_.emit_y_read_names || mapping_parameters_.emit_y_noy_fastq) {
+            for (auto &thread_vec : thread_y_hit_read_ids) {
+              batch_y_hit_read_ids.insert(thread_vec.begin(), thread_vec.end());
+              reads_with_y_hit.insert(thread_vec.begin(), thread_vec.end());
+              thread_vec.clear();
+            }
+          }
+
+          // Write Y read names for this batch (before batch swap)
+          if (mapping_parameters_.emit_y_read_names && y_read_names_writer &&
+              !batch_y_hit_read_ids.empty()) {
+            for (uint32_t pair_index = 0; pair_index < num_loaded_pairs; ++pair_index) {
+              uint32_t read_id = read_batch1.GetSequenceIdAt(pair_index);
+              if (batch_y_hit_read_ids.count(read_id) > 0) {
+                y_read_names_writer->WriteReadName(
+                    read_id, read_batch1.GetSequenceNameAt(pair_index));
+              }
+            }
+          }
+
+          // Write FASTQ for this batch (before batch swap)
+          if (mapping_parameters_.emit_y_noy_fastq && fastq_split_writer) {
+            for (uint32_t pair_index = 0; pair_index < num_loaded_pairs; ++pair_index) {
+              uint32_t read_id = read_batch1.GetSequenceIdAt(pair_index);
+              bool has_y_hit = batch_y_hit_read_ids.count(read_id) > 0;
+              fastq_split_writer->WritePairedReads(
+                  pair_index, read_batch1, read_batch2, has_y_hit);
+            }
+          }
+
           std::cerr << "Mapped " << num_loaded_pairs << " read pairs in "
                     << GetRealTime() - real_batch_start_time << "s.\n";
           real_batch_start_time = GetRealTime();
@@ -1420,17 +1519,6 @@ void Chromap::MapPairedEndReads() {
     }
 #endif
 
-    // Merge thread-local Y-hit read IDs into global set (accumulate across all input files)
-    if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream) {
-      for (const auto &thread_vec : thread_y_hit_read_ids) {
-        reads_with_y_hit.insert(thread_vec.begin(), thread_vec.end());
-      }
-      // Clear thread vectors for next input file iteration
-      for (auto &thread_vec : thread_y_hit_read_ids) {
-        thread_vec.clear();
-      }
-    }
-
     read_batch1_for_loading.FinalizeLoading();
     read_batch2_for_loading.FinalizeLoading();
 
@@ -1441,7 +1529,8 @@ void Chromap::MapPairedEndReads() {
 
   // Set Y-hit filter after all input files processed (before output phase)
   // Set even if empty (no Y contigs found) so routing works correctly
-  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream) {
+  if (mapping_parameters_.emit_noY_stream || mapping_parameters_.emit_Y_stream ||
+      mapping_parameters_.emit_y_read_names || mapping_parameters_.emit_y_noy_fastq) {
     if (y_contig_rids.empty()) {
       std::cerr << "WARNING: No Y chromosome contigs found in reference, "
                 << "but Y-filtering flags were set. Y-only output will be empty; "

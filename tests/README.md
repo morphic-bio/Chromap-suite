@@ -51,6 +51,7 @@ cd tests/e2e
 
 - `chromap` binary (built from source or in PATH)
 - `samtools` (optional, for SAM validation and read counting)
+- `python3` (optional, for fastq_noy tests invoked by `test_y_streams.sh`)
 
 ### Test Output
 
@@ -62,6 +63,20 @@ The script creates a temporary directory, runs chromap with various configuratio
 5. Path derivation works correctly
 6. Low-memory mode works correctly
 
+**File**: `e2e/test_fastq_noy.sh`
+
+Tests the Y read names list and Y/noY FASTQ splitting:
+- Single-end Y/noY FASTQ emission and name normalization
+- Paired-end routing when either mate hits Y
+- Multiple input files naming with `.fN` suffixes
+
+### Running End-to-End FASTQ Tests
+
+```bash
+cd tests/e2e
+./test_fastq_noy.sh
+```
+
 ## Test Results
 
 All tests should pass. If any test fails:
@@ -69,4 +84,3 @@ All tests should pass. If any test fails:
 2. Verify samtools is installed (for full validation)
 3. Check that the test directory has write permissions
 4. Review error messages for specific failure points
-

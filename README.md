@@ -142,6 +142,42 @@ Y-chromosome detection is case-insensitive and matches: `Y`, `chrY`, `CHR_Y`, `c
 
 **Note**: `--emit-Y-bam` and `--emit-noY-bam` work with `--sort-bam` as of the latest version. Earlier versions had a bug where Y/noY streams were empty when sorting was enabled.
 
+#### Y Read Names + Y/noY FASTQ Emission
+
+Chromap can emit a normalized list of read names that align to Y, and can split input FASTQ/FASTA reads into Y and noY streams during mapping:
+
+```sh
+# Emit Y read names and Y/noY FASTQ (uncompressed)
+chromap --SAM --emit-Y-read-names --emit-Y-noY-fastq \
+  --emit-Y-noY-fastq-compression none \
+  -x index -r ref.fa -1 reads_R1.fq -2 reads_R2.fq -o output.sam
+```
+
+Read-name list:
+- Default path: `<output>.Y.names.txt` (e.g., `output.Y.names.txt`)
+- Normalization: strip leading `@`, stop at first whitespace, strip trailing `/1` or `/2`
+- No ordering guarantees
+
+FASTQ/FASTA split:
+- Files are emitted alongside the `-o` output by default
+- If `-o` is stdout, you must provide `--Y-read-names-output` and FASTQ prefixes
+- Naming inserts `_Y` / `_noY` before the last `_R[0-9]+` token if present
+  (e.g., `sample_R1.fastq.gz` → `sample_Y_R1.fastq.gz`)
+- If no `_R[0-9]+` token is present, falls back to
+  `Y_reads.mateN.<ext>(.gz)` / `noY_reads.mateN.<ext>(.gz)`
+- Base extension is preserved from input (`.fastq`/`.fq`/`.fasta`/`.fa`/`.fna`)
+- Compression: `gz` (default) or `none`
+- Paired-end routing: if either mate hits Y, both mates go to Y outputs
+- Multiple input files: `.fN` suffix is appended to avoid collisions
+
+Related flags:
+- `--emit-Y-read-names`
+- `--Y-read-names-output <path>`
+- `--emit-Y-noY-fastq`
+- `--emit-Y-noY-fastq-compression {gz|none}`
+- `--Y-fastq-output-prefix <prefix>`
+- `--noY-fastq-output-prefix <prefix>`
+
 Chromap can take multiple input read files:
 
 ```sh

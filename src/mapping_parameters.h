@@ -86,6 +86,16 @@ struct MappingParameters {
   std::string noY_output_path;
   std::string Y_output_path;
 
+  // Y read names and FASTQ emission
+  bool emit_y_read_names = false;
+  std::string y_read_names_output_path;
+  bool emit_y_noy_fastq = false;
+  std::string y_noy_fastq_compression = "gz";  // "gz" or "none"
+  std::string y_fastq_output_prefix;
+  std::string noy_fastq_output_prefix;
+  std::vector<std::vector<std::string>> y_fastq_output_paths_per_file;  // [file][mate]
+  std::vector<std::vector<std::string>> noy_fastq_output_paths_per_file;  // [file][mate]
+
   // htslib BAM/CRAM output parameters
   int hts_threads = 0;           // 0 = auto: min(num_threads, 4)
   std::string read_group_id;     // "" = none, "auto" = generate from filenames, else literal RG ID
