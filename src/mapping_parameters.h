@@ -57,6 +57,7 @@ struct MappingParameters {
   bool split_alignment = false;
   MappingOutputFormat mapping_output_format = MAPPINGFORMAT_BED;
   bool low_memory_mode = false;
+  uint64_t low_mem_ram_limit = 0;  // 0 = use default spill threshold
   bool cell_by_bin = false;
   int bin_size = 5000;
   uint16_t depth_cutoff_to_call_peak = 3;

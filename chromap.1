@@ -177,6 +177,10 @@ processing to reduce memory usage. When this is NOT set, all the mapping results
 are kept in the memory before they are saved on disk, which works more
 efficiently for datasets that are not too large.
 .TP
+.BI --low-mem-ram \ SIZE
+Max RAM for low-memory spill buffer before writing temporary files. Supports
+K/M/G/T suffixes. Defaults to the legacy threshold (~1G; ~512M for SAM/PAF/PAIRS).
+.TP
 .BI --bc-error-threshold \ INT
 Max Hamming distance allowed to correct a barcode [1]. Note that the max 
 supported threshold is 2.

@@ -73,6 +73,9 @@ void AddMappingOptions(cxxopts::Options &options) {
           "Remove PCR duplicates at cell level for single cell data")
       //("allocate-multi-mappings", "Allocate multi-mappings")
       ("Tn5-shift", "Perform Tn5 shift")("low-mem", "Use low memory mode")(
+          "low-mem-ram",
+          "Max RAM for low-mem spill buffer before writing temp files [default: 1G; 512M for SAM/PAF/PAIRS]",
+          cxxopts::value<std::string>(), "SIZE")(
           "bc-error-threshold",
           "Max Hamming distance allowed to correct a barcode [1]",
           cxxopts::value<int>(),
@@ -218,9 +221,9 @@ void AddPeakOptions(cxxopts::Options &options) {
 }
 
 // Parse size string like "8G", "512M", "1024K" to bytes
-uint64_t ParseSizeString(const std::string& sizeStr) {
+uint64_t ParseSizeString(const std::string& sizeStr, const std::string& option_name) {
   if (sizeStr.empty()) {
-    chromap::ExitWithMessage("Empty size string for --sort-bam-ram");
+    chromap::ExitWithMessage("Empty size string for " + option_name);
   }
   
   size_t endPos = sizeStr.length() - 1;
@@ -246,7 +249,7 @@ uint64_t ParseSizeString(const std::string& sizeStr) {
     uint64_t num = std::stoull(numStr);
     return num * multiplier;
   } catch (const std::exception& e) {
-    chromap::ExitWithMessage("Invalid size string for --sort-bam-ram: " + sizeStr);
+    chromap::ExitWithMessage("Invalid size string for " + option_name + ": " + sizeStr);
   }
   return 0;  // Never reached
 }
@@ -700,10 +703,14 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
   }
   if (result.count("sort-bam-ram")) {
     std::string sizeStr = result["sort-bam-ram"].as<std::string>();
-    mapping_parameters.sort_bam_ram_limit = ParseSizeString(sizeStr);
+    mapping_parameters.sort_bam_ram_limit = ParseSizeString(sizeStr, "--sort-bam-ram");
   }
   if (result.count("low-mem")) {
     mapping_parameters.low_memory_mode = true;
+  }
+  if (result.count("low-mem-ram")) {
+    std::string sizeStr = result["low-mem-ram"].as<std::string>();
+    mapping_parameters.low_mem_ram_limit = ParseSizeString(sizeStr, "--low-mem-ram");
   }
   if (result.count("cell-by-bin")) {
     mapping_parameters.cell_by_bin = true;

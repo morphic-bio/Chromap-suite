@@ -268,6 +268,19 @@ memory usage. When this is NOT set, all the mapping results
 are kept in the memory before they are saved on disk, which
 works more efficiently for datasets that are not too
 large.</p> </td></tr>
+<tr valign="top" align="left">
+<td width="11%"></td>
+<td width="14%">
+
+
+<p><b>--low-mem-ram</b> <i>SIZE</i></p></td>
+<td width="1%"></td>
+<td width="74%">
+
+
+<p>Max RAM for low-memory spill buffer before writing temporary
+files. Supports K/M/G/T suffixes. Defaults to the legacy
+threshold (~1G; ~512M for SAM/PAF/PAIRS).</p> </td></tr>
 </table>
 
 

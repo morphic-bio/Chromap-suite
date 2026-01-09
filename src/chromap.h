@@ -318,6 +318,15 @@ void Chromap::MapSingleEndReads() {
       mapping_parameters_.mapping_output_format == MAPPINGFORMAT_PAIRS) {
     max_num_mappings_in_mem = 1 * ((uint64_t)1 << 29) / sizeof(MappingRecord);
   }
+  if (mapping_parameters_.low_memory_mode &&
+      mapping_parameters_.low_mem_ram_limit > 0) {
+    uint64_t custom_limit =
+        mapping_parameters_.low_mem_ram_limit / sizeof(MappingRecord);
+    if (custom_limit == 0) {
+      custom_limit = 1;
+    }
+    max_num_mappings_in_mem = custom_limit;
+  }
   
   mm_cache mm_to_candidates_cache(2000003);
   mm_to_candidates_cache.SetKmerLength(kmer_size);
@@ -951,6 +960,15 @@ void Chromap::MapPairedEndReads() {
       mapping_parameters_.mapping_output_format == MAPPINGFORMAT_PAF ||
       mapping_parameters_.mapping_output_format == MAPPINGFORMAT_PAIRS) {
     max_num_mappings_in_mem = 1 * ((uint64_t)1 << 29) / sizeof(MappingRecord);
+  }
+  if (mapping_parameters_.low_memory_mode &&
+      mapping_parameters_.low_mem_ram_limit > 0) {
+    uint64_t custom_limit =
+        mapping_parameters_.low_mem_ram_limit / sizeof(MappingRecord);
+    if (custom_limit == 0) {
+      custom_limit = 1;
+    }
+    max_num_mappings_in_mem = custom_limit;
   }
   
   static uint64_t thread_num_candidates = 0;

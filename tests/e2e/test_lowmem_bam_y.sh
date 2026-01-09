@@ -90,6 +90,30 @@ check_sorted_bam() {
 }
 
 echo ""
+echo -e "${GREEN}Baseline: Standard BAM mapping${NC}"
+
+$CHROMAP --BAM --num-threads 2 \
+  -r "$DATA_DIR/test_ref_y.fa" -x "$DATA_DIR/test_ref_y.idx" \
+  -1 "$DATA_DIR/test_pe_y_R1.fq" -2 "$DATA_DIR/test_pe_y_R2.fq" \
+  -o baseline.bam \
+  --min-num-seeds 1 --error-threshold 10 --max-insert-size 1000 \
+  > /dev/null 2>&1 || {
+  echo -e "${RED}FAIL: Baseline BAM mapping failed${NC}"
+  exit 1
+}
+
+if [ ! -f "baseline.bam" ]; then
+  echo -e "${RED}FAIL: baseline.bam not created${NC}"
+  exit 1
+fi
+
+TOTAL_BASE=$(count_bam_reads "baseline.bam")
+if [ "$TOTAL_BASE" -le 0 ]; then
+  echo -e "${RED}FAIL: Baseline BAM has no mapped reads${NC}"
+  exit 1
+fi
+
+echo ""
 echo -e "${GREEN}Test 1: Low-memory BAM Y/noY split${NC}"
 
 $CHROMAP --BAM --low-mem --num-threads 2 --emit-noY-bam --emit-Y-bam \
@@ -111,6 +135,10 @@ TOTAL_LM=$(count_bam_reads "lowmem.bam")
 NOY_LM=$(count_bam_reads "lowmem.noY.bam")
 Y_LM=$(count_bam_reads "lowmem.Y.bam")
 
+if [ "$TOTAL_LM" -ne "$TOTAL_BASE" ]; then
+  echo -e "${RED}FAIL: Low-memory BAM total mismatch vs baseline: $TOTAL_LM != $TOTAL_BASE${NC}"
+  exit 1
+fi
 if [ "$TOTAL_LM" -ne "$((NOY_LM + Y_LM))" ]; then
   echo -e "${RED}FAIL: Low-memory BAM count mismatch: $TOTAL_LM != $NOY_LM + $Y_LM${NC}"
   exit 1
@@ -147,6 +175,10 @@ TOTAL_SORTED=$(count_bam_reads "lowmem_sorted.bam")
 NOY_SORTED=$(count_bam_reads "lowmem_sorted.noY.bam")
 Y_SORTED=$(count_bam_reads "lowmem_sorted.Y.bam")
 
+if [ "$TOTAL_SORTED" -ne "$TOTAL_BASE" ]; then
+  echo -e "${RED}FAIL: Sorted BAM total mismatch vs baseline: $TOTAL_SORTED != $TOTAL_BASE${NC}"
+  exit 1
+fi
 if [ "$TOTAL_SORTED" -ne "$((NOY_SORTED + Y_SORTED))" ]; then
   echo -e "${RED}FAIL: Sorted BAM count mismatch: $TOTAL_SORTED != $NOY_SORTED + $Y_SORTED${NC}"
   exit 1
