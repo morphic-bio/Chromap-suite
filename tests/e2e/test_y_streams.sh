@@ -296,6 +296,18 @@ else
 fi
 
 echo ""
+echo -e "${GREEN}Test 6: Low-memory BAM Y/noY split${NC}"
+if [ "$HAS_SAMTOOLS" = true ] && command -v python3 &> /dev/null; then
+    "$SCRIPT_DIR/test_lowmem_bam_y.sh" || {
+        echo -e "${RED}FAIL: lowmem BAM Y/noY end-to-end tests failed${NC}"
+        exit 1
+    }
+    echo -e "${GREEN}Test 6 PASSED${NC}"
+else
+    echo -e "${YELLOW}WARNING: samtools/python3 not found, skipping low-mem BAM tests${NC}"
+fi
+
+echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}All end-to-end tests PASSED!${NC}"
 echo -e "${GREEN}========================================${NC}"

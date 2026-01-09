@@ -50,8 +50,8 @@ cd tests/e2e
 ### Requirements
 
 - `chromap` binary (built from source or in PATH)
-- `samtools` (optional, for SAM validation and read counting)
-- `python3` (optional, for fastq_noy tests invoked by `test_y_streams.sh`)
+- `samtools` (required for `test_lowmem_bam_y.sh`, optional for SAM validation/read counting in `test_y_streams.sh`)
+- `python3` (required for `test_fastq_noy.sh` and `test_lowmem_bam_y.sh`, optional when invoked by `test_y_streams.sh`)
 
 ### Test Output
 
@@ -75,6 +75,20 @@ Tests the Y read names list and Y/noY FASTQ splitting:
 ```bash
 cd tests/e2e
 ./test_fastq_noy.sh
+```
+
+**File**: `e2e/test_lowmem_bam_y.sh`
+
+Tests low-memory BAM output with Y/noY split and sorting:
+- Low-memory BAM output routing (Y-only vs noY)
+- Count conservation (`all = Y + noY`)
+- Coordinate-sorted output validation for `--sort-bam`
+
+### Running Low-Memory BAM Tests
+
+```bash
+cd tests/e2e
+./test_lowmem_bam_y.sh
 ```
 
 ## Test Results
