@@ -810,7 +810,8 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
                 std::min((uint32_t)std::numeric_limits<uint8_t>::max(),
                          num_last_mapping_dups);
             if (mapping_parameters_.Tn5_shift) {
-              last_mapping.Tn5Shift();
+              last_mapping.Tn5Shift(mapping_parameters_.Tn5_forward_shift,
+                                    mapping_parameters_.Tn5_reverse_shift);
             }
 
             AppendMapping(last_rid, reference, last_mapping);
@@ -888,7 +889,8 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
       last_mapping.num_dups_ = std::min(
           (uint32_t)std::numeric_limits<uint8_t>::max(), num_last_mapping_dups);
       if (mapping_parameters_.Tn5_shift) {
-        last_mapping.Tn5Shift();
+        last_mapping.Tn5Shift(mapping_parameters_.Tn5_forward_shift,
+                              mapping_parameters_.Tn5_reverse_shift);
       }
       AppendMapping(last_rid, reference, last_mapping);
       ++num_mappings_passing_filters;

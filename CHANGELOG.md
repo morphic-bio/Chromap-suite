@@ -13,6 +13,12 @@ All notable changes to this project will be documented in this file.
 - K-way merge: implemented proper k-way merge algorithm for overflow files to ensure correct sorted, deduplicated output with full behavior parity (PCR dedup, MAPQ filtering, Tn5 shift, metadata updates).
 
 ### Added
+- New CLI flag: `--Tn5-shift-mode STR` to select the Tn5 cut-site offset convention applied when `--Tn5-shift` is active.
+  - `classical` = `+4 / -5` (Buenrostro et al. 2013; Cell Ranger ARC / Cell Ranger ATAC default). This is the existing behavior and remains the default when only `--Tn5-shift` is passed.
+  - `symmetric` = `+4 / -4` (ChromBPNet convention; symmetric around the 9-bp Tn5 footprint).
+  - Passing `--Tn5-shift-mode` implies `--Tn5-shift`.
+  - The active offsets are now echoed at startup, e.g. `Perform Tn5 shift (offsets: +4 / -5).`
+  - Internal refactor: `Mapping::Tn5Shift()` now takes `(int forward_shift, int reverse_shift)` and the offsets are fields on `MappingParameters` (`Tn5_forward_shift`, `Tn5_reverse_shift`) instead of literals. SAM/BAM and pairs paths remain intentional no-ops (shifting those formats would require coordinated edits to `POS`, `MPOS/PNEXT`, `TLEN`, `CIGAR`, `NM`, `MD`).
 - New CLI flag: `--temp-dir DIR` to specify directory for temporary files.
 - **New overflow system is now the default**: Thread-safe temp file handling with k-way merge, no compile flags needed.
 - `RotateThreadOverflowWriter()`: Per-flush file rotation to ensure one sorted run per overflow file (required for correct k-way merge).

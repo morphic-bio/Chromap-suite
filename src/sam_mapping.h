@@ -217,9 +217,11 @@ class SAMMapping : public Mapping {
       std::tie(m.pos_, m.rid_, m.is_rev_, m.mrid_, m.mpos_);
   }
   uint64_t GetBarcode() const { return cell_barcode_; }
-  void Tn5Shift() {
-    // We don't support Tn5 shift in SAM format because it has other fields that
-    // depend mapping position.
+  void Tn5Shift(int /*forward_shift*/, int /*reverse_shift*/) {
+    // We don't support Tn5 shift in SAM format because it has other fields
+    // that depend on mapping position (POS, MPOS/PNEXT, TLEN, CIGAR, NM, MD).
+    // Callers that need a shifted coordinate from a SAM/BAM path should
+    // apply the shift post-hoc on their own.
   }
   // TODO(Haowen): I have to change the variable names or this function to make
   // the meaning consistent.

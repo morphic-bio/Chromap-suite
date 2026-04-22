@@ -7,6 +7,7 @@ This fork focuses on correctness and robustness improvements, particularly aroun
 - Fixed rare SAM line corruption by emitting each record atomically and using length-safe writes.
 - **New default overflow system**: Thread-local overflow writers with k-way merge for correct, sorted output. The legacy temp file system is available via `LEGACY_OVERFLOW=1` compile flag (single-threaded only).
 - Added `--temp-dir` flag for custom temporary directory location (useful for Docker environments).
+- Added `--Tn5-shift-mode {classical|symmetric}` to pick the Tn5 cut-site offset convention on BED/BEDPE/PAF output. `classical` (`+4 / -5`; Buenrostro 2013 / Cell Ranger ARC) is the default when only `--Tn5-shift` is passed; `symmetric` (`+4 / -4`; ChromBPNet) is the alternative. SAM/BAM output remains intentionally unshifted.
 
 Quick links:
 - Detailed fork notes: see [FORK.md](FORK.md)
@@ -18,6 +19,11 @@ Validation scripts:
 - Overflow system check: `./scripts/test_overflow_basic.sh`
 
 Notes for users (bioinformatics level):
+- New optional flag: `--Tn5-shift-mode {classical|symmetric}` — pick the Tn5 cut-site offset convention when shifting fragments.
+  - `classical` = `+4 / -5` (Buenrostro 2013; Cell Ranger ARC / Cell Ranger ATAC default). Equivalent to the legacy `--Tn5-shift` flag.
+  - `symmetric` = `+4 / -4` (ChromBPNet convention). On paired-end BED output every fragment end shifts by exactly `+1` vs classical.
+  - Implies `--Tn5-shift`. The active offsets are now echoed at startup, e.g. `Perform Tn5 shift (offsets: +4 / -5).`
+  - Only affects BED/BEDPE/PAF output; SAM/BAM path is intentionally unshifted (same as before) because shifting would require coordinated edits to `POS`, `MPOS/PNEXT`, `TLEN`, `CIGAR`, `NM`, `MD`.
 - New optional flag: `--temp-dir DIR` to specify custom temporary directory (helpful for Docker/container environments).
 - The new overflow system with k-way merge is now the **default**. No compile flags needed.
 - To use the legacy temp file system: compile with `LEGACY_OVERFLOW=1` and use `-t 1` (single thread only, as legacy path is not thread-safe).

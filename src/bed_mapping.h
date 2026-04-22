@@ -45,11 +45,13 @@ class MappingWithBarcode : public Mapping {
            std::tie(m.fragment_start_position_);
   }
   uint64_t GetBarcode() const { return cell_barcode_; }
-  void Tn5Shift() {
+  void Tn5Shift(int forward_shift, int reverse_shift) {
     if (direction_ == 1) {
-      fragment_start_position_ += 4;
+      fragment_start_position_ += forward_shift;
     } else {
-      fragment_length_ -= 5;
+      // reverse_shift is signed (typically negative); adding it shortens
+      // the fragment on the 5'-of-reverse end.
+      fragment_length_ += reverse_shift;
     }
   }
   bool IsPositiveStrand() const { return direction_ > 0 ? true : false; }
@@ -97,11 +99,11 @@ class MappingWithoutBarcode : public Mapping {
            std::tie(m.fragment_start_position_);
   }
   uint64_t GetBarcode() const { return 0; }
-  void Tn5Shift() {
+  void Tn5Shift(int forward_shift, int reverse_shift) {
     if (direction_ == 1) {
-      fragment_start_position_ += 4;
+      fragment_start_position_ += forward_shift;
     } else {
-      fragment_length_ -= 5;
+      fragment_length_ += reverse_shift;
     }
   }
   bool IsPositiveStrand() const { return direction_ > 0 ? true : false; }
@@ -162,11 +164,15 @@ class PairedEndMappingWithBarcode : public Mapping {
            std::tie(m.fragment_start_position_, m.fragment_length_);
   }
   uint64_t GetBarcode() const { return cell_barcode_; }
-  void Tn5Shift() {
-    fragment_start_position_ += 4;
-    positive_alignment_length_ -= 4;
-    fragment_length_ -= 9;
-    negative_alignment_length_ -= 5;
+  void Tn5Shift(int forward_shift, int reverse_shift) {
+    // Generic form of the classical (+4,-5) shift:
+    //   forward 5' moves by forward_shift (-> start += fs, pos_len -= fs)
+    //   reverse 5' moves by reverse_shift (signed; neg_len += rs)
+    //   fragment_length shrinks by (fs - rs) overall.
+    fragment_start_position_   += forward_shift;
+    positive_alignment_length_ -= forward_shift;
+    fragment_length_           -= (forward_shift - reverse_shift);
+    negative_alignment_length_ += reverse_shift;
   }
   bool IsPositiveStrand() const { return direction_ > 0 ? true : false; }
   uint32_t GetStartPosition() const {  // inclusive
@@ -222,11 +228,11 @@ class PairedEndMappingWithoutBarcode : public Mapping {
            std::tie(m.fragment_start_position_, m.fragment_length_);
   }
   uint64_t GetBarcode() const { return 0; }
-  void Tn5Shift() {
-    fragment_start_position_ += 4;
-    positive_alignment_length_ -= 4;
-    fragment_length_ -= 9;
-    negative_alignment_length_ -= 5;
+  void Tn5Shift(int forward_shift, int reverse_shift) {
+    fragment_start_position_   += forward_shift;
+    positive_alignment_length_ -= forward_shift;
+    fragment_length_           -= (forward_shift - reverse_shift);
+    negative_alignment_length_ += reverse_shift;
   }
   bool IsPositiveStrand() const { return direction_ > 0 ? true : false; }
   uint32_t GetStartPosition() const {  // inclusive

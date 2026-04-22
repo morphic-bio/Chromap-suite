@@ -35,10 +35,13 @@ class Mapping {
   // virtual size_t WriteToFile(FILE *temp_mapping_output_file) const = 0;
   //// Load this mapping fomr a temp mapping output file.
   // virtual size_t LoadFromFile(FILE *temp_mapping_output_file) = 0;
-  // Perform Tn5 shift, which will change the start and end positions. Note that
-  // currently this can only be done on the mappings that are represented by
-  // intervals.
-  virtual void Tn5Shift() = 0;
+  // Perform Tn5 shift, which will change the start and end positions. Note
+  // that currently this can only be done on the mappings that are represented
+  // by intervals. `forward_shift` is added to the 5' end of forward-strand
+  // reads; `reverse_shift` (signed, typically negative) is added to the 5' end
+  // of reverse-strand reads. The ARC/Buenrostro convention is (+4, -5); the
+  // ChromBPNet convention is (+4, -4).
+  virtual void Tn5Shift(int forward_shift, int reverse_shift) = 0;
 };
 
 }  // namespace chromap

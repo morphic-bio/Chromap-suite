@@ -65,7 +65,9 @@ class MappingProcessor {
 
   void ApplyTn5ShiftOnMappings(
       uint32_t num_reference_sequences,
-      std::vector<std::vector<MappingRecord>> &mappings);
+      std::vector<std::vector<MappingRecord>> &mappings,
+      int forward_shift,
+      int reverse_shift);
 
   uint32_t MoveMappingsInBuffersToMappingContainer(
       uint32_t num_reference_sequences,
@@ -442,11 +444,13 @@ void MappingProcessor<MappingRecord>::AllocateMultiMappings(
 template <typename MappingRecord>
 void MappingProcessor<MappingRecord>::ApplyTn5ShiftOnMappings(
     uint32_t num_reference_sequences,
-    std::vector<std::vector<MappingRecord>> &mappings) {
+    std::vector<std::vector<MappingRecord>> &mappings,
+    int forward_shift,
+    int reverse_shift) {
   uint64_t num_shifted_mappings = 0;
   for (auto &mappings_on_one_ref_seq : mappings) {
     for (auto &mapping : mappings_on_one_ref_seq) {
-      mapping.Tn5Shift();
+      mapping.Tn5Shift(forward_shift, reverse_shift);
       ++num_shifted_mappings;
     }
   }

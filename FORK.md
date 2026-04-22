@@ -81,11 +81,27 @@ The new overflow system uses a k-way merge algorithm to correctly reconstruct so
 
 ## User-facing behavior and flags
 
+- New flag: `--Tn5-shift-mode {classical|symmetric}` to pick the Tn5 cut-site offset convention. `classical` = `+4 / -5` (Buenrostro 2013; Cell Ranger ARC default; this is the legacy `--Tn5-shift` behavior). `symmetric` = `+4 / -4` (ChromBPNet convention). Implies `--Tn5-shift`. Active offsets are now echoed at startup.
 - New flag: `--temp-dir DIR` to specify directory for temporary files (useful for Docker environments and custom temp locations).
 - **New overflow system is now the default**: No compile flags needed for the improved overflow system with k-way merge.
 - Compile flag: `LEGACY_OVERFLOW=1` to use the legacy temp file system (⚠️ **single-threaded only** - use `-t 1`).
 - Existing presets and options work as before.
 - Performance: neutral or slightly improved due to fewer stdio calls per record and simplified I/O patterns.
+
+### 5) Configurable Tn5 shift offsets (classical vs symmetric)
+
+- Motivation: the classical ATAC convention (`+4 / -5`, Buenrostro 2013, also used by Cell Ranger ARC/ATAC) is asymmetric around the 9-bp Tn5 duplication. Some downstream tools — notably ChromBPNet — require a symmetric `+4 / -4` cut-site shift. Previously this was always handled post-hoc (e.g. a `+1` adjustment on the minus-strand 5' end in the bigwig pipeline), which adds a silent, pipeline-specific step that is easy to forget or double-apply.
+- Changes:
+  - `src/mapping_parameters.h`: added `Tn5_forward_shift` (default `4`) and `Tn5_reverse_shift` (default `-5`, signed) alongside the existing `Tn5_shift` boolean.
+  - `src/mapping.h`, `src/bed_mapping.h`, `src/paf_mapping.h`, `src/sam_mapping.h`, `src/pairs_mapping.h`: generalized all `Tn5Shift()` overrides to take `(int forward_shift, int reverse_shift)`. The paired-end math now reads `fragment_length -= (forward_shift - reverse_shift)` and `negative_alignment_length += reverse_shift`, which reduces to the previous `-9` / `-5` when `(fs, rs) = (4, -5)`. SAM and pairs keep their intentional no-op semantics (coordinate-shifting those formats would require coordinated edits to `POS`, `MPOS/PNEXT`, `TLEN`, `CIGAR`, `NM`, `MD`).
+  - `src/mapping_processor.h`: `ApplyTn5ShiftOnMappings` takes the offsets and forwards them.
+  - `src/chromap.h`, `src/mapping_writer.cc`, `src/mapping_writer.h`: the three call sites pass the offsets from `MappingParameters`.
+  - `src/chromap_driver.cc`: new `--Tn5-shift-mode` option (`classical` or `symmetric`), implying `--Tn5-shift`; startup echo now reports the active offsets.
+- Behavior:
+  - `--Tn5-shift` alone → classical `+4 / -5` (legacy behavior, byte-identical to prior builds).
+  - `--Tn5-shift-mode classical` → explicit `+4 / -5`.
+  - `--Tn5-shift-mode symmetric` → `+4 / -4`. On paired-end BED output, every fragment end shifts by exactly `+1` vs classical, with identical start coordinates.
+- Impact: no effect on SAM/BAM output (still intentionally unshifted); BED/BEDPE/PAF output now user-selectable. Eliminates the need for post-hoc `+1` corrections in downstream ChromBPNet pipelines while keeping Cell Ranger ARC parity as the default.
 
 ## Compatibility
 

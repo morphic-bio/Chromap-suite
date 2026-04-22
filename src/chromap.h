@@ -734,8 +734,10 @@ void Chromap::MapSingleEndReads() {
 #endif
   } else {
     if (mapping_parameters_.Tn5_shift) {
-      mapping_processor.ApplyTn5ShiftOnMappings(num_reference_sequences,
-                                                mappings_on_diff_ref_seqs);
+      mapping_processor.ApplyTn5ShiftOnMappings(
+          num_reference_sequences, mappings_on_diff_ref_seqs,
+          mapping_parameters_.Tn5_forward_shift,
+          mapping_parameters_.Tn5_reverse_shift);
     }
 
     if (mapping_parameters_.remove_pcr_duplicates) {
@@ -1606,8 +1608,10 @@ void Chromap::MapPairedEndReads() {
   } 
   else {
     if (mapping_parameters_.Tn5_shift) {
-      mapping_processor.ApplyTn5ShiftOnMappings(num_reference_sequences,
-                                                mappings_on_diff_ref_seqs);
+      mapping_processor.ApplyTn5ShiftOnMappings(
+          num_reference_sequences, mappings_on_diff_ref_seqs,
+          mapping_parameters_.Tn5_forward_shift,
+          mapping_parameters_.Tn5_reverse_shift);
     }
 
     if (mapping_parameters_.remove_pcr_duplicates) {

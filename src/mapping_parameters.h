@@ -54,6 +54,12 @@ struct MappingParameters {
   bool only_output_unique_mappings = true;
   bool output_mappings_not_in_whitelist = false;
   bool Tn5_shift = false;
+  // Tn5 cut-site offsets applied to fragment 5' ends when Tn5_shift=true.
+  // Defaults match ARC / Cell Ranger ATAC / Buenrostro 2013 ("classical" +4/-5).
+  // Set to (+4, -4) for the "symmetric" convention used by ChromBPNet.
+  // rs is signed; -5 means the reverse-strand 5' end moves by 5 bases.
+  int Tn5_forward_shift = 4;
+  int Tn5_reverse_shift = -5;
   bool split_alignment = false;
   MappingOutputFormat mapping_output_format = MAPPINGFORMAT_BED;
   bool low_memory_mode = false;

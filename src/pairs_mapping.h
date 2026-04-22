@@ -52,9 +52,9 @@ class PairsMapping : public Mapping {
            std::tie(m.rid1_, m.pos1_, m.rid2_, m.pos2_);
   }
   uint64_t GetBarcode() const { return 0; }
-  void Tn5Shift() {
-    // We don't support Tn5 shift in SAM format because it has other fields that
-    // depend mapping position.
+  void Tn5Shift(int /*forward_shift*/, int /*reverse_shift*/) {
+    // No-op: pairs format carries extra position-dependent fields that would
+    // need coordinated edits; Tn5 shift is intentionally not applied here.
   }
 
   int GetPosition(int idx) const {

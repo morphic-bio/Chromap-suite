@@ -72,7 +72,12 @@ void AddMappingOptions(cxxopts::Options &options) {
           "remove-pcr-duplicates-at-cell-level",
           "Remove PCR duplicates at cell level for single cell data")
       //("allocate-multi-mappings", "Allocate multi-mappings")
-      ("Tn5-shift", "Perform Tn5 shift")("low-mem", "Use low memory mode")(
+      ("Tn5-shift",
+       "Perform Tn5 shift [offsets default to 'classical' +4/-5 unless --Tn5-shift-mode is given]")(
+          "Tn5-shift-mode",
+          "Tn5 shift offset convention: 'classical' (+4/-5, Buenrostro 2013, Cell Ranger ARC) or 'symmetric' (+4/-4, ChromBPNet). Implies --Tn5-shift.",
+          cxxopts::value<std::string>(),
+          "STR")("low-mem", "Use low memory mode")(
           "low-mem-ram",
           "Max RAM for low-mem spill buffer before writing temp files [default: 1G; 512M for SAM/PAF/PAIRS]",
           cxxopts::value<std::string>(), "SIZE")(
@@ -659,6 +664,21 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
   if (result.count("Tn5-shift")) {
     mapping_parameters.Tn5_shift = true;
   }
+  if (result.count("Tn5-shift-mode")) {
+    const std::string mode = result["Tn5-shift-mode"].as<std::string>();
+    if (mode == "classical") {
+      mapping_parameters.Tn5_forward_shift = 4;
+      mapping_parameters.Tn5_reverse_shift = -5;
+    } else if (mode == "symmetric") {
+      mapping_parameters.Tn5_forward_shift = 4;
+      mapping_parameters.Tn5_reverse_shift = -4;
+    } else {
+      chromap::ExitWithMessage(
+          "Unrecognized --Tn5-shift-mode '" + mode +
+          "' (expected 'classical' for +4/-5 or 'symmetric' for +4/-4)\n");
+    }
+    mapping_parameters.Tn5_shift = true;
+  }
   if (result.count("split-alignment")) {
     mapping_parameters.split_alignment = true;
   }
@@ -1178,7 +1198,9 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
           mapping_parameters.drop_repetitive_reads;
     }
     if (mapping_parameters.Tn5_shift) {
-      std::cerr << "Perform Tn5 shift.\n";
+      std::cerr << "Perform Tn5 shift (offsets: +"
+                << mapping_parameters.Tn5_forward_shift << " / "
+                << mapping_parameters.Tn5_reverse_shift << ").\n";
     }
     if (mapping_parameters.split_alignment) {
       std::cerr << "Allow split alignment.\n";
