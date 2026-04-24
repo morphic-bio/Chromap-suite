@@ -22,10 +22,26 @@ MACS3_RUNNER="${MACS3_RUNNER:-/mnt/pikachu/multiomic-atac-scrna/scripts/run_macs
 # Set RUN_MACS3=0 to skip external MACS3 (faster; Jaccard columns stay NA).
 RUN_MACS3="${RUN_MACS3:-1}"
 
-# Find atac_possorted_bam.bam under a run directory (same tree as dual/ output).
+# Find a BAM in the run tree paired with dual/fragments. Chromap dual output
+# uses dual/possorted_bam.bam (see tests/run_atac_dual_output_100k.sh); ARC/STAR
+# layouts often use atac_possorted_bam.bam under out/ or the run root.
 bam_in_run_tree() {
   local r=$1
-  find "$r" -maxdepth 5 -name 'atac_possorted_bam.bam' -type f 2>/dev/null | LC_ALL=C sort | head -1
+  local p
+  for p in \
+    "${r}/dual/possorted_bam.bam" \
+    "${r}/dual/atac_possorted_bam.bam" \
+    "${r}/atac_possorted_bam.bam" \
+    "${r}/out/atac_possorted_bam.bam" \
+    "${r}/bam_only/possorted_bam.bam"; do
+    if [[ -f "$p" ]]; then
+      printf '%s' "$p"
+      return 0
+    fi
+  done
+  find "$r" -maxdepth 5 \
+    \( -name 'possorted_bam.bam' -o -name 'atac_possorted_bam.bam' \) -type f 2>/dev/null |
+    LC_ALL=C sort | head -1
 }
 
 # With CHROMAP_PEAK_RUN_ROOT: require dual/fragments.tsv.gz or dual/fragments.tsv
