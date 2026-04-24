@@ -3,6 +3,7 @@
 #include <exception>
 #include <string>
 
+#include "atac_dual_mapping.h"
 #include "chromap.h"
 #include "utils.h"
 
@@ -61,29 +62,35 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
           return MakeFailure(mapping_parameters, "unknown mapping output format");
       }
     } else {
-      switch (mapping_parameters.mapping_output_format) {
-        case MAPPINGFORMAT_PAF:
-          chromap_for_mapping.MapPairedEndReads<PairedPAFMapping>();
-          break;
-        case MAPPINGFORMAT_SAM:
-        case MAPPINGFORMAT_BAM:
-        case MAPPINGFORMAT_CRAM:
-          chromap_for_mapping.MapPairedEndReads<SAMMapping>();
-          break;
-        case MAPPINGFORMAT_PAIRS:
-          chromap_for_mapping.MapPairedEndReads<PairsMapping>();
-          break;
-        case MAPPINGFORMAT_BED:
-        case MAPPINGFORMAT_TAGALIGN:
-          if (!mapping_parameters.barcode_file_paths.empty()) {
-            chromap_for_mapping.MapPairedEndReads<PairedEndMappingWithBarcode>();
-          } else {
-            chromap_for_mapping.MapPairedEndReads<
-                PairedEndMappingWithoutBarcode>();
-          }
-          break;
-        default:
-          return MakeFailure(mapping_parameters, "unknown mapping output format");
+      if (mapping_parameters.AtacDualFragmentAndBam()) {
+        chromap_for_mapping.MapPairedEndReads<PairedEndAtacDualMapping>();
+      } else {
+        switch (mapping_parameters.mapping_output_format) {
+          case MAPPINGFORMAT_PAF:
+            chromap_for_mapping.MapPairedEndReads<PairedPAFMapping>();
+            break;
+          case MAPPINGFORMAT_SAM:
+          case MAPPINGFORMAT_BAM:
+          case MAPPINGFORMAT_CRAM:
+            chromap_for_mapping.MapPairedEndReads<SAMMapping>();
+            break;
+          case MAPPINGFORMAT_PAIRS:
+            chromap_for_mapping.MapPairedEndReads<PairsMapping>();
+            break;
+          case MAPPINGFORMAT_BED:
+          case MAPPINGFORMAT_TAGALIGN:
+            if (!mapping_parameters.barcode_file_paths.empty()) {
+              chromap_for_mapping
+                  .MapPairedEndReads<PairedEndMappingWithBarcode>();
+            } else {
+              chromap_for_mapping.MapPairedEndReads<
+                  PairedEndMappingWithoutBarcode>();
+            }
+            break;
+          default:
+            return MakeFailure(mapping_parameters,
+                               "unknown mapping output format");
+        }
       }
     }
   } catch (const std::exception &error) {
@@ -107,9 +114,17 @@ ChromapRunResult RunAtacMapping(const MappingParameters &mapping_parameters) {
                        "ATAC mapping requires barcode input");
   }
   if (mapping_parameters.mapping_output_format != MAPPINGFORMAT_BED &&
-      mapping_parameters.mapping_output_format != MAPPINGFORMAT_TAGALIGN) {
+      mapping_parameters.mapping_output_format != MAPPINGFORMAT_TAGALIGN &&
+      mapping_parameters.mapping_output_format != MAPPINGFORMAT_SAM &&
+      mapping_parameters.mapping_output_format != MAPPINGFORMAT_BAM &&
+      mapping_parameters.mapping_output_format != MAPPINGFORMAT_CRAM) {
     return MakeFailure(mapping_parameters,
-                       "ATAC mapping requires BED or TagAlign output");
+                       "ATAC mapping requires BED, TagAlign, SAM, BAM, or CRAM output");
+  }
+  if (mapping_parameters.AtacDualFragmentAndBam() &&
+      mapping_parameters.low_memory_mode) {
+    return MakeFailure(mapping_parameters,
+                       "dual ATAC BAM/fragments output is not supported with low-memory mode");
   }
 
   return RunMapping(mapping_parameters);

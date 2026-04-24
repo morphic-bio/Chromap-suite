@@ -83,6 +83,12 @@ void MappingGenerator<PairedEndMappingWithBarcode>::
             &mappings_on_diff_ref_seqs) = delete;
 
 template <>
+void MappingGenerator<PairedEndAtacDualMapping>::EmplaceBackSingleEndMappingRecord(
+    MappingInMemory &mapping_in_memory,
+    std::vector<std::vector<PairedEndAtacDualMapping>>
+        &mappings_on_diff_ref_seqs) = delete;
+
+template <>
 void MappingGenerator<PairedEndMappingWithoutBarcode>::
     EmplaceBackSingleEndMappingRecord(
         MappingInMemory &mapping_in_memory,
@@ -123,6 +129,8 @@ void MappingGenerator<SAMMapping>::EmplaceBackPairedEndMappingRecord(
       mapping_in_memory.NM, mapping_in_memory.n_cigar, mapping_in_memory.cigar,
       mapping_in_memory.MD_tag, std::string(mapping_in_memory.read_sequence),
       mapping_in_memory.qual_sequence ? std::string(mapping_in_memory.qual_sequence) : std::string());
+    mapping_in_memory.cigar = nullptr;
+    mapping_in_memory.n_cigar = 0;
   }
 }
 
@@ -159,6 +167,68 @@ void MappingGenerator<PairedEndMappingWithBarcode>::
                     paired_end_mapping_in_memory.is_unique, /*num_dups=*/1,
                     paired_end_mapping_in_memory.GetPositiveAlignmentLength(),
                     paired_end_mapping_in_memory.GetNegativeAlignmentLength());
+  for (auto *m : {&paired_end_mapping_in_memory.mapping_in_memory1,
+                  &paired_end_mapping_in_memory.mapping_in_memory2}) {
+    if (m->cigar) {
+      free(m->cigar);
+      m->cigar = nullptr;
+    }
+    m->n_cigar = 0;
+  }
+}
+
+template <>
+void MappingGenerator<PairedEndAtacDualMapping>::EmplaceBackPairedEndMappingRecord(
+    PairedEndMappingInMemory &paired_end_mapping_in_memory,
+    std::vector<std::vector<PairedEndAtacDualMapping>>
+        &mappings_on_diff_ref_seqs) {
+  PairedEndMappingWithBarcode bed(
+      paired_end_mapping_in_memory.GetReadId(),
+      paired_end_mapping_in_memory.GetBarcode(),
+      paired_end_mapping_in_memory.GetFragmentStartPosition(),
+      paired_end_mapping_in_memory.GetFragmentLength(),
+      paired_end_mapping_in_memory.mapq,
+      paired_end_mapping_in_memory.GetStrand(),
+      paired_end_mapping_in_memory.is_unique, /*num_dups=*/1,
+      paired_end_mapping_in_memory.GetPositiveAlignmentLength(),
+      paired_end_mapping_in_memory.GetNegativeAlignmentLength());
+  const int tlen =
+      static_cast<int>(paired_end_mapping_in_memory.GetFragmentLength());
+  SAMMapping sam_a;
+  SAMMapping sam_b;
+  for (int i = 0; i < 2; ++i) {
+    MappingInMemory &mapping_in_memory =
+        (i == 0 ? paired_end_mapping_in_memory.mapping_in_memory1
+                : paired_end_mapping_in_memory.mapping_in_memory2);
+    MappingInMemory &mate_mapping_in_memory =
+        (i == 0 ? paired_end_mapping_in_memory.mapping_in_memory2
+                : paired_end_mapping_in_memory.mapping_in_memory1);
+    SAMMapping sam(
+        mapping_in_memory.read_id, std::string(mapping_in_memory.read_name),
+        mapping_in_memory.barcode_key, /*num_dups=*/1,
+        mapping_in_memory.GetFragmentStartPosition(), mapping_in_memory.rid,
+        /*mpos=*/mate_mapping_in_memory.GetFragmentStartPosition(),
+        /*mrid=*/mate_mapping_in_memory.rid,
+        /*tlen=*/mapping_in_memory.GetStrand() ? tlen : -tlen,
+        mapping_in_memory.SAM_flag, mapping_in_memory.GetStrand(),
+        /*is_alt=*/0, mapping_in_memory.is_unique, mapping_in_memory.mapq,
+        mapping_in_memory.NM, mapping_in_memory.n_cigar, mapping_in_memory.cigar,
+        mapping_in_memory.MD_tag, std::string(mapping_in_memory.read_sequence),
+        mapping_in_memory.qual_sequence
+            ? std::string(mapping_in_memory.qual_sequence)
+            : std::string());
+    if (i == 0) {
+      sam_a = std::move(sam);
+    } else {
+      sam_b = std::move(sam);
+    }
+  }
+  mappings_on_diff_ref_seqs[paired_end_mapping_in_memory.mapping_in_memory1.rid]
+      .emplace_back(bed, std::move(sam_a), std::move(sam_b));
+  paired_end_mapping_in_memory.mapping_in_memory1.cigar = nullptr;
+  paired_end_mapping_in_memory.mapping_in_memory1.n_cigar = 0;
+  paired_end_mapping_in_memory.mapping_in_memory2.cigar = nullptr;
+  paired_end_mapping_in_memory.mapping_in_memory2.n_cigar = 0;
 }
 
 template <>

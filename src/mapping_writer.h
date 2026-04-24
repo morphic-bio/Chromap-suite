@@ -15,6 +15,7 @@
 
 #include "barcode_translator.h"
 #include "bed_mapping.h"
+#include "atac_dual_mapping.h"
 #include "mapping.h"
 #include "mapping_parameters.h"
 #include "paf_mapping.h"
@@ -36,6 +37,7 @@
 #include <htslib/sam.h>
 #include <htslib/hts.h>
 #include <htslib/faidx.h>
+#include <zlib.h>
 #include <memory>
 
 // Include bam_sorter.h before namespace chromap to avoid namespace collision
@@ -60,9 +62,22 @@ class MappingWriter {
           mapping_parameters_.barcode_translate_table_file_path);
     }
     summary_metadata_.SetBarcodeLength(cell_barcode_length);
-    // Only open FILE* for non-BAM/CRAM formats (BAM/CRAM use htslib handles)
-    if (mapping_parameters_.mapping_output_format != MAPPINGFORMAT_BAM &&
-        mapping_parameters_.mapping_output_format != MAPPINGFORMAT_CRAM) {
+    if (mapping_parameters_.AtacDualFragmentAndBam()) {
+      const std::string &af =
+          mapping_parameters_.atac_fragment_output_file_path;
+      if (af.size() >= 3 && af.compare(af.size() - 3, 3, ".gz") == 0) {
+        atac_fragment_gz_output_ = gzopen(af.c_str(), "wb");
+        if (!atac_fragment_gz_output_) {
+          ExitWithMessage("Failed to open --atac-fragments output: " + af);
+        }
+      } else {
+        atac_fragment_output_file_ = fopen(af.c_str(), "w");
+        if (!atac_fragment_output_file_) {
+          ExitWithMessage("Failed to open --atac-fragments output: " + af);
+        }
+      }
+    } else if (mapping_parameters_.mapping_output_format != MAPPINGFORMAT_BAM &&
+               mapping_parameters_.mapping_output_format != MAPPINGFORMAT_CRAM) {
       mapping_output_file_ =
           fopen(mapping_parameters_.mapping_output_file_path.c_str(), "w");
       assert(mapping_output_file_ != nullptr);
@@ -70,6 +85,14 @@ class MappingWriter {
   }
 
   ~MappingWriter() {
+    if (atac_fragment_gz_output_) {
+      gzclose(atac_fragment_gz_output_);
+      atac_fragment_gz_output_ = nullptr;
+    }
+    if (atac_fragment_output_file_) {
+      fclose(atac_fragment_output_file_);
+      atac_fragment_output_file_ = nullptr;
+    }
     if (mapping_output_file_) {
       fclose(mapping_output_file_);
     }
@@ -171,6 +194,24 @@ class MappingWriter {
       (void)fwrite(line.data(), 1, line.size(), mapping_output_file_);
     }
   }
+
+  // Secondary ATAC fragment stream when AtacDualFragmentAndBam() is active.
+  inline void AppendAtacFragmentOutput(const std::string &line) {
+    if (!mapping_parameters_.AtacDualFragmentAndBam()) {
+      return;
+    }
+    if (atac_fragment_gz_output_) {
+      if (gzwrite(atac_fragment_gz_output_, line.data(),
+                  static_cast<unsigned>(line.size())) <= 0) {
+        ExitWithMessage("gzwrite failed for --atac-fragments output");
+      }
+    } else if (atac_fragment_output_file_) {
+      if (fwrite(line.data(), 1, line.size(), atac_fragment_output_file_) !=
+          line.size()) {
+        ExitWithMessage("fwrite failed for --atac-fragments output");
+      }
+    }
+  }
   
   // Helper methods for htslib BAM/CRAM output (only implemented for SAMMapping)
   void OpenHtsOutput() {}  // Default no-op, specialized for SAMMapping
@@ -221,6 +262,9 @@ class MappingWriter {
 
   // for pairs
   const std::vector<int> pairs_custom_rid_rank_;
+
+  FILE *atac_fragment_output_file_ = nullptr;
+  gzFile atac_fragment_gz_output_ = nullptr;
 
   // Y-chromosome filtering (SAM/BAM/CRAM mode)
   FILE *noY_output_file_ = nullptr;
@@ -308,7 +352,8 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemory(
   uint64_t max_mem_size = 10 * ((uint64_t)1 << 30);
   if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_SAM ||
       mapping_parameters_.mapping_output_format == MAPPINGFORMAT_PAIRS ||
-      mapping_parameters_.mapping_output_format == MAPPINGFORMAT_PAF) {
+      mapping_parameters_.mapping_output_format == MAPPINGFORMAT_PAF ||
+      mapping_parameters_.AtacDualFragmentAndBam()) {
     max_mem_size = (uint64_t)1 << 30;
   }
   for (size_t hi = 0; hi < temp_mapping_file_handles.size(); ++hi) {
@@ -732,6 +777,41 @@ void MappingWriter<SAMMapping>::CloseYFilterStreams();
 // Specialization for sorted output finalization
 template <>
 void MappingWriter<SAMMapping>::FinalizeSortedOutput();
+
+// ATAC dual output: BED fragments + BAM/CRAM (paired barcoded reads only).
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::OutputHeader(
+    uint32_t num_reference_sequences, const SequenceBatch &reference);
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::AppendMapping(
+    uint32_t rid, const SequenceBatch &reference,
+    const PairedEndAtacDualMapping &mapping);
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::OutputTempMapping(
+    const std::string &temp_mapping_output_file_path,
+    uint32_t num_reference_sequences,
+    const std::vector<std::vector<PairedEndAtacDualMapping>> &mappings);
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::OpenHtsOutput();
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::CloseHtsOutput();
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::BuildHtsHeader(
+    uint32_t num_reference_sequences, const SequenceBatch &reference);
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::OpenYFilterStreams();
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::CloseYFilterStreams();
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::FinalizeSortedOutput();
 
 // Specialization for pairs format.
 template <>

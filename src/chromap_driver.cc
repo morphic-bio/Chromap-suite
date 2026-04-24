@@ -180,7 +180,17 @@ void AddOutputOptions(cxxopts::Options &options) {
           "Enable coordinate sorting for BAM/CRAM output. Sets @HD SO:coordinate. Required for --write-index. Sort key: (tid,pos,flag,mtid,mpos,isize,read_id). Note: differs from samtools sort ordering.")(
           "sort-bam-ram",
           "Max RAM for sorting before spilling to disk [8G]",
-          cxxopts::value<std::string>(), "SIZE");
+          cxxopts::value<std::string>(), "SIZE")(
+          "atac-fragments",
+          "With paired barcoded reads and --BAM/--CRAM: emit fragment-level BAM "
+          "(and optional CRAM) from the retained ATAC fragment set in one pass, "
+          "and also write scATAC fragments (BED fields) to this path (.gz "
+          "supported). Invariants: retained fragment lines match a fragment-only "
+          "BED run with the same mapping options; BAM record count is exactly "
+          "2 * fragment rows. Dual BAM is not comparable row-for-row to --BAM "
+          "without --atac-fragments (read-level SAM path). Incompatible with "
+          "--low-mem.",
+          cxxopts::value<std::string>(), "FILE");
   //("PAF", "Output mappings in PAF format (only for test)");
 }
 
@@ -853,6 +863,11 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
           result["summary"].as<std::string>();
     }
 
+    if (result.count("atac-fragments")) {
+      mapping_parameters.atac_fragment_output_file_path =
+          result["atac-fragments"].as<std::string>();
+    }
+
     if (result.count("skip-barcode-check")) {
       mapping_parameters.skip_barcode_check = true;
     }
@@ -916,6 +931,31 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       if (mapping_parameters.mapping_output_format != MAPPINGFORMAT_BAM &&
           mapping_parameters.mapping_output_format != MAPPINGFORMAT_CRAM) {
         chromap::ExitWithMessage("--write-index only works with --BAM or --CRAM output format");
+      }
+    }
+
+    if (!mapping_parameters.atac_fragment_output_file_path.empty()) {
+      if (mapping_parameters.read_file2_paths.empty()) {
+        chromap::ExitWithMessage(
+            "--atac-fragments requires paired-end reads (-2)");
+      }
+      if (mapping_parameters.barcode_file_paths.empty()) {
+        chromap::ExitWithMessage(
+            "--atac-fragments requires cell barcode reads (-b)");
+      }
+      if (mapping_parameters.mapping_output_format != MAPPINGFORMAT_BAM &&
+          mapping_parameters.mapping_output_format != MAPPINGFORMAT_CRAM) {
+        chromap::ExitWithMessage(
+            "--atac-fragments requires --BAM or --CRAM primary output (-o)");
+      }
+      if (mapping_parameters.low_memory_mode) {
+        chromap::ExitWithMessage(
+            "--atac-fragments is not supported with --low-mem");
+      }
+      if (mapping_parameters.atac_fragment_output_file_path ==
+          mapping_parameters.mapping_output_file_path) {
+        chromap::ExitWithMessage(
+            "--atac-fragments path must differ from -o/--output");
       }
     }
     
@@ -1260,6 +1300,10 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     }
     std::cerr << "Output file: " << mapping_parameters.mapping_output_file_path
               << "\n";
+    if (mapping_parameters.AtacDualFragmentAndBam()) {
+      std::cerr << "ATAC fragments file: "
+                << mapping_parameters.atac_fragment_output_file_path << "\n";
+    }
     if (result.count("matrix-output-prefix") != 0) {
       std::cerr << "Matrix output prefix: "
                 << mapping_parameters.matrix_output_prefix << "\n";
@@ -1299,6 +1343,10 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       }
     } else {
       // Paired-end reads.
+      if (mapping_parameters.AtacDualFragmentAndBam()) {
+        chromap_for_mapping
+            .MapPairedEndReads<chromap::PairedEndAtacDualMapping>();
+      } else
       switch (mapping_parameters.mapping_output_format) {
         case MAPPINGFORMAT_PAF: {
           chromap_for_mapping.MapPairedEndReads<chromap::PairedPAFMapping>();

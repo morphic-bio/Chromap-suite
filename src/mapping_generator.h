@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "alignment.h"
+#include "atac_dual_mapping.h"
 #include "bed_mapping.h"
 #include "ksw.h"
 #include <unordered_set>
@@ -45,11 +46,14 @@ class MappingGenerator {
 
   ~MappingGenerator() = default;
 
-  // Helper to check if output format is SAM-like (SAM, BAM, or CRAM)
+  // Helper to check if output format is SAM-like (SAM, BAM, or CRAM).
+  // ATAC dual (BAM + --atac-fragments) follows the fragment/BED mapping path
+  // for paired-end processing, then emits SAM rows from that result.
   inline bool IsSamLike() const {
-    return mapping_parameters_.mapping_output_format == MAPPINGFORMAT_SAM ||
-           mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM ||
-           mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM;
+    return (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_SAM ||
+            mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM ||
+            mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM) &&
+           !mapping_parameters_.AtacDualFragmentAndBam();
   }
 
   void GenerateBestMappingsForSingleEndRead(
@@ -634,7 +638,7 @@ void MappingGenerator<MappingRecord>::
       paired_end_mapping_in_memory.mapping_in_memory1.mapq = mapq;
       paired_end_mapping_in_memory.mapping_in_memory2.mapq = mapq;
 
-      if (IsSamLike()) {
+      if (IsSamLike() || mapping_parameters_.AtacDualFragmentAndBam()) {
         uint16_t flag1 = 3;
         uint16_t flag2 = 3;
         if (first_read_strand == kNegative) {

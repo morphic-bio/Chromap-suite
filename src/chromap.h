@@ -785,6 +785,13 @@ template <typename MappingRecord>
 void Chromap::MapPairedEndReads() {
   double real_start_time = GetRealTime();
 
+  if (mapping_parameters_.AtacDualFragmentAndBam() &&
+      mapping_parameters_.low_memory_mode) {
+    chromap::ExitWithMessage(
+        "ATAC dual output (--atac-fragments with --BAM/--CRAM) is not "
+        "supported together with --low-mem");
+  }
+
   // Load reference
   SequenceBatch reference;
   reference.InitializeLoading(mapping_parameters_.reference_file_path);
@@ -971,6 +978,14 @@ void Chromap::MapPairedEndReads() {
       custom_limit = 1;
     }
     max_num_mappings_in_mem = custom_limit;
+  } else if (mapping_parameters_.AtacDualFragmentAndBam() &&
+             mapping_parameters_.low_memory_mode) {
+    // PairedEndAtacDualMapping is much larger than PairedEndMappingWithBarcode.
+    // Using sizeof(MappingRecord) alone flushes overflow far earlier than
+    // fragment-only ATAC, changing merge/dedup and breaking fragment parity.
+    // Match the default BED paired-end spill count (same as --preset atac).
+    max_num_mappings_in_mem =
+        ((uint64_t)1 << 30) / sizeof(PairedEndMappingWithBarcode);
   }
   
   static uint64_t thread_num_candidates = 0;

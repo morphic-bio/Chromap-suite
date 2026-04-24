@@ -1,6 +1,7 @@
 #ifndef SAMMAPPING_H_
 #define SAMMAPPING_H_
 
+#include <cstring>
 #include <string>
 #include <tuple>
 #include <vector>

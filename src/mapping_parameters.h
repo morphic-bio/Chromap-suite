@@ -78,6 +78,9 @@ struct MappingParameters {
   std::string barcode_whitelist_file_path;
   std::string read_format;
   std::string mapping_output_file_path;
+  // When set alongside paired-end barcoded reads and BAM/CRAM primary output,
+  // emit fragment lines (BED/TagAlign) to this path in the same alignment pass.
+  std::string atac_fragment_output_file_path;
   std::string matrix_output_prefix;
   // The order for general sorting.
   std::string custom_rid_order_file_path;
@@ -110,6 +113,15 @@ struct MappingParameters {
   bool write_index = false;
   bool sort_bam = false;          // Enable coordinate sorting for BAM/CRAM output
   uint64_t sort_bam_ram_limit = 8ULL * 1024 * 1024 * 1024;  // 8GB default
+
+  // Dual ATAC: BAM/CRAM to mapping_output_file_path and fragments to
+  // atac_fragment_output_file_path (one pass; not supported with --low-mem).
+  bool AtacDualFragmentAndBam() const {
+    return !read_file2_paths.empty() && !barcode_file_paths.empty() &&
+           !atac_fragment_output_file_path.empty() &&
+           (mapping_output_format == MAPPINGFORMAT_BAM ||
+            mapping_output_format == MAPPINGFORMAT_CRAM);
+  }
 
   int GetNumVPULanes() const {
     int NUM_VPU_LANES = 0;

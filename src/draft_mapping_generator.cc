@@ -532,7 +532,8 @@ void DraftMappingGenerator::GenerateDraftMappingsOnOneStrand(
             num_errors,
             candidates[ci].position - error_threshold_ + mapping_end_position);
       } else {
-        if (split_alignment_ && mapping_output_format_ != MAPPINGFORMAT_SAM) {
+        if (split_alignment_ && mapping_output_format_ != MAPPINGFORMAT_SAM &&
+            !atac_dual_fragment_and_bam_) {
           // TODO: this if condition is suspicious. Check this later.
           mappings.emplace_back(num_errors,
                                 candidates[ci].position - gap_beginning);

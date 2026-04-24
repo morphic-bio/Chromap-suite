@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "atac_dual_mapping.h"
 #include "bed_mapping.h"
 #include "mapping.h"
 #include "paf_mapping.h"
@@ -287,6 +288,39 @@ inline void TempMappingFileHandle<PairsMapping>::LoadTempMappingBlock(
           num_mappings_on_current_rid = static_cast<uint32_t>(num_on_rid);
         }
         // std::cerr << "Load size " << num_mappings_on_current_rid << "\n";
+        num_loaded_mappings_on_current_rid = 0;
+      } else {
+        break;
+      }
+    }
+  }
+  current_mapping_index = 0;
+}
+
+template <>
+inline void TempMappingFileHandle<PairedEndAtacDualMapping>::LoadTempMappingBlock(
+    uint32_t num_reference_sequences) {
+  num_mappings = 0;
+  while (num_mappings == 0) {
+    if (num_loaded_mappings_on_current_rid < num_mappings_on_current_rid) {
+      uint32_t num_mappings_to_load_on_current_rid =
+          num_mappings_on_current_rid - num_loaded_mappings_on_current_rid;
+      if (num_mappings_to_load_on_current_rid > block_size) {
+        num_mappings_to_load_on_current_rid = block_size;
+      }
+      for (size_t mi = 0; mi < num_mappings_to_load_on_current_rid; ++mi) {
+        mappings[mi].LoadFromFile(file);
+      }
+      num_loaded_mappings_on_current_rid += num_mappings_to_load_on_current_rid;
+      num_mappings = num_mappings_to_load_on_current_rid;
+    } else {
+      ++current_rid;
+      if (current_rid < num_reference_sequences) {
+        {
+          size_t num_on_rid = 0;
+          fread(&num_on_rid, sizeof(size_t), 1, file);
+          num_mappings_on_current_rid = static_cast<uint32_t>(num_on_rid);
+        }
         num_loaded_mappings_on_current_rid = 0;
       } else {
         break;

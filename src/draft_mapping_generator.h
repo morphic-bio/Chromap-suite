@@ -19,7 +19,9 @@ class DraftMappingGenerator {
       : error_threshold_(mapping_parameters.error_threshold),
         split_alignment_(mapping_parameters.split_alignment),
         num_vpu_lanes_(mapping_parameters.GetNumVPULanes()),
-        mapping_output_format_(mapping_parameters.mapping_output_format) {}
+        mapping_output_format_(mapping_parameters.mapping_output_format),
+        atac_dual_fragment_and_bam_(mapping_parameters.AtacDualFragmentAndBam()) {
+  }
 
   ~DraftMappingGenerator() = default;
 
@@ -56,6 +58,7 @@ class DraftMappingGenerator {
   const bool split_alignment_;
   const int num_vpu_lanes_;
   const MappingOutputFormat mapping_output_format_;
+  const bool atac_dual_fragment_and_bam_;
 };
 
 }  // namespace chromap

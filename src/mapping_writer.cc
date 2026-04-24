@@ -6,10 +6,148 @@
 #include <unordered_map>
 #include <unistd.h>
 #include <cstdlib>
+#include <limits>
 #include "chromap.h"
 #include "bam_sorter.h"
 
 namespace chromap {
+namespace {
+
+std::string DeriveReadGroupFromFilenameImpl(const std::string &filename) {
+  size_t last_slash = filename.find_last_of("/\\");
+  std::string basename =
+      (last_slash == std::string::npos) ? filename
+                                        : filename.substr(last_slash + 1);
+
+  std::vector<std::string> suffixes = {".fastq.gz", ".fq.gz", ".fastq", ".fq",
+                                       ".gz"};
+  for (const auto &suffix : suffixes) {
+    if (basename.length() >= suffix.length() &&
+        basename.substr(basename.length() - suffix.length()) == suffix) {
+      basename = basename.substr(0, basename.length() - suffix.length());
+      break;
+    }
+  }
+
+  size_t r_pos = basename.find("_R");
+  if (r_pos != std::string::npos) {
+    basename = basename.substr(0, r_pos);
+  }
+
+  return basename.empty() ? "default" : basename;
+}
+
+bam1_t *BuildBamRecordFromSamMappingFields(
+    const MappingParameters &mapping_parameters,
+    uint32_t cell_barcode_length, BarcodeTranslator &barcode_translator,
+    uint32_t rid, const SequenceBatch &reference, const SAMMapping &mapping) {
+  // `rid` is the per-chromosome bucket used when batching paired-end results
+  // (e.g. read1's reference for BED/fragment rows). BAM @SQ index (tid) must
+  // come from this read's own mapping.rid_ so read2 lands on the correct
+  // contig for discordant / interchromosomal pairs.
+  (void)rid;
+  bam1_t *b = bam_init1();
+  if (!b) {
+    ExitWithMessage("Failed to allocate bam1_t");
+  }
+
+  if (mapping.n_cigar_ < 0 ||
+      static_cast<size_t>(mapping.n_cigar_) > mapping.cigar_.size()) {
+    bam_destroy1(b);
+    ExitWithMessage("Invalid SAMMapping CIGAR state while writing BAM for read " +
+                    mapping.read_name_ + ": n_cigar=" +
+                    std::to_string(mapping.n_cigar_) + ", cigar_size=" +
+                    std::to_string(mapping.cigar_.size()));
+  }
+
+  const size_t qname_len = mapping.read_name_.length();
+  if (qname_len > 254) {
+    bam_destroy1(b);
+    ExitWithMessage("Read name is too long for BAM qname field while writing " +
+                    mapping.read_name_);
+  }
+
+  if (mapping.sequence_.length() >
+      static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+    bam_destroy1(b);
+    ExitWithMessage("Read sequence is too long for BAM while writing " +
+                    mapping.read_name_);
+  }
+
+  std::vector<uint8_t> raw_qual(mapping.sequence_.size(), 0xFF);
+  for (size_t qi = 0; qi < raw_qual.size(); ++qi) {
+    if (qi < mapping.sequence_qual_.size() &&
+        mapping.sequence_qual_[qi] >= 33) {
+      int qual_val = mapping.sequence_qual_[qi] - 33;
+      if (qual_val < 0) qual_val = 0;
+      if (qual_val > 93) qual_val = 93;
+      raw_qual[qi] = static_cast<uint8_t>(qual_val);
+    }
+  }
+
+  uint16_t flag = static_cast<uint16_t>(mapping.flag_);
+  int32_t tid = static_cast<int32_t>(mapping.rid_);
+  hts_pos_t pos = mapping.pos_;
+  uint8_t mapq = mapping.mapq_;
+  size_t n_cigar = static_cast<size_t>(mapping.n_cigar_);
+  const uint32_t *cigar = n_cigar == 0 ? nullptr : mapping.cigar_.data();
+  int32_t mtid = mapping.mrid_;
+  hts_pos_t mpos = mapping.mpos_;
+
+  if (mapping.flag_ & BAM_FUNMAP) {
+    tid = -1;
+    pos = -1;
+    mapq = 0;
+    n_cigar = 0;
+    cigar = nullptr;
+  }
+  if (mapping.mrid_ < 0 || (mapping.flag_ & BAM_FMUNMAP)) {
+    mtid = -1;
+    mpos = -1;
+  }
+
+  const char *seq_ptr =
+      mapping.sequence_.empty() ? nullptr : mapping.sequence_.c_str();
+  const char *qual_ptr =
+      raw_qual.empty() ? nullptr : reinterpret_cast<const char *>(raw_qual.data());
+
+  if (bam_set1(b, qname_len, mapping.read_name_.c_str(), flag, tid, pos, mapq,
+               n_cigar, cigar, mtid, mpos, mapping.tlen_,
+               mapping.sequence_.size(), seq_ptr, qual_ptr, 0) < 0) {
+    bam_destroy1(b);
+    ExitWithMessage("Failed to build BAM record for read " + mapping.read_name_);
+  }
+
+  int32_t nm_value = static_cast<int32_t>(mapping.NM_);
+  bam_aux_append(b, "NM", 'i', sizeof(int32_t), (const uint8_t *)&nm_value);
+  if (!mapping.MD_.empty()) {
+    bam_aux_append(b, "MD", 'Z', mapping.MD_.length() + 1,
+                   (const uint8_t *)mapping.MD_.c_str());
+  }
+  if (cell_barcode_length > 0) {
+    std::string cb =
+        barcode_translator.Translate(mapping.cell_barcode_, cell_barcode_length);
+    bam_aux_append(b, "CB", 'Z', cb.length() + 1, (const uint8_t *)cb.c_str());
+  }
+  if (!mapping_parameters.read_group_id.empty()) {
+    std::string rg_id = mapping_parameters.read_group_id;
+    if (rg_id == "auto") {
+      if (!mapping_parameters.read_file1_paths.empty()) {
+        rg_id = DeriveReadGroupFromFilenameImpl(
+            mapping_parameters.read_file1_paths[0]);
+      } else {
+        rg_id = "default";
+      }
+    }
+    bam_aux_append(b, "RG", 'Z', rg_id.length() + 1,
+                   (const uint8_t *)rg_id.c_str());
+  }
+
+  (void)reference;
+  return b;
+}
+
+}  // namespace
 
 #ifndef LEGACY_OVERFLOW
 // Static member definitions for thread-local and shared overflow handling
@@ -1071,6 +1209,7 @@ template void MappingWriter<MappingWithBarcode>::CloseThreadOverflowWriter();
 template void MappingWriter<MappingWithoutBarcode>::CloseThreadOverflowWriter();
 template void MappingWriter<PairedEndMappingWithBarcode>::CloseThreadOverflowWriter();
 template void MappingWriter<PairedEndMappingWithoutBarcode>::CloseThreadOverflowWriter();
+template void MappingWriter<PairedEndAtacDualMapping>::CloseThreadOverflowWriter();
 
 // Add explicit instantiation for RotateThreadOverflowWriter
 template void MappingWriter<SAMMapping>::RotateThreadOverflowWriter();
@@ -1081,6 +1220,19 @@ template void MappingWriter<MappingWithBarcode>::RotateThreadOverflowWriter();
 template void MappingWriter<MappingWithoutBarcode>::RotateThreadOverflowWriter();
 template void MappingWriter<PairedEndMappingWithBarcode>::RotateThreadOverflowWriter();
 template void MappingWriter<PairedEndMappingWithoutBarcode>::RotateThreadOverflowWriter();
+template void MappingWriter<PairedEndAtacDualMapping>::RotateThreadOverflowWriter();
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::OutputTempMappingsToOverflow(
+    uint32_t num_reference_sequences,
+    std::vector<std::vector<PairedEndAtacDualMapping>>
+        &mappings_on_diff_ref_seqs) {}
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
+    uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
+    const SequenceBatch &reference,
+    const khash_t(k64_seq) *barcode_whitelist_lookup_table) {}
 
 #endif  // LEGACY_OVERFLOW
 
@@ -1334,27 +1486,7 @@ void MappingWriter<SAMMapping>::CloseYFilterStreams() {
 template <>
 std::string MappingWriter<SAMMapping>::DeriveReadGroupFromFilename(
     const std::string &filename) {
-  // Extract sample name from filename (e.g., "sample1_R1.fastq.gz" -> "sample1")
-  size_t last_slash = filename.find_last_of("/\\");
-  std::string basename = (last_slash == std::string::npos) ? filename : filename.substr(last_slash + 1);
-  
-  // Remove common suffixes
-  std::vector<std::string> suffixes = {".fastq.gz", ".fq.gz", ".fastq", ".fq", ".gz"};
-  for (const auto &suffix : suffixes) {
-    if (basename.length() >= suffix.length() &&
-        basename.substr(basename.length() - suffix.length()) == suffix) {
-      basename = basename.substr(0, basename.length() - suffix.length());
-      break;
-    }
-  }
-  
-  // Remove _R1/_R2 suffix
-  size_t r_pos = basename.find("_R");
-  if (r_pos != std::string::npos) {
-    basename = basename.substr(0, r_pos);
-  }
-  
-  return basename.empty() ? "default" : basename;
+  return DeriveReadGroupFromFilenameImpl(filename);
 }
 
 template <>
@@ -1384,7 +1516,8 @@ void MappingWriter<SAMMapping>::BuildHtsHeader(uint32_t num_ref_seqs,
     std::string rg_id = mapping_parameters_.read_group_id;
     if (rg_id == "auto") {
       if (!mapping_parameters_.read_file1_paths.empty()) {
-        rg_id = DeriveReadGroupFromFilename(mapping_parameters_.read_file1_paths[0]);
+        rg_id = DeriveReadGroupFromFilenameImpl(
+            mapping_parameters_.read_file1_paths[0]);
       } else {
         rg_id = "default";
       }
@@ -1476,204 +1609,470 @@ template <>
 bam1_t* MappingWriter<SAMMapping>::ConvertToHtsBam(uint32_t rid,
                                                     const SequenceBatch &reference,
                                                     const SAMMapping &mapping) {
-  bam1_t *b = bam_init1();
-  if (!b) {
-    ExitWithMessage("Failed to allocate bam1_t");
-  }
-  
-  // Handle unmapped reads
-  if (mapping.flag_ & BAM_FUNMAP) {
-    b->core.tid = -1;
-    b->core.pos = -1;
-    b->core.qual = 0;
-  } else {
-    b->core.tid = rid;
-    b->core.pos = mapping.pos_;  // already 0-based
-    b->core.qual = mapping.mapq_;
-  }
-  
-  // Handle unmapped mate
-  if (mapping.mrid_ < 0 || (mapping.flag_ & BAM_FMUNMAP)) {
-    b->core.mtid = -1;
-    b->core.mpos = -1;
-  } else {
-    b->core.mtid = mapping.mrid_;
-    b->core.mpos = mapping.mpos_;  // already 0-based
-  }
-  
-  b->core.flag = mapping.flag_;
-  b->core.isize = mapping.tlen_;
-  b->core.n_cigar = (mapping.flag_ & BAM_FUNMAP) ? 0 : mapping.n_cigar_;
-  
-  // Set l_qname to actual length (including NUL), NOT padded length
-  // BAM spec: l_qname is the length of the read name including trailing NUL
-  b->core.l_qname = mapping.read_name_.length() + 1;  // Actual length including NUL
-  
-  // Set l_qseq: for unmapped reads with empty sequence, use 0
-  // Otherwise use actual sequence length
-  if ((mapping.flag_ & BAM_FUNMAP) && mapping.sequence_.empty()) {
-    b->core.l_qseq = 0;
-  } else {
-    b->core.l_qseq = mapping.sequence_.length();
-  }
-  
-  // Set bin for mapped reads (required for indexing)
-  // BAM uses binning scheme with min_shift=14, n_lvls=5
-  if (!(mapping.flag_ & BAM_FUNMAP)) {
-    // Calculate end position: pos + alignment length on reference
-    int32_t end = mapping.pos_ + mapping.GetAlignmentLength();
-    // Ensure non-empty interval: hts_reg2bin requires end > pos
-    if (end <= mapping.pos_) {
-      end = mapping.pos_ + 1;
+  return BuildBamRecordFromSamMappingFields(
+      mapping_parameters_, cell_barcode_length_, barcode_translator_, rid,
+      reference, mapping);
+}
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::OutputHeader(
+    uint32_t num_reference_sequences, const SequenceBatch &reference) {
+  if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM ||
+      mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM) {
+    if (!hts_out_) {
+      OpenHtsOutput();
     }
-    b->core.bin = hts_reg2bin(mapping.pos_, end, 14, 5);
-  } else {
-    b->core.bin = 0;  // Unmapped reads have bin = 0
-  }
-  
-  // Calculate total data length (NO padding on qname - BAM expects CIGAR immediately after l_qname)
-  int data_len = b->core.l_qname +                      // read name (no padding)
-                 b->core.n_cigar * 4 +                   // CIGAR (4 bytes per op)
-                 (b->core.l_qseq + 1) / 2 +              // sequence (4-bit packed, 2 bases per byte)
-                 b->core.l_qseq;                         // qualities (1 byte per base)
-  
-  // Allocate data buffer
-  if (static_cast<int>(b->m_data) < data_len) {
-    b->data = (uint8_t*)realloc(b->data, data_len);
-    if (!b->data) {
-      bam_destroy1(b);
-      ExitWithMessage("Failed to allocate bam1_t data buffer");
-    }
-    b->m_data = data_len;
-  }
-  b->l_data = data_len;
-  
-  uint8_t *p = b->data;
-  
-  // Pack read name (null-terminated, NO padding - CIGAR follows immediately)
-  memcpy(p, mapping.read_name_.c_str(), mapping.read_name_.length() + 1);
-  p += b->core.l_qname;  // Advance by actual length (no padding)
-  
-  // Pack CIGAR
-  if (b->core.n_cigar > 0) {
-    memcpy(p, mapping.cigar_.data(), b->core.n_cigar * 4);
-    p += b->core.n_cigar * 4;
-    
-    // Sanity check: verify CIGAR consistency with sequence length
-    hts_pos_t qlen = bam_cigar2qlen(b->core.n_cigar, bam_get_cigar(b));
-    if (qlen != static_cast<hts_pos_t>(b->core.l_qseq)) {
-      std::cerr << "WARNING: CIGAR/sequence length mismatch for read "
-                << mapping.read_name_ << " at " << mapping.pos_
-                << ": CIGAR qlen=" << qlen << " vs l_qseq=" << b->core.l_qseq
-                << ". Writing as unmapped to avoid indexing issues.\n";
-      std::vector<uint8_t> raw_qual(mapping.sequence_.size(), 0xFF);
-      for (size_t qi = 0; qi < raw_qual.size(); ++qi) {
-        if (qi < mapping.sequence_qual_.size() &&
-            mapping.sequence_qual_[qi] >= 33) {
-          int qual_val = mapping.sequence_qual_[qi] - 33;
-          if (qual_val < 0) qual_val = 0;
-          if (qual_val > 93) qual_val = 93;
-          raw_qual[qi] = static_cast<uint8_t>(qual_val);
+    BuildHtsHeader(num_reference_sequences, reference);
+
+    if (noY_hts_out_ && hts_hdr_) {
+      if (sam_hdr_write(noY_hts_out_, hts_hdr_) < 0) {
+        ExitWithMessage("Failed to write header to noY BAM/CRAM output");
+      }
+      if (mapping_parameters_.write_index &&
+          mapping_parameters_.noY_output_path != "-" &&
+          mapping_parameters_.noY_output_path != "/dev/stdout" &&
+          mapping_parameters_.noY_output_path != "/dev/stderr") {
+        this->noY_index_path_ = mapping_parameters_.noY_output_path;
+        if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM) {
+          this->noY_index_path_ += ".bai";
+        } else if (mapping_parameters_.mapping_output_format ==
+                   MAPPINGFORMAT_CRAM) {
+          this->noY_index_path_ += ".crai";
+        }
+        int min_shift = 0;
+        if (sam_idx_init(noY_hts_out_, hts_hdr_, min_shift,
+                         this->noY_index_path_.c_str()) < 0) {
+          ExitWithMessage("Failed to initialize index for noY BAM/CRAM output");
         }
       }
-      const char *seq_ptr = mapping.sequence_.empty() ? nullptr : mapping.sequence_.c_str();
-      const char *qual_ptr =
-          raw_qual.empty() ? nullptr : reinterpret_cast<const char*>(raw_qual.data());
-      uint16_t unmapped_flag =
-          static_cast<uint16_t>(mapping.flag_ | BAM_FUNMAP | BAM_FMUNMAP);
-      if (bam_set1(b,
-                   mapping.read_name_.length(), mapping.read_name_.c_str(),
-                   unmapped_flag, -1, -1, 0,
-                   0, nullptr,
-                   -1, -1, 0,
-                   mapping.sequence_.size(), seq_ptr, qual_ptr,
-                   0) < 0) {
+    }
+    if (Y_hts_out_ && hts_hdr_) {
+      if (sam_hdr_write(Y_hts_out_, hts_hdr_) < 0) {
+        ExitWithMessage("Failed to write header to Y BAM/CRAM output");
+      }
+      if (mapping_parameters_.write_index &&
+          mapping_parameters_.Y_output_path != "-" &&
+          mapping_parameters_.Y_output_path != "/dev/stdout" &&
+          mapping_parameters_.Y_output_path != "/dev/stderr") {
+        this->Y_index_path_ = mapping_parameters_.Y_output_path;
+        if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM) {
+          this->Y_index_path_ += ".bai";
+        } else if (mapping_parameters_.mapping_output_format ==
+                   MAPPINGFORMAT_CRAM) {
+          this->Y_index_path_ += ".crai";
+        }
+        int min_shift = 0;
+        if (sam_idx_init(Y_hts_out_, hts_hdr_, min_shift,
+                         this->Y_index_path_.c_str()) < 0) {
+          ExitWithMessage("Failed to initialize index for Y BAM/CRAM output");
+        }
+      }
+    }
+  }
+}
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::AppendMapping(
+    uint32_t rid, const SequenceBatch &reference,
+    const PairedEndAtacDualMapping &mapping) {
+  const PairedEndMappingWithBarcode &frag = mapping;
+  const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
+  uint32_t mapping_end_position = frag.GetEndPosition();
+  AppendAtacFragmentOutput(
+      std::string(reference_sequence_name) + "\t" +
+      std::to_string(frag.GetStartPosition()) + "\t" +
+      std::to_string(mapping_end_position) + "\t" +
+      barcode_translator_.Translate(frag.cell_barcode_, cell_barcode_length_) +
+      "\t" + std::to_string(frag.num_dups_) + "\n");
+
+  auto write_sam = [&](const SAMMapping &m) {
+    bam1_t *b =
+        BuildBamRecordFromSamMappingFields(
+            mapping_parameters_, cell_barcode_length_, barcode_translator_, rid,
+            reference, m);
+    if (mapping_parameters_.sort_bam && bam_sorter_) {
+      bool hasY =
+          reads_with_y_hit_ && reads_with_y_hit_->count(m.read_id_) > 0;
+      bam_sorter_->addRecord(b, m.read_id_, hasY);
+      bam_destroy1(b);
+    } else {
+      if (sam_write1(hts_out_, hts_hdr_, b) < 0) {
         bam_destroy1(b);
-        ExitWithMessage("Failed to rebuild BAM record after CIGAR/sequence mismatch");
+        ExitWithMessage("Failed to write BAM/CRAM record");
       }
-      // Re-add aux tags (RG, CB) for unmapped fallback record
-      // These are important for downstream analysis even if read is unmapped
-      if (cell_barcode_length_ > 0) {
-        std::string cb = barcode_translator_.Translate(mapping.cell_barcode_, cell_barcode_length_);
-        bam_aux_append(b, "CB", 'Z', cb.length() + 1, (const uint8_t*)cb.c_str());
-      }
-      if (!mapping_parameters_.read_group_id.empty()) {
-        std::string rg_id = mapping_parameters_.read_group_id;
-        if (rg_id == "auto") {
-          if (!mapping_parameters_.read_file1_paths.empty()) {
-            rg_id = DeriveReadGroupFromFilename(mapping_parameters_.read_file1_paths[0]);
-          } else {
-            rg_id = "default";
+      if (reads_with_y_hit_ && (noY_hts_out_ || Y_hts_out_)) {
+        bool is_y_hit = reads_with_y_hit_->count(m.read_id_) > 0;
+        if (Y_hts_out_ && is_y_hit) {
+          if (sam_write1(Y_hts_out_, hts_hdr_, b) < 0) {
+            bam_destroy1(b);
+            ExitWithMessage("Failed to write BAM/CRAM record to Y stream");
           }
         }
-        bam_aux_append(b, "RG", 'Z', rg_id.length() + 1, (const uint8_t*)rg_id.c_str());
+        if (noY_hts_out_ && !is_y_hit) {
+          if (sam_write1(noY_hts_out_, hts_hdr_, b) < 0) {
+            bam_destroy1(b);
+            ExitWithMessage("Failed to write BAM/CRAM record to noY stream");
+          }
+        }
       }
-      return b;
-    }
-  }
-  
-  // Pack sequence (4-bit encoding)
-  // Helper function to convert base to 4-bit encoding (A=1, C=2, G=4, T=8, N=15)
-  auto base_to_nt16 = [](char c) -> uint8_t {
-    switch (c) {
-      case 'A': case 'a': return 1;
-      case 'C': case 'c': return 2;
-      case 'G': case 'g': return 4;
-      case 'T': case 't': return 8;
-      case 'N': case 'n': return 15;
-      default: return 15;  // Unknown bases as N
+      bam_destroy1(b);
     }
   };
-  for (int i = 0; i < b->core.l_qseq; i += 2) {
-    uint8_t base1 = base_to_nt16(mapping.sequence_[i]);
-    uint8_t base2 = (i + 1 < b->core.l_qseq) ? base_to_nt16(mapping.sequence_[i+1]) : 0;
-    *p++ = (base1 << 4) | base2;
-  }
-  
-  // Pack qualities (convert from ASCII Phred+33 to raw Phred)
-  // Handle missing or short quality strings (e.g., FASTA input)
-  // Clamp to valid range [0, 93] to prevent underflow/overflow
-  for (int i = 0; i < b->core.l_qseq; ++i) {
-    uint8_t raw_qual;
-    if (i < static_cast<int>(mapping.sequence_qual_.size()) && 
-        mapping.sequence_qual_[i] >= 33) {
-      // Valid quality character: convert from ASCII Phred+33 to raw Phred
-      int qual_val = mapping.sequence_qual_[i] - 33;
-      // Clamp to valid Phred range [0, 93]
-      if (qual_val < 0) qual_val = 0;
-      if (qual_val > 93) qual_val = 93;
-      raw_qual = static_cast<uint8_t>(qual_val);
-    } else {
-      // Missing quality: use 0xFF (BAM missing quality indicator)
-      raw_qual = 0xFF;
+  write_sam(mapping.sam1);
+  write_sam(mapping.sam2);
+}
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::OutputTempMapping(
+    const std::string &temp_mapping_output_file_path,
+    uint32_t num_reference_sequences,
+    const std::vector<std::vector<PairedEndAtacDualMapping>> &mappings) {
+  FILE *temp_mapping_output_file =
+      fopen(temp_mapping_output_file_path.c_str(), "wb");
+  assert(temp_mapping_output_file != NULL);
+  for (size_t ri = 0; ri < num_reference_sequences; ++ri) {
+    size_t num_mappings = mappings[ri].size();
+    fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file);
+    if (mappings[ri].size() > 0) {
+      for (size_t mi = 0; mi < num_mappings; ++mi) {
+        mappings[ri][mi].WriteToFile(temp_mapping_output_file);
+      }
     }
-    *p++ = raw_qual;
   }
-  
-  // Append aux tags
-  // NM_ is a bit-field, so copy to a variable before taking address
-  int32_t nm_value = static_cast<int32_t>(mapping.NM_);
-  bam_aux_append(b, "NM", 'i', sizeof(int32_t), (const uint8_t*)&nm_value);
-  if (!mapping.MD_.empty()) {
-    bam_aux_append(b, "MD", 'Z', mapping.MD_.length() + 1, (const uint8_t*)mapping.MD_.c_str());
+  fclose(temp_mapping_output_file);
+}
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::OpenHtsOutput() {
+  if (mapping_parameters_.mapping_output_format != MAPPINGFORMAT_BAM &&
+      mapping_parameters_.mapping_output_format != MAPPINGFORMAT_CRAM) {
+    return;
   }
-  if (cell_barcode_length_ > 0) {
-    std::string cb = barcode_translator_.Translate(mapping.cell_barcode_, cell_barcode_length_);
-    bam_aux_append(b, "CB", 'Z', cb.length() + 1, (const uint8_t*)cb.c_str());
+
+  const char *output_path = mapping_parameters_.mapping_output_file_path.c_str();
+  const char *hts_mode =
+      (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM) ? "wb"
+                                                                       : "wc";
+
+  hts_out_ = sam_open(output_path, hts_mode);
+  if (!hts_out_) {
+    ExitWithMessage("Failed to open BAM/CRAM output file: " +
+                    mapping_parameters_.mapping_output_file_path);
   }
+
+  int effective_hts_threads = mapping_parameters_.hts_threads;
+  if (effective_hts_threads == 0) {
+    effective_hts_threads = std::min(mapping_parameters_.num_threads, 4);
+  }
+  hts_set_threads(hts_out_, effective_hts_threads);
+
+  if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM &&
+      !mapping_parameters_.reference_file_path.empty()) {
+    int ret = hts_set_fai_filename(hts_out_,
+                                   mapping_parameters_.reference_file_path.c_str());
+    if (ret != 0) {
+      ExitWithMessage("Failed to set CRAM reference file: " +
+                      mapping_parameters_.reference_file_path);
+    }
+  }
+}
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::FinalizeSortedOutput() {
+  if (!bam_sorter_) return;
+
+  bam_sorter_->finalize();
+
+  bam1_t *b;
+  bool hasY;
+
+  while (bam_sorter_->nextRecord(&b, &hasY)) {
+    if (sam_write1(hts_out_, hts_hdr_, b) < 0) {
+      ExitWithMessage("Failed to write sorted BAM/CRAM record");
+    }
+    if (hasY && Y_hts_out_) {
+      if (sam_write1(Y_hts_out_, hts_hdr_, b) < 0) {
+        ExitWithMessage("Failed to write sorted BAM/CRAM record to Y stream");
+      }
+    }
+    if (!hasY && noY_hts_out_) {
+      if (sam_write1(noY_hts_out_, hts_hdr_, b) < 0) {
+        ExitWithMessage(
+            "Failed to write sorted BAM/CRAM record to noY stream");
+      }
+    }
+  }
+
+  bam_sorter_.reset();
+}
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::CloseHtsOutput() {
+  if (bam_sorter_) {
+    FinalizeSortedOutput();
+  }
+
+  if (hts_out_) {
+    if (mapping_parameters_.write_index &&
+        mapping_parameters_.mapping_output_file_path != "-" &&
+        mapping_parameters_.mapping_output_file_path != "/dev/stdout" &&
+        mapping_parameters_.mapping_output_file_path != "/dev/stderr") {
+      if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM) {
+        int ret = sam_idx_save(hts_out_);
+        if (ret < 0) {
+          std::cerr << "Warning: Failed to save BAM index (error code: " << ret
+                    << ")\n";
+        }
+      }
+    }
+    sam_close(hts_out_);
+    hts_out_ = nullptr;
+  }
+  if (hts_hdr_) {
+    bam_hdr_destroy(hts_hdr_);
+    hts_hdr_ = nullptr;
+  }
+  if (noY_hts_out_) {
+    if (mapping_parameters_.write_index &&
+        mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM &&
+        mapping_parameters_.noY_output_path != "-" &&
+        mapping_parameters_.noY_output_path != "/dev/stdout" &&
+        mapping_parameters_.noY_output_path != "/dev/stderr") {
+      int ret = sam_idx_save(noY_hts_out_);
+      (void)ret;
+    }
+    sam_close(noY_hts_out_);
+    noY_hts_out_ = nullptr;
+  }
+  if (Y_hts_out_) {
+    if (mapping_parameters_.write_index &&
+        mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM &&
+        mapping_parameters_.Y_output_path != "-" &&
+        mapping_parameters_.Y_output_path != "/dev/stdout" &&
+        mapping_parameters_.Y_output_path != "/dev/stderr") {
+      int ret = sam_idx_save(Y_hts_out_);
+      (void)ret;
+    }
+    sam_close(Y_hts_out_);
+    Y_hts_out_ = nullptr;
+  }
+}
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::OpenYFilterStreams() {
+  if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM ||
+      mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM) {
+    const char *hts_mode =
+        (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM) ? "wb"
+                                                                         : "wc";
+    int effective_hts_threads = mapping_parameters_.hts_threads;
+    if (effective_hts_threads == 0) {
+      effective_hts_threads = std::min(mapping_parameters_.num_threads, 4);
+    }
+
+    if (mapping_parameters_.emit_noY_stream && !noY_hts_out_) {
+      noY_hts_out_ =
+          sam_open(mapping_parameters_.noY_output_path.c_str(), hts_mode);
+      if (!noY_hts_out_) {
+        ExitWithMessage("Failed to open noY BAM/CRAM output file: " +
+                        mapping_parameters_.noY_output_path);
+      }
+      hts_set_threads(noY_hts_out_, effective_hts_threads);
+      if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM &&
+          !mapping_parameters_.reference_file_path.empty()) {
+        int ret = hts_set_fai_filename(
+            noY_hts_out_, mapping_parameters_.reference_file_path.c_str());
+        if (ret != 0) {
+          ExitWithMessage(
+              "Failed to set CRAM reference file for noY stream: " +
+              mapping_parameters_.reference_file_path);
+        }
+      }
+    }
+
+    if (mapping_parameters_.emit_Y_stream && !Y_hts_out_) {
+      Y_hts_out_ = sam_open(mapping_parameters_.Y_output_path.c_str(), hts_mode);
+      if (!Y_hts_out_) {
+        ExitWithMessage("Failed to open Y BAM/CRAM output file: " +
+                        mapping_parameters_.Y_output_path);
+      }
+      hts_set_threads(Y_hts_out_, effective_hts_threads);
+      if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM &&
+          !mapping_parameters_.reference_file_path.empty()) {
+        int ret = hts_set_fai_filename(
+            Y_hts_out_, mapping_parameters_.reference_file_path.c_str());
+        if (ret != 0) {
+          ExitWithMessage("Failed to set CRAM reference file for Y stream: " +
+                          mapping_parameters_.reference_file_path);
+        }
+      }
+    }
+  } else {
+    if (mapping_parameters_.emit_noY_stream && !noY_output_file_) {
+      noY_output_file_ =
+          fopen(mapping_parameters_.noY_output_path.c_str(), "w");
+      if (!noY_output_file_) {
+        ExitWithMessage("Failed to open noY output file: " +
+                        mapping_parameters_.noY_output_path);
+      }
+    }
+    if (mapping_parameters_.emit_Y_stream && !Y_output_file_) {
+      Y_output_file_ = fopen(mapping_parameters_.Y_output_path.c_str(), "w");
+      if (!Y_output_file_) {
+        ExitWithMessage("Failed to open Y output file: " +
+                        mapping_parameters_.Y_output_path);
+      }
+    }
+  }
+}
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::CloseYFilterStreams() {
+  if (noY_hts_out_) {
+    if (mapping_parameters_.write_index &&
+        mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM &&
+        mapping_parameters_.noY_output_path != "-" &&
+        mapping_parameters_.noY_output_path != "/dev/stdout" &&
+        mapping_parameters_.noY_output_path != "/dev/stderr") {
+      int ret = sam_idx_save(noY_hts_out_);
+      (void)ret;
+    }
+    sam_close(noY_hts_out_);
+    noY_hts_out_ = nullptr;
+  }
+  if (Y_hts_out_) {
+    if (mapping_parameters_.write_index &&
+        mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM &&
+        mapping_parameters_.Y_output_path != "-" &&
+        mapping_parameters_.Y_output_path != "/dev/stdout" &&
+        mapping_parameters_.Y_output_path != "/dev/stderr") {
+      int ret = sam_idx_save(Y_hts_out_);
+      (void)ret;
+    }
+    sam_close(Y_hts_out_);
+    Y_hts_out_ = nullptr;
+  }
+
+  if (noY_output_file_) {
+    fclose(noY_output_file_);
+    noY_output_file_ = nullptr;
+  }
+  if (Y_output_file_) {
+    fclose(Y_output_file_);
+    Y_output_file_ = nullptr;
+  }
+}
+
+template <>
+void MappingWriter<PairedEndAtacDualMapping>::BuildHtsHeader(
+    uint32_t num_ref_seqs, const SequenceBatch &reference) {
+  std::string header_text = "@HD\tVN:1.6";
+
+  if (mapping_parameters_.sort_bam) {
+    header_text += "\tSO:coordinate";
+  } else {
+    header_text += "\tSO:unknown";
+  }
+  header_text += "\n";
+
+  for (uint32_t rid = 0; rid < num_ref_seqs; ++rid) {
+    header_text += "@SQ\tSN:" + std::string(reference.GetSequenceNameAt(rid)) +
+                   "\tLN:" + std::to_string(reference.GetSequenceLengthAt(rid)) +
+                   "\n";
+  }
+
+  header_text +=
+      "@PG\tID:chromap\tPN:chromap\tVN:" + std::string(CHROMAP_VERSION) + "\n";
+
   if (!mapping_parameters_.read_group_id.empty()) {
     std::string rg_id = mapping_parameters_.read_group_id;
     if (rg_id == "auto") {
       if (!mapping_parameters_.read_file1_paths.empty()) {
-        rg_id = DeriveReadGroupFromFilename(mapping_parameters_.read_file1_paths[0]);
+        rg_id = DeriveReadGroupFromFilenameImpl(
+            mapping_parameters_.read_file1_paths[0]);
       } else {
         rg_id = "default";
       }
     }
-    bam_aux_append(b, "RG", 'Z', rg_id.length() + 1, (const uint8_t*)rg_id.c_str());
+    header_text += "@RG\tID:" + rg_id + "\tSM:" + rg_id + "\n";
   }
-  
-  return b;
+
+  hts_hdr_ = sam_hdr_parse(header_text.length(), header_text.c_str());
+  if (!hts_hdr_) {
+    ExitWithMessage("Failed to parse BAM/CRAM header");
+  }
+
+  if (sam_hdr_write(hts_out_, hts_hdr_) < 0) {
+    ExitWithMessage("Failed to write BAM/CRAM header");
+  }
+
+  if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM &&
+      !mapping_parameters_.reference_file_path.empty()) {
+    faidx_t *fai = fai_load3(mapping_parameters_.reference_file_path.c_str(),
+                             NULL, NULL, FAI_CREATE);
+    if (!fai) {
+      ExitWithMessage(
+          "Failed to load FASTA index for CRAM reference: " +
+          mapping_parameters_.reference_file_path +
+          ". Run: samtools faidx " + mapping_parameters_.reference_file_path);
+    }
+
+    std::vector<std::string> missing_contigs;
+    for (int i = 0; i < hts_hdr_->n_targets; ++i) {
+      const char *seq_name = hts_hdr_->target_name[i];
+      if (!faidx_has_seq(fai, seq_name)) {
+        missing_contigs.push_back(std::string(seq_name));
+      }
+    }
+
+    fai_destroy(fai);
+
+    if (!missing_contigs.empty()) {
+      std::string error_msg =
+          "CRAM reference file is missing " +
+          std::to_string(missing_contigs.size()) +
+          " contig(s) present in header:\n";
+      for (size_t j = 0; j < missing_contigs.size() && j < 10; ++j) {
+        error_msg += "  " + missing_contigs[j] + "\n";
+      }
+      if (missing_contigs.size() > 10) {
+        error_msg += "  ... and " +
+                     std::to_string(missing_contigs.size() - 10) + " more\n";
+      }
+      error_msg +=
+          "Ensure the reference FASTA matches the index used for mapping.";
+      ExitWithMessage(error_msg);
+    }
+  }
+
+  if (mapping_parameters_.write_index) {
+    this->hts_index_path_ = mapping_parameters_.mapping_output_file_path;
+    int min_shift = 0;
+    if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM) {
+      this->hts_index_path_ += ".bai";
+    } else if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM) {
+      this->hts_index_path_ += ".crai";
+    }
+    int ret =
+        sam_idx_init(hts_out_, hts_hdr_, min_shift, this->hts_index_path_.c_str());
+    if (ret < 0) {
+      ExitWithMessage("Failed to initialize BAM/CRAM index");
+    }
+  }
+
+  if (mapping_parameters_.sort_bam) {
+    std::string tmpDir = mapping_parameters_.temp_directory_path;
+    if (tmpDir.empty()) {
+      const char *env_tmp = std::getenv("TMPDIR");
+      if (env_tmp) {
+        tmpDir = env_tmp;
+      } else {
+        tmpDir = "/tmp";
+      }
+    }
+    bam_sorter_.reset(
+        new BamSorter(mapping_parameters_.sort_bam_ram_limit, tmpDir));
+  }
 }
 
 }  // namespace chromap
