@@ -23,6 +23,10 @@ runner_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(runner_cpp_source))
 exec=chromap
 libchromap=libchromap.a
 runner=chromap_lib_runner
+peak_caller=chromap_callpeaks
+peak_caller_cpp_source=peak_caller/fragment_input.cc peak_caller/binned_signal.cc \
+	peak_caller/call_peaks.cc peak_caller/peak_io.cc chromap_callpeaks.cc
+peak_caller_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(peak_caller_cpp_source))
 
 ifneq ($(asan),)
 	CXXFLAGS+=-fsanitize=address -g
@@ -33,10 +37,10 @@ ifneq ($(LEGACY_OVERFLOW),)
 	CXXFLAGS+=-DLEGACY_OVERFLOW
 endif
 
-all: dir $(exec) 
+all: dir $(exec) $(peak_caller)
 	
 dir:
-	mkdir -p $(objs_dir)
+	mkdir -p $(objs_dir) $(objs_dir)/peak_caller
 
 $(exec): $(core_objs) $(driver_objs)
 	$(CXX) $(CXXFLAGS) $(core_objs) $(driver_objs) -o $(exec) $(LDFLAGS)
@@ -46,13 +50,20 @@ $(libchromap): $(core_objs) $(libchromap_objs)
 
 $(runner): $(libchromap) $(runner_objs)
 	$(CXX) $(CXXFLAGS) $(runner_objs) $(libchromap) -o $(runner) $(LDFLAGS)
+
+$(peak_caller): $(peak_caller_objs)
+	$(CXX) $(CXXFLAGS) $(peak_caller_objs) -o $(peak_caller) $(LDFLAGS)
 	
 $(objs_dir)/%.o: $(src_dir)/%.cc
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -I$(src_dir) -c $< -o $@
 
-.PHONY: clean test-unit
+.PHONY: clean test-unit test-peak-100k
 clean:
-	-rm -rf $(exec) $(libchromap) $(runner) $(objs_dir)
+	-rm -rf $(exec) $(libchromap) $(runner) $(peak_caller) $(objs_dir)
+
+# 100K fragment peak-caller benchmark (set CHROMAP_100K_BENCH / FRAGMENTS_TSV_GZ; RUN_MACS3=0 skips MACS3)
+test-peak-100k: chromap_callpeaks
+	RUN_MACS3=0 ./tests/run_peak_caller_100k.sh
 
 # Unit test for Y-filtering
 test-unit: dir
