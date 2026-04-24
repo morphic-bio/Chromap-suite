@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Validation harness: internal fragment peak caller on the 100K multiome ATAC
 # fixture. Optional: MACS3 (coordination script) and ARC peak comparisons.
-# Next phase: direct Chromap/STAR integration is out of scope for this script.
+# Inputs must be a matched pair: use CHROMAP_PEAK_RUN_ROOT, or set both
+# FRAGMENTS_TSV_GZ and ATAC_BAM, or fragments only for internal-only (RUN_MACS3=0).
+# Do not mix independent auto-discovery of fragments and BAM. Prototype: tune
+# caller parameters / calibration before any Chromap/STAR integration.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,6 +12,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export LD_LIBRARY_PATH="${REPO_ROOT}/third_party/htslib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 BENCH_ROOT="${CHROMAP_100K_BENCH:-/mnt/pikachu/atac-seq/benchmarks/pbmc_unsorted_3k_100k}"
+# Parent directory of a Chromap dual output tree (contains dual/fragments.*).
+CHROMAP_PEAK_RUN_ROOT="${CHROMAP_PEAK_RUN_ROOT:-}"
 FRAGMENTS_TSV_GZ="${FRAGMENTS_TSV_GZ:-}"
 ATAC_BAM="${ATAC_BAM:-}"
 ARC_PEAKS_BED="${ARC_PEAKS_BED:-}"
@@ -17,31 +22,49 @@ MACS3_RUNNER="${MACS3_RUNNER:-/mnt/pikachu/multiomic-atac-scrna/scripts/run_macs
 # Set RUN_MACS3=0 to skip external MACS3 (faster; Jaccard columns stay NA).
 RUN_MACS3="${RUN_MACS3:-1}"
 
-discover_fragments() {
-  if [[ -n "${FRAGMENTS_TSV_GZ}" && -f "${FRAGMENTS_TSV_GZ}" ]]; then
-    printf '%s' "${FRAGMENTS_TSV_GZ}"
-    return 0
-  fi
-  if [[ -d "${BENCH_ROOT}" ]]; then
-    local f
-    f="$(find "${BENCH_ROOT}" \( -path '*/dual/fragments.tsv.gz' -o -path '*/fragments.tsv.gz' \) -type f 2>/dev/null | sort | head -1 || true)"
-    if [[ -n "${f}" && -f "${f}" ]]; then
-      printf '%s' "${f}"
+# Find atac_possorted_bam.bam under a run directory (same tree as dual/ output).
+bam_in_run_tree() {
+  local r=$1
+  find "$r" -maxdepth 5 -name 'atac_possorted_bam.bam' -type f 2>/dev/null | LC_ALL=C sort | head -1
+}
+
+# With CHROMAP_PEAK_RUN_ROOT: require dual/fragments.tsv.gz or dual/fragments.tsv
+resolve_fragments_in_run() {
+  local r=$1
+  local fr
+  for fr in "${r}/dual/fragments.tsv.gz" "${r}/dual/fragments.tsv"; do
+    if [[ -f "$fr" ]]; then
+      printf '%s' "$fr"
       return 0
     fi
-  fi
+  done
   return 1
 }
 
-discover_bam() {
-  if [[ -n "${ATAC_BAM}" && -f "${ATAC_BAM}" ]]; then
-    printf '%s' "${ATAC_BAM}"
-    return 0
-  fi
-  local b
-  b="$(find "${BENCH_ROOT}" -name 'atac_possorted_bam.bam' -type f 2>/dev/null | sort | head -1 || true)"
-  if [[ -n "${b}" && -f "${b}" ]]; then
-    printf '%s' "${b}"
+# Return first pair (fragments path, bam) under BENCH; BAM must live under the same run
+# root (parent of dual/) as the fragments file.
+discover_paired_bench() {
+  [[ -d "${BENCH_ROOT}" ]] || return 1
+  local f r b
+  while IFS= read -r f; do
+    r="$(cd "$(dirname "$f")/.." && pwd)"
+    b="$(bam_in_run_tree "$r")"
+    if [[ -n "$b" && -f "$b" ]]; then
+      echo "$f"
+      echo "$b"
+      return 0
+    fi
+  done < <(find "${BENCH_ROOT}" \( -path '*/dual/fragments.tsv.gz' -o -path '*/dual/fragments.tsv' \) -type f 2>/dev/null | LC_ALL=C sort)
+  return 1
+}
+
+# Internal-caller only: first dual/fragments* under BENCH (no BAM; use with RUN_MACS3=0).
+discover_frags_only_bench() {
+  [[ -d "${BENCH_ROOT}" ]] || return 1
+  local f
+  f="$(find "${BENCH_ROOT}" \( -path '*/dual/fragments.tsv.gz' -o -path '*/dual/fragments.tsv' \) -type f 2>/dev/null | LC_ALL=C sort | head -1 || true)"
+  if [[ -n "$f" && -f "$f" ]]; then
+    echo "$f"
     return 0
   fi
   return 1
@@ -114,15 +137,68 @@ main() {
   log_msg "[1] make chromap_callpeaks"
   (cd "${REPO_ROOT}" && make chromap_callpeaks) >> "${log}" 2>&1
 
-  if ! fr="$(discover_fragments)"; then
-    echo "Set FRAGMENTS_TSV_GZ or point CHROMAP_100K_BENCH to a directory containing fragments.tsv(.gz)" >&2
+  local fr bam
+  fr=""
+  bam=""
+  if [[ -n "${CHROMAP_PEAK_RUN_ROOT}" ]]; then
+    local r
+    r="$(cd "${CHROMAP_PEAK_RUN_ROOT}" && pwd)"
+    if ! fr="$(resolve_fragments_in_run "$r")"; then
+      echo "No dual/fragments.tsv(.gz) under CHROMAP_PEAK_RUN_ROOT=${r}" >&2
+      exit 1
+    fi
+    bam="$(bam_in_run_tree "$r")"
+    if [[ -n "$bam" && ! -f "$bam" ]]; then
+      bam=""
+    fi
+  elif [[ -n "${FRAGMENTS_TSV_GZ}" && -n "${ATAC_BAM}" ]]; then
+    fr="${FRAGMENTS_TSV_GZ}"
+    bam="${ATAC_BAM}"
+    [[ -f "$fr" ]] || {
+      echo "Missing FRAGMENTS_TSV_GZ: ${fr}" >&2
+      exit 1
+    }
+    [[ -f "$bam" ]] || {
+      echo "Missing ATAC_BAM: ${bam}" >&2
+      exit 1
+    }
+  elif [[ -n "${FRAGMENTS_TSV_GZ}" ]]; then
+    fr="${FRAGMENTS_TSV_GZ}"
+    [[ -f "$fr" ]] || {
+      echo "Missing FRAGMENTS_TSV_GZ: ${fr}" >&2
+      exit 1
+    }
+    bam=""
+  else
+    if pout="$(discover_paired_bench)"; then
+      fr="$(echo "${pout}" | sed -n '1p')"
+      bam="$(echo "${pout}" | sed -n '2p')"
+    elif [[ "${RUN_MACS3}" == "0" ]] && fr="$(discover_frags_only_bench)"; then
+      bam=""
+    else
+      cat >&2 <<EOF
+No fragment input. Set one of:
+  CHROMAP_PEAK_RUN_ROOT=/path/to/run  (directory containing dual/fragments.tsv[.gz]; BAM under same tree for MACS3)
+  FRAGMENTS_TSV_GZ=/path and ATAC_BAM=/path  (same run; required for MACS3)
+  FRAGMENTS_TSV_GZ=/path only  with RUN_MACS3=0
+Or set CHROMAP_100K_BENCH: auto uses first same-run pair (dual/fragments + atac_possorted_bam in that tree), or with RUN_MACS3=0 first dual/fragments only.
+BENCH_ROOT=${BENCH_ROOT}
+EOF
+      exit 1
+    fi
+  fi
+  if [[ "${RUN_MACS3}" != "0" && -z "${bam}" ]]; then
+    echo "MACS3 enabled but no atac BAM paired with fragments. Set CHROMAP_PEAK_RUN_ROOT with BAM, or FRAGMENTS_TSV_GZ and ATAC_BAM, or RUN_MACS3=0." >&2
     exit 1
   fi
+
   local caller="${REPO_ROOT}/chromap_callpeaks"
   local prefix="${OUTDIR}/internal"
   {
     echo "REPO_ROOT=${REPO_ROOT}"
+    echo "CHROMAP_PEAK_RUN_ROOT=${CHROMAP_PEAK_RUN_ROOT:-}"
     echo "FRAGMENTS_TSV_GZ=${fr}"
+    echo "ATAC_BAM=${bam:-}"
     echo "BENCH_ROOT=${BENCH_ROOT}"
   } >> "${log}"
 
@@ -158,8 +234,6 @@ main() {
 
   JMAC_DEF="NA"
   JMAC_ST="NA"
-  local bam
-  bam="$(discover_bam || true)"
   if [[ "${RUN_MACS3}" == "0" ]]; then
     log_msg "Skipping MACS3: RUN_MACS3=0"
   elif [[ -z "${bam}" || ! -f "${MACS3_RUNNER}" || ! -x "${MACS3_RUNNER}" ]]; then
@@ -220,7 +294,9 @@ main() {
     echo -e "frac_internal_peaks_with_any_arc_overlap\t${INT_FRA_ARC}"
   } | tee "${summary}"
   {
+    echo "CHROMAP_PEAK_RUN_ROOT=${CHROMAP_PEAK_RUN_ROOT:-}"
     echo "FRAGMENTS_TSV_GZ=${fr}"
+    echo "ATAC_BAM=${bam:-}"
     echo "internal_prefix=${prefix}"
     echo "make_target=chromap_callpeaks"
   } > "${OUTDIR}/commands.txt"

@@ -51,17 +51,21 @@ $(libchromap): $(core_objs) $(libchromap_objs)
 $(runner): $(libchromap) $(runner_objs)
 	$(CXX) $(CXXFLAGS) $(runner_objs) $(libchromap) -o $(runner) $(LDFLAGS)
 
-$(peak_caller): $(peak_caller_objs)
+$(peak_caller): $(peak_caller_objs) | dir
 	$(CXX) $(CXXFLAGS) $(peak_caller_objs) -o $(peak_caller) $(LDFLAGS)
 	
+# mkdir ensures objs/peak_caller/ (and any future subdir) exists when only
+# a subset of targets (e.g. make chromap_callpeaks) is built.
 $(objs_dir)/%.o: $(src_dir)/%.cc
+	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -I$(src_dir) -c $< -o $@
 
 .PHONY: clean test-unit test-peak-100k
 clean:
 	-rm -rf $(exec) $(libchromap) $(runner) $(peak_caller) $(objs_dir)
 
-# 100K fragment peak-caller benchmark (set CHROMAP_100K_BENCH / FRAGMENTS_TSV_GZ; RUN_MACS3=0 skips MACS3)
+# 100K fragment peak-caller benchmark. Pair inputs: CHROMAP_PEAK_RUN_ROOT, or
+# FRAGMENTS_TSV_GZ+ATAC_BAM, or same-run auto-pair under CHROMAP_100K_BENCH; RUN_MACS3=0 for internal only.
 test-peak-100k: chromap_callpeaks
 	RUN_MACS3=0 ./tests/run_peak_caller_100k.sh
 
