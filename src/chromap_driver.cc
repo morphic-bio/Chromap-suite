@@ -2,6 +2,8 @@
 
 #include <glob.h>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 
 #include <algorithm>
 #include <array>
@@ -10,9 +12,13 @@
 #include <regex>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "chromap.h"
 #include "cxxopts.hpp"
+#include "peak_caller/fragment_input.h"
+#include "peak_caller/frag_compact_store.h"
+#include "peak_caller/macs3_frag_peak_pipeline.h"
 
 namespace chromap {
 namespace {
@@ -192,6 +198,43 @@ void AddOutputOptions(cxxopts::Options &options) {
           "--low-mem.",
           cxxopts::value<std::string>(), "FILE");
   //("PAF", "Output mappings in PAF format (only for test)");
+}
+
+void AddMacs3FragPeakOptions(cxxopts::Options &options) {
+  options.add_options("MACS3 FRAG peaks (opt-in)")(
+      "call-macs3-frag-peaks",
+      "After mapping, run the validated MACS3-compatible FRAG narrowPeak pipeline on "
+      "the --atac-fragments file (C++ diagnostic path; slower than MACS3 on large "
+      "inputs; not default). Requires --atac-fragments plus output paths. "
+      "BED3/summit geometry matches MACS3 validation; narrowPeak qValue and "
+      "signalValue are not byte-for-byte MACS3 parity.",
+      cxxopts::value<bool>()->default_value("false")->implicit_value("true"))(
+      "macs3-frag-peaks-output", "narrowPeak path for --call-macs3-frag-peaks",
+      cxxopts::value<std::string>(), "FILE")(
+      "macs3-frag-summits-output", "Summits BED path for --call-macs3-frag-peaks",
+      cxxopts::value<std::string>(), "FILE")(
+      "macs3-frag-pvalue",
+      "Raw p-value gate like macs3 callpeak -p; bdgpeakcall cutoff = -log10(p) [1e-5]",
+      cxxopts::value<double>()->default_value("1e-5"), "FLT")(
+      "macs3-frag-min-length", "bdgpeakcall min length [200]",
+      cxxopts::value<int>()->default_value("200"), "INT")(
+      "macs3-frag-max-gap", "bdgpeakcall max gap [30]",
+      cxxopts::value<int>()->default_value("30"), "INT")(
+      "macs3-frag-no-uint8-counts",
+      "Disable uint8 pileup count coercion (breaks MACS3 pileup parity)",
+      cxxopts::value<bool>()->default_value("false")->implicit_value("true"))(
+      "macs3-frag-keep-intermediates",
+      "Keep treat_pileup, control_lambda, and ppois bedGraphs in this directory",
+      cxxopts::value<std::string>(), "DIR")(
+      "macs3-frag-peaks-source",
+      "Where the MACS3 FRAG pipeline gets fragment rows after mapping: file "
+      "(reread --atac-fragments; default) or memory (opt-in in-memory copy of the "
+      "same rows, no TSV reread; requires --call-macs3-frag-peaks and dual ATAC).",
+      cxxopts::value<std::string>()->default_value("file"), "file|memory")(
+      "macs3-frag-compact-min-count-bits",
+      "When using --macs3-frag-peaks-source memory, minimum high bits for duplicate "
+      "count in Compact64 packing (falls back to 12-byte wide rows if too small) [16]",
+      cxxopts::value<int>()->default_value("16"), "INT");
 }
 
 void AddDevelopmentOptions(cxxopts::Options &options) {
@@ -477,6 +520,50 @@ std::string DeriveFastqOutputPath(const std::string &input_path,
   return result;
 }
 
+void WriteMacs3FragPeakSidecar(
+    const std::string &summary_path, const std::string &fragments_path,
+    const std::string &narrow_path, const std::string &summits_path,
+    const std::string &temp_work_dir_used, const std::string &keep_intermediates,
+    double pvalue, int min_len, int max_gap, bool uint8_counts,
+    const std::string &fragments_source,
+    const std::string &memory_storage_mode_label) {
+  if (summary_path.empty()) {
+    return;
+  }
+  const std::string sidecar = summary_path + ".macs3_frag_peaks.tsv";
+  FILE *fp = std::fopen(sidecar.c_str(), "w");
+  if (fp == nullptr) {
+    return;
+  }
+  std::fprintf(fp, "# Opt-in MACS3-compatible FRAG peaks (same C++ path as chromap_callpeaks).\n");
+  std::fprintf(fp, "# Note: qValue and signalValue columns are not byte-for-byte MACS3 parity yet.\n");
+  std::fprintf(fp, "key\tvalue\n");
+  std::fprintf(fp, "fragments_file\t%s\n", fragments_path.c_str());
+  std::fprintf(fp, "fragments_source\t%s\n", fragments_source.c_str());
+  if (fragments_source == "memory" && !memory_storage_mode_label.empty()) {
+    std::fprintf(fp, "memory_storage_mode\t%s\n",
+                 memory_storage_mode_label.c_str());
+  }
+  std::fprintf(fp, "narrowpeak_out\t%s\n", narrow_path.c_str());
+  std::fprintf(fp, "summits_out\t%s\n", summits_path.c_str());
+  std::fprintf(fp, "macs3_frag_pvalue\t%.10g\n", pvalue);
+  std::fprintf(fp, "bdgpeakcall_cutoff_neg_log10_p\t%.10g\n",
+               static_cast<double>(
+                   chromap::peaks::BdgPeakCallCutoffFromPValue(pvalue)));
+  std::fprintf(fp, "macs3_frag_min_length\t%d\n", min_len);
+  std::fprintf(fp, "macs3_frag_max_gap\t%d\n", max_gap);
+  std::fprintf(fp, "macs3_uint8_counts\t%d\n", uint8_counts ? 1 : 0);
+  std::fprintf(fp, "effective_genome_size\t%lld\n",
+               static_cast<long long>(2913022398LL));
+  std::fprintf(fp, "llocal_bp\t%d\n", 10000);
+  if (!keep_intermediates.empty()) {
+    std::fprintf(fp, "keep_intermediates_dir\t%s\n", keep_intermediates.c_str());
+  } else if (!temp_work_dir_used.empty()) {
+    std::fprintf(fp, "temp_work_dir_removed\t%s\n", temp_work_dir_used.c_str());
+  }
+  std::fclose(fp);
+}
+
 }  // namespace
 
 void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
@@ -493,13 +580,15 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
 
   AddInputOptions(options);
   AddOutputOptions(options);
+  AddMacs3FragPeakOptions(options);
 
   AddDevelopmentOptions(options);
 
   auto result = options.parse(argc, argv);
   if (result.count("h")) {
     std::cerr << options.help(
-        {"", "Indexing", "Mapping", "Peak", "Input", "Output"});
+        {"", "Indexing", "Mapping", "Peak", "Input", "Output",
+         "MACS3 FRAG peaks (opt-in)"});
     return;
   }
   if (result.count("v")) {
@@ -868,6 +957,43 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
           result["atac-fragments"].as<std::string>();
     }
 
+    if (result.count("call-macs3-frag-peaks")) {
+      mapping_parameters.call_macs3_frag_peaks =
+          result["call-macs3-frag-peaks"].as<bool>();
+    }
+    if (result.count("macs3-frag-peaks-output")) {
+      mapping_parameters.macs3_frag_peaks_narrowpeak_path =
+          result["macs3-frag-peaks-output"].as<std::string>();
+    }
+    if (result.count("macs3-frag-summits-output")) {
+      mapping_parameters.macs3_frag_peaks_summits_path =
+          result["macs3-frag-summits-output"].as<std::string>();
+    }
+    mapping_parameters.macs3_frag_pvalue = result["macs3-frag-pvalue"].as<double>();
+    mapping_parameters.macs3_frag_min_length =
+        result["macs3-frag-min-length"].as<int>();
+    mapping_parameters.macs3_frag_max_gap = result["macs3-frag-max-gap"].as<int>();
+    if (result.count("macs3-frag-no-uint8-counts")) {
+      mapping_parameters.macs3_frag_uint8_counts = false;
+    }
+    if (result.count("macs3-frag-keep-intermediates")) {
+      mapping_parameters.macs3_frag_keep_intermediates_dir =
+          result["macs3-frag-keep-intermediates"].as<std::string>();
+    }
+    {
+      const std::string src = result["macs3-frag-peaks-source"].as<std::string>();
+      if (src == "file") {
+        mapping_parameters.macs3_frag_peaks_source = Macs3FragPeaksSource::kFile;
+      } else if (src == "memory") {
+        mapping_parameters.macs3_frag_peaks_source = Macs3FragPeaksSource::kMemory;
+      } else {
+        chromap::ExitWithMessage(
+            "--macs3-frag-peaks-source must be \"file\" or \"memory\"");
+      }
+    }
+    mapping_parameters.macs3_frag_compact_min_count_bits =
+        result["macs3-frag-compact-min-count-bits"].as<int>();
+
     if (result.count("skip-barcode-check")) {
       mapping_parameters.skip_barcode_check = true;
     }
@@ -958,7 +1084,46 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
             "--atac-fragments path must differ from -o/--output");
       }
     }
-    
+
+    if (mapping_parameters.call_macs3_frag_peaks) {
+      if (!mapping_parameters.AtacDualFragmentAndBam()) {
+        chromap::ExitWithMessage(
+            "--call-macs3-frag-peaks requires paired-end barcoded reads, --BAM or "
+            "--CRAM, and --atac-fragments (same constraints as dual ATAC output)");
+      }
+      if (mapping_parameters.macs3_frag_peaks_narrowpeak_path.empty() ||
+          mapping_parameters.macs3_frag_peaks_summits_path.empty()) {
+        chromap::ExitWithMessage(
+            "--call-macs3-frag-peaks requires --macs3-frag-peaks-output and "
+            "--macs3-frag-summits-output");
+      }
+      if (mapping_parameters.macs3_frag_pvalue <= 0.0 ||
+          mapping_parameters.macs3_frag_pvalue > 1.0) {
+        chromap::ExitWithMessage(
+            "--macs3-frag-pvalue must be in (0, 1] (macs3 callpeak -p semantics)");
+      }
+      if (chromap::peaks::BdgPeakCallCutoffFromPValue(
+              mapping_parameters.macs3_frag_pvalue) <= 0.f) {
+        chromap::ExitWithMessage("Invalid --macs3-frag-pvalue for bdgpeakcall cutoff");
+      }
+      if (mapping_parameters.macs3_frag_min_length < 1 ||
+          mapping_parameters.macs3_frag_max_gap < 0) {
+        chromap::ExitWithMessage(
+            "Invalid --macs3-frag-min-length or --macs3-frag-max-gap");
+      }
+    }
+    if (mapping_parameters.macs3_frag_compact_min_count_bits < 1 ||
+        mapping_parameters.macs3_frag_compact_min_count_bits > 31) {
+      chromap::ExitWithMessage(
+          "--macs3-frag-compact-min-count-bits must be in [1, 31]");
+    }
+    if (mapping_parameters.macs3_frag_peaks_source ==
+            Macs3FragPeaksSource::kMemory &&
+        !mapping_parameters.call_macs3_frag_peaks) {
+      chromap::ExitWithMessage(
+          "--macs3-frag-peaks-source memory requires --call-macs3-frag-peaks");
+    }
+
     // Derive or set explicit paths
     if (mapping_parameters.emit_noY_stream) {
       if (result.count("noY-output")) {
@@ -1309,6 +1474,12 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
                 << mapping_parameters.matrix_output_prefix << "\n";
     }
 
+    if (mapping_parameters.call_macs3_frag_peaks &&
+        mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
+      mapping_parameters.macs3_frag_workspace =
+          std::make_shared<peaks::Macs3FragPeakWorkspace>();
+    }
+
     chromap::Chromap chromap_for_mapping(mapping_parameters);
 
     if (result.count("2") == 0) {
@@ -1377,9 +1548,78 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
           break;
       }
     }
+
+    if (mapping_parameters.call_macs3_frag_peaks) {
+      std::string fragments_source = "file";
+      std::string mem_mode;
+      if (mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
+        std::cerr << "MACS3-compatible FRAG peak calling (opt-in): in-memory "
+                     "fragment rows (--macs3-frag-peaks-source memory)\n";
+        fragments_source = "memory";
+        mem_mode = "workspace_events";
+        std::cerr << "MACS3 FRAG memory storage mode: " << mem_mode << "\n";
+        std::cerr
+            << "(This C++ pipeline is slower than standalone MACS3 on large inputs.)\n";
+      } else {
+        std::cerr
+            << "MACS3-compatible FRAG peak calling (opt-in): reading fragments from "
+            << mapping_parameters.atac_fragment_output_file_path
+            << "\n(This C++ pipeline is slower than standalone MACS3 on large inputs.)\n";
+      }
+      std::vector<chromap::peaks::ChromFragments> chs;
+      if (mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
+        if (!mapping_parameters.macs3_frag_workspace) {
+          chromap::ExitWithMessage("MACS3 FRAG peaks (memory source): missing workspace");
+        }
+      } else {
+        if (!chromap::peaks::LoadFragmentsFromTsv(
+                mapping_parameters.atac_fragment_output_file_path, &chs)) {
+          chromap::ExitWithMessage(
+              "MACS3 FRAG peaks: failed to read fragments file " +
+              mapping_parameters.atac_fragment_output_file_path);
+        }
+      }
+      chromap::peaks::Macs3FragPeakPipelineParams pr;
+      pr.bdgpeakcall_cutoff = chromap::peaks::BdgPeakCallCutoffFromPValue(
+          mapping_parameters.macs3_frag_pvalue);
+      pr.min_length = mapping_parameters.macs3_frag_min_length;
+      pr.max_gap = mapping_parameters.macs3_frag_max_gap;
+      pr.macs3_uint8_counts = mapping_parameters.macs3_frag_uint8_counts;
+      std::string err;
+      std::string work_used;
+      const std::string &keep = mapping_parameters.macs3_frag_keep_intermediates_dir;
+      const std::string parent = mapping_parameters.temp_directory_path;
+      if (mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
+        if (!chromap::peaks::RunMacs3FragPeakPipelineFromWorkspace(
+                mapping_parameters.macs3_frag_workspace.get(), pr,
+                chromap::peaks::Macs3FragPeakPipelinePaths(),
+                mapping_parameters.macs3_frag_peaks_narrowpeak_path,
+                mapping_parameters.macs3_frag_peaks_summits_path, keep, parent,
+                &work_used, &err)) {
+          chromap::ExitWithMessage("MACS3 FRAG peaks: " + err);
+        }
+      } else {
+        if (!chromap::peaks::RunMacs3FragPeakPipelineFromFragments(
+                chs, pr, chromap::peaks::Macs3FragPeakPipelinePaths(),
+                mapping_parameters.macs3_frag_peaks_narrowpeak_path,
+                mapping_parameters.macs3_frag_peaks_summits_path, keep, parent,
+                &work_used, &err, nullptr)) {
+          chromap::ExitWithMessage("MACS3 FRAG peaks: " + err);
+        }
+      }
+      WriteMacs3FragPeakSidecar(
+          mapping_parameters.summary_metadata_file_path,
+          mapping_parameters.atac_fragment_output_file_path,
+          mapping_parameters.macs3_frag_peaks_narrowpeak_path,
+          mapping_parameters.macs3_frag_peaks_summits_path, work_used, keep,
+          mapping_parameters.macs3_frag_pvalue, mapping_parameters.macs3_frag_min_length,
+          mapping_parameters.macs3_frag_max_gap, mapping_parameters.macs3_frag_uint8_counts,
+          fragments_source, mem_mode);
+    }
   } else {
     std::cerr << options.help(
-        {"", "Indexing", "Mapping", "Peak", "Input", "Output"});
+        {"", "Indexing", "Mapping", "Peak", "Input", "Output",
+         "MACS3 FRAG peaks (opt-in)"});
   }
 }
 

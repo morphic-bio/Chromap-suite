@@ -12,135 +12,16 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export LD_LIBRARY_PATH="${REPO_ROOT}/third_party/htslib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 BENCH_ROOT="${CHROMAP_100K_BENCH:-/mnt/pikachu/atac-seq/benchmarks/pbmc_unsorted_3k_100k}"
-# Parent directory of a Chromap dual output tree (contains dual/fragments.*).
 CHROMAP_PEAK_RUN_ROOT="${CHROMAP_PEAK_RUN_ROOT:-}"
 FRAGMENTS_TSV_GZ="${FRAGMENTS_TSV_GZ:-}"
 ATAC_BAM="${ATAC_BAM:-}"
 ARC_PEAKS_BED="${ARC_PEAKS_BED:-}"
 OUTDIR="${OUTDIR:-}"
 MACS3_RUNNER="${MACS3_RUNNER:-/mnt/pikachu/multiomic-atac-scrna/scripts/run_macs3_peak_call_from_bam.sh}"
-# Set RUN_MACS3=0 to skip external MACS3 (faster; Jaccard columns stay NA).
 RUN_MACS3="${RUN_MACS3:-1}"
 
-# Find a BAM in the run tree paired with dual/fragments. Chromap dual output
-# uses dual/possorted_bam.bam (see tests/run_atac_dual_output_100k.sh); ARC/STAR
-# layouts often use atac_possorted_bam.bam under out/ or the run root.
-bam_in_run_tree() {
-  local r=$1
-  local p
-  for p in \
-    "${r}/dual/possorted_bam.bam" \
-    "${r}/dual/atac_possorted_bam.bam" \
-    "${r}/atac_possorted_bam.bam" \
-    "${r}/out/atac_possorted_bam.bam" \
-    "${r}/bam_only/possorted_bam.bam"; do
-    if [[ -f "$p" ]]; then
-      printf '%s' "$p"
-      return 0
-    fi
-  done
-  find "$r" -maxdepth 5 \
-    \( -name 'possorted_bam.bam' -o -name 'atac_possorted_bam.bam' \) -type f 2>/dev/null |
-    LC_ALL=C sort | head -1
-}
-
-# With CHROMAP_PEAK_RUN_ROOT: require dual/fragments.tsv.gz or dual/fragments.tsv
-resolve_fragments_in_run() {
-  local r=$1
-  local fr
-  for fr in "${r}/dual/fragments.tsv.gz" "${r}/dual/fragments.tsv"; do
-    if [[ -f "$fr" ]]; then
-      printf '%s' "$fr"
-      return 0
-    fi
-  done
-  return 1
-}
-
-# Return first pair (fragments path, bam) under BENCH; BAM must live under the same run
-# root (parent of dual/) as the fragments file.
-discover_paired_bench() {
-  [[ -d "${BENCH_ROOT}" ]] || return 1
-  local f r b
-  while IFS= read -r f; do
-    r="$(cd "$(dirname "$f")/.." && pwd)"
-    b="$(bam_in_run_tree "$r")"
-    if [[ -n "$b" && -f "$b" ]]; then
-      echo "$f"
-      echo "$b"
-      return 0
-    fi
-  done < <(find "${BENCH_ROOT}" \( -path '*/dual/fragments.tsv.gz' -o -path '*/dual/fragments.tsv' \) -type f 2>/dev/null | LC_ALL=C sort)
-  return 1
-}
-
-# Internal-caller only: first dual/fragments* under BENCH (no BAM; use with RUN_MACS3=0).
-discover_frags_only_bench() {
-  [[ -d "${BENCH_ROOT}" ]] || return 1
-  local f
-  f="$(find "${BENCH_ROOT}" \( -path '*/dual/fragments.tsv.gz' -o -path '*/dual/fragments.tsv' \) -type f 2>/dev/null | LC_ALL=C sort | head -1 || true)"
-  if [[ -n "$f" && -f "$f" ]]; then
-    echo "$f"
-    return 0
-  fi
-  return 1
-}
-
-discover_arc_peaks() {
-  if [[ -n "${ARC_PEAKS_BED}" && -f "${ARC_PEAKS_BED}" ]]; then
-    printf '%s' "${ARC_PEAKS_BED}"
-    return 0
-  fi
-  local p
-  p="${BENCH_ROOT}/pbmc_unsorted_3k_100k_arc/outs/atac_peaks.bed"
-  if [[ -f "${p}" ]]; then
-    printf '%s' "${p}"
-    return 0
-  fi
-  return 1
-}
-
-validate_bed3_sorted() {
-  local f=$1
-  local label=$2
-  [[ -f "${f}" ]] || { echo "Missing ${label}: ${f}" >&2; return 1; }
-  if [[ ! -s "${f}" ]]; then
-    echo "Empty BED: ${f}" >&2
-    return 1
-  fi
-  awk 'BEGIN{FS=OFS="\t"} !/^#/ && !/^track/ { if(NF<3) exit 2; s=$2+0; e=$3+0; if(s>=e) exit 3; print $1, s, e }' "${f}" > "${f}.3clean" || {
-    echo "Invalid intervals in ${label} (${f})" >&2
-    return 1
-  }
-  LC_ALL=C sort -c -k1,1 -k2,2n -k3,3n "${f}.3clean" 2>/dev/null || {
-    echo "Not sorted: ${f}" >&2
-    return 1
-  }
-  return 0
-}
-
-jaccard_bed3() {
-  local a=$1
-  local b=$2
-  if ! command -v bedtools &>/dev/null; then
-    echo "NA"
-    return 0
-  fi
-  bedtools sort -i "${a}" > "${a}.s" 2>/dev/null
-  bedtools sort -i "${b}" > "${b}.s" 2>/dev/null
-  bedtools jaccard -a "${a}.s" -b "${b}.s" 2>/dev/null | awk 'NR==2 {print $3}'
-}
-
-median_width() {
-  local f=$1
-  awk '{print $3-$2}' "${f}" | sort -n | awk '{
-    a[NR]=$0
-  } END {
-    if(NR==0) { print 0; exit }
-    if(NR%2) print a[(NR+1)/2]
-    else print (a[NR/2]+a[NR/2+1])/2
-  }'
-}
+# shellcheck source=peak_caller_100k_common.sh
+source "${SCRIPT_DIR}/peak_caller_100k_common.sh"
 
 main() {
   if [[ -z "${OUTDIR}" ]]; then
@@ -153,60 +34,12 @@ main() {
   log_msg "[1] make chromap_callpeaks"
   (cd "${REPO_ROOT}" && make chromap_callpeaks) >> "${log}" 2>&1
 
-  local fr bam
-  fr=""
-  bam=""
-  if [[ -n "${CHROMAP_PEAK_RUN_ROOT}" ]]; then
-    local r
-    r="$(cd "${CHROMAP_PEAK_RUN_ROOT}" && pwd)"
-    if ! fr="$(resolve_fragments_in_run "$r")"; then
-      echo "No dual/fragments.tsv(.gz) under CHROMAP_PEAK_RUN_ROOT=${r}" >&2
-      exit 1
-    fi
-    bam="$(bam_in_run_tree "$r")"
-    if [[ -n "$bam" && ! -f "$bam" ]]; then
-      bam=""
-    fi
-  elif [[ -n "${FRAGMENTS_TSV_GZ}" && -n "${ATAC_BAM}" ]]; then
-    fr="${FRAGMENTS_TSV_GZ}"
-    bam="${ATAC_BAM}"
-    [[ -f "$fr" ]] || {
-      echo "Missing FRAGMENTS_TSV_GZ: ${fr}" >&2
-      exit 1
-    }
-    [[ -f "$bam" ]] || {
-      echo "Missing ATAC_BAM: ${bam}" >&2
-      exit 1
-    }
-  elif [[ -n "${FRAGMENTS_TSV_GZ}" ]]; then
-    fr="${FRAGMENTS_TSV_GZ}"
-    [[ -f "$fr" ]] || {
-      echo "Missing FRAGMENTS_TSV_GZ: ${fr}" >&2
-      exit 1
-    }
-    bam=""
-  else
-    if pout="$(discover_paired_bench)"; then
-      fr="$(echo "${pout}" | sed -n '1p')"
-      bam="$(echo "${pout}" | sed -n '2p')"
-    elif [[ "${RUN_MACS3}" == "0" ]] && fr="$(discover_frags_only_bench)"; then
-      bam=""
-    else
-      cat >&2 <<EOF
-No fragment input. Set one of:
-  CHROMAP_PEAK_RUN_ROOT=/path/to/run  (directory containing dual/fragments.tsv[.gz]; BAM under same tree for MACS3)
-  FRAGMENTS_TSV_GZ=/path and ATAC_BAM=/path  (same run; required for MACS3)
-  FRAGMENTS_TSV_GZ=/path only  with RUN_MACS3=0
-Or set CHROMAP_100K_BENCH: auto uses first same-run pair (dual/fragments + atac_possorted_bam in that tree), or with RUN_MACS3=0 first dual/fragments only.
-BENCH_ROOT=${BENCH_ROOT}
-EOF
-      exit 1
-    fi
-  fi
-  if [[ "${RUN_MACS3}" != "0" && -z "${bam}" ]]; then
-    echo "MACS3 enabled but no atac BAM paired with fragments. Set CHROMAP_PEAK_RUN_ROOT with BAM, or FRAGMENTS_TSV_GZ and ATAC_BAM, or RUN_MACS3=0." >&2
+  if ! peak_100k_resolve_inputs; then
     exit 1
   fi
+  local fr bam
+  fr="${PEAK_100K_FRAG}"
+  bam="${PEAK_100K_BAM:-}"
 
   local caller="${REPO_ROOT}/chromap_callpeaks"
   local prefix="${OUTDIR}/internal"
@@ -219,8 +52,12 @@ EOF
   } >> "${log}"
 
   log_msg "CMD_INTERNAL=${caller} -i <frag> --out-prefix <prefix> ..."
-  "${caller}" -i "${fr}" --out-prefix "${prefix}" --bin-width 50 --ext-size 150 \
-    --local-window 200 --fdr 0.05 --p-value 0.01 --merge-gap 0 >> "${log}" 2>&1
+  local internal_argv=(
+    "${caller}" -i "${fr}" --out-prefix "${prefix}" --bin-width 50 --ext-size 150
+    --local-window 200 --fdr 0.05 --p-value 0.01 --merge-gap 0
+  )
+  printf -v CMD_INTERNAL_FULL '%q ' "${internal_argv[@]}"
+  "${internal_argv[@]}" >> "${log}" 2>&1
 
   if [[ ! -s "${prefix}.narrowPeak" ]]; then
     echo "Empty internal narrowPeak" >&2
@@ -259,6 +96,7 @@ EOF
     echo "ATAC_BAM=${bam}" >> "${log}"
     if command -v macs3 &>/dev/null && command -v samtools &>/dev/null && command -v bedtools &>/dev/null; then
       mkdir -p "${OUTDIR}/macs3"
+      printf -v CMD_MACS3_RUNNER_FULL '%q ' "${MACS3_RUNNER}" --input-bam "${bam}" --outdir "${OUTDIR}/macs3" --prefix atac_100k --mode both
       "${MACS3_RUNNER}" --input-bam "${bam}" --outdir "${OUTDIR}/macs3" --prefix atac_100k --mode both >> "${log}" 2>&1
       for suf in "macs3_defaults" "macs3_shiftTAG"; do
         if [[ -f "${OUTDIR}/macs3/atac_100k.${suf}_peaks.narrowPeak" ]]; then
@@ -311,10 +149,15 @@ EOF
   } | tee "${summary}"
   {
     echo "CHROMAP_PEAK_RUN_ROOT=${CHROMAP_PEAK_RUN_ROOT:-}"
+    echo "PEAK_100K_RUN_ROOT=${PEAK_100K_RUN_ROOT:-}"
     echo "FRAGMENTS_TSV_GZ=${fr}"
     echo "ATAC_BAM=${bam:-}"
+    echo "CMD_INTERNAL_FULL=${CMD_INTERNAL_FULL:-}"
     echo "internal_prefix=${prefix}"
     echo "make_target=chromap_callpeaks"
+    if [[ -n "${CMD_MACS3_RUNNER_FULL:-}" ]]; then
+      echo "CMD_MACS3_RUNNER_FULL=${CMD_MACS3_RUNNER_FULL}"
+    fi
   } > "${OUTDIR}/commands.txt"
   log_msg "Done. Output: ${OUTDIR}"
 }

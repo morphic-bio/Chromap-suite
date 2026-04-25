@@ -2,8 +2,12 @@
 #define MAPPING_PARAMETERS_H_
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include "peak_caller/frag_compact_store.h"
+#include "peak_caller/macs3_frag_workspace.h"
 
 namespace chromap {
 
@@ -17,6 +21,9 @@ enum MappingOutputFormat {
   MAPPINGFORMAT_BAM,
   MAPPINGFORMAT_CRAM
 };
+
+// Source for --call-macs3-frag-peaks fragment rows (file reread vs in-memory).
+enum class Macs3FragPeaksSource { kFile, kMemory };
 
 struct MappingParameters {
   int error_threshold = 8;
@@ -113,6 +120,21 @@ struct MappingParameters {
   bool write_index = false;
   bool sort_bam = false;          // Enable coordinate sorting for BAM/CRAM output
   uint64_t sort_bam_ram_limit = 8ULL * 1024 * 1024 * 1024;  // 8GB default
+
+  // Opt-in MACS3-compatible FRAG narrowPeak (post-process fragments file; not default).
+  bool call_macs3_frag_peaks = false;
+  // file: reread --atac-fragments (default). memory: in-memory rows from mapping.
+  Macs3FragPeaksSource macs3_frag_peaks_source = Macs3FragPeaksSource::kFile;
+  int macs3_frag_compact_min_count_bits = 16;
+  std::shared_ptr<peaks::FragPeakMemoryAccumulator> macs3_frag_memory_accumulator;
+  std::shared_ptr<peaks::Macs3FragPeakWorkspace> macs3_frag_workspace;
+  std::string macs3_frag_peaks_narrowpeak_path;
+  std::string macs3_frag_peaks_summits_path;
+  double macs3_frag_pvalue = 1e-5;
+  int macs3_frag_min_length = 200;
+  int macs3_frag_max_gap = 30;
+  bool macs3_frag_uint8_counts = true;
+  std::string macs3_frag_keep_intermediates_dir;
 
   // Dual ATAC: BAM/CRAM to mapping_output_file_path and fragments to
   // atac_fragment_output_file_path (one pass; not supported with --low-mem).

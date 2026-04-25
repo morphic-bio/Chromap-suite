@@ -9,6 +9,8 @@
 #include <limits>
 #include "chromap.h"
 #include "bam_sorter.h"
+#include "peak_caller/frag_compact_store.h"
+#include "peak_caller/macs3_frag_workspace.h"
 
 namespace chromap {
 namespace {
@@ -1669,6 +1671,29 @@ void MappingWriter<PairedEndAtacDualMapping>::OutputHeader(
       }
     }
   }
+  if (mapping_parameters_.macs3_frag_memory_accumulator &&
+      mapping_parameters_.macs3_frag_memory_accumulator->IsValid()) {
+    std::vector<std::string> chrom_names;
+    chrom_names.reserve(num_reference_sequences);
+    for (uint32_t i = 0; i < num_reference_sequences; ++i) {
+      chrom_names.emplace_back(reference.GetSequenceNameAt(i));
+    }
+    mapping_parameters_.macs3_frag_memory_accumulator->ResizeForReferenceNames(
+        num_reference_sequences, chrom_names);
+  }
+  if (mapping_parameters_.macs3_frag_workspace) {
+    std::vector<std::string> chrom_names;
+    chrom_names.reserve(num_reference_sequences);
+    for (uint32_t i = 0; i < num_reference_sequences; ++i) {
+      chrom_names.emplace_back(reference.GetSequenceNameAt(i));
+    }
+    peaks::Macs3FragWorkspaceParams ws_params;
+    ws_params.macs3_uint8_counts = mapping_parameters_.macs3_frag_uint8_counts;
+    if (!peaks::InitMacs3FragWorkspace(chrom_names, ws_params,
+                                       mapping_parameters_.macs3_frag_workspace.get())) {
+      ExitWithMessage("MACS3 FRAG workspace: failed to initialize");
+    }
+  }
 }
 
 template <>
@@ -1684,6 +1709,24 @@ void MappingWriter<PairedEndAtacDualMapping>::AppendMapping(
       std::to_string(mapping_end_position) + "\t" +
       barcode_translator_.Translate(frag.cell_barcode_, cell_barcode_length_) +
       "\t" + std::to_string(frag.num_dups_) + "\n");
+  if (mapping_parameters_.macs3_frag_memory_accumulator &&
+      mapping_parameters_.macs3_frag_memory_accumulator->IsValid()) {
+    std::string acc_err;
+    if (!mapping_parameters_.macs3_frag_memory_accumulator->Add(
+            rid, frag.GetStartPosition(), mapping_end_position, frag.num_dups_,
+            &acc_err)) {
+      ExitWithMessage("MACS3 FRAG memory accumulator: " + acc_err);
+    }
+  }
+  if (mapping_parameters_.macs3_frag_workspace) {
+    if (!peaks::AddMacs3FragWorkspaceFragment(
+            mapping_parameters_.macs3_frag_workspace.get(), rid,
+            static_cast<int32_t>(frag.GetStartPosition()),
+            static_cast<int32_t>(mapping_end_position),
+            static_cast<int32_t>(frag.num_dups_))) {
+      ExitWithMessage("MACS3 FRAG workspace: failed to add fragment");
+    }
+  }
 
   auto write_sam = [&](const SAMMapping &m) {
     bam1_t *b =

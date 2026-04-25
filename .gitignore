@@ -29,6 +29,7 @@ tests/test_y_filter
 # Test outputs
 tests/bamwriter/out/
 tests/out/
+out/
 
 # Logs and temp files
 *.log
