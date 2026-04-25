@@ -453,72 +453,13 @@ bool RunMacs3FragPpoisNarrowPeaksFromTracks(
   if (stage_profile) {
     t_regions_start = StageProfileCollector::Now();
   }
-  struct W {
-    std::string chrom;
-    int32_t start;
-    int32_t end;
-    int32_t summit;
-    int32_t peak_off;
-    double fc;
-    double p_mlog;
-    double q_mlog;
-  };
-  std::vector<W> w;
+  std::vector<Macs3FragNarrowPeakRow> w;
   w.reserve(256);
   for (size_t ci = 0; ci < chrom_names.size(); ++ci) {
-    const Macs3BdgTrack& ppois = ppois_tracks[ci];
-    const Macs3BdgTrack& treat = treat_tracks[ci];
-    const Macs3BdgTrack& lambda = lambda_tracks[ci];
-    if (ppois.p.empty() || treat.p.empty() || lambda.p.empty()) {
-      continue;
-    }
-    std::vector<PpoisMergedRegion> regs;
-    CallPpoisTrackMergedRegions(ppois, cutoff, min_length, max_gap, &regs);
-    for (const PpoisMergedRegion& r : regs) {
-      if (r.pieces.empty()) {
-        continue;
-      }
-      float best_tv = 0.f;
-      bool have = false;
-      std::vector<int32_t> midpts;
-      std::vector<size_t> pidx;
-      for (size_t i = 0; i < r.pieces.size(); ++i) {
-        const PpoisMergePiece& pc = r.pieces[i];
-        const float tv = BdgValueAtOrZero(treat, pc.start);
-        if (!have || tv > best_tv) {
-          have = true;
-          best_tv = tv;
-          midpts.clear();
-          pidx.clear();
-          midpts.push_back((pc.start + pc.end) / 2);
-          pidx.push_back(i);
-        } else if (tv == best_tv) {
-          midpts.push_back((pc.start + pc.end) / 2);
-          pidx.push_back(i);
-        }
-      }
-      if (!have || midpts.empty()) {
-        continue;
-      }
-      const size_t mxi = (midpts.size() + 1) / 2 - 1;
-      const int32_t summit = midpts[mxi];
-      const PpoisMergePiece& winp = r.pieces[pidx[mxi]];
-      const float t_w = BdgValueAtOrZero(treat, winp.start);
-      const float c_w = BdgValueAtOrZero(lambda, winp.start);
-      const double pml = Macs3BdgcmpPpoisNegLog10P(t_w, c_w, pseudocount);
-      const double fc =
-          (static_cast<double>(t_w) + pseudocount) /
-          (static_cast<double>(c_w) + pseudocount);
-      W row;
-      row.chrom = chrom_names[ci];
-      row.start = r.start;
-      row.end = r.end;
-      row.summit = summit;
-      row.peak_off = static_cast<int32_t>(row.summit - row.start);
-      row.fc = fc;
-      row.p_mlog = pml;
-      row.q_mlog = 0.0;
-      w.push_back(std::move(row));
+    if (!CollectMacs3FragNarrowPeakRowsFromTracks(
+            chrom_names[ci], ppois_tracks[ci], treat_tracks[ci], lambda_tracks[ci],
+            cutoff, min_length, max_gap, pseudocount, &w)) {
+      return false;
     }
   }
   StageProfileCollector::Tick t_np_start{};
@@ -531,37 +472,128 @@ bool RunMacs3FragPpoisNarrowPeaksFromTracks(
                           "in_memory_tracks");
     t_np_start = StageProfileCollector::Now();
   }
+  if (!WriteMacs3FragNarrowPeakRows(&w, path_narrowpeak, path_summits_bed)) {
+    return false;
+  }
+  if (stage_profile) {
+    const StageProfileCollector::Tick t_summits_end = StageProfileCollector::Now();
+    const StageProfileCollector::Tick tm0 = StageProfileCollector::Now();
+    int64_t bbytes = 0, sbytes = 0;
+    if (!path_narrowpeak.empty()) {
+      (void)StageProfileCollector::FileMetrics(path_narrowpeak, &bbytes, nullptr);
+    }
+    if (!path_summits_bed.empty()) {
+      (void)StageProfileCollector::FileMetrics(path_summits_bed, &sbytes, nullptr);
+    }
+    const StageProfileCollector::Tick tm1 = StageProfileCollector::Now();
+    const int64_t in_fr = profile_input_frag_rows >= 0 ? profile_input_frag_rows : 0;
+    stage_profile->Record("narrowpeak_summits", t_np_start, t_summits_end, in_fr,
+                          static_cast<int64_t>(w.size()), bbytes + sbytes,
+                          "in_memory_tracks");
+    stage_profile->Record("profile_file_metrics_narrowpeak_summits", tm0, tm1, 0, 0,
+                          bbytes + sbytes, "stat_size_only");
+  }
+  return true;
+}
+
+bool CollectMacs3FragNarrowPeakRowsFromTracks(
+    const std::string& chrom_name, const Macs3BdgTrack& ppois,
+    const Macs3BdgTrack& treat, const Macs3BdgTrack& lambda, float cutoff,
+    int32_t min_length, int32_t max_gap, double pseudocount,
+    std::vector<Macs3FragNarrowPeakRow>* rows) {
+  if (rows == nullptr || min_length < 1 || max_gap < 0 ||
+      ppois.p.size() != ppois.v.size() || treat.p.size() != treat.v.size() ||
+      lambda.p.size() != lambda.v.size()) {
+    return false;
+  }
+  if (ppois.p.empty() || treat.p.empty() || lambda.p.empty()) {
+    return true;
+  }
+  std::vector<PpoisMergedRegion> regs;
+  CallPpoisTrackMergedRegions(ppois, cutoff, min_length, max_gap, &regs);
+  for (const PpoisMergedRegion& r : regs) {
+    if (r.pieces.empty()) {
+      continue;
+    }
+    float best_tv = 0.f;
+    bool have = false;
+    std::vector<int32_t> midpts;
+    std::vector<size_t> pidx;
+    for (size_t i = 0; i < r.pieces.size(); ++i) {
+      const PpoisMergePiece& pc = r.pieces[i];
+      const float tv = BdgValueAtOrZero(treat, pc.start);
+      if (!have || tv > best_tv) {
+        have = true;
+        best_tv = tv;
+        midpts.clear();
+        pidx.clear();
+        midpts.push_back((pc.start + pc.end) / 2);
+        pidx.push_back(i);
+      } else if (tv == best_tv) {
+        midpts.push_back((pc.start + pc.end) / 2);
+        pidx.push_back(i);
+      }
+    }
+    if (!have || midpts.empty()) {
+      continue;
+    }
+    const size_t mxi = (midpts.size() + 1) / 2 - 1;
+    const PpoisMergePiece& winp = r.pieces[pidx[mxi]];
+    const float t_w = BdgValueAtOrZero(treat, winp.start);
+    const float c_w = BdgValueAtOrZero(lambda, winp.start);
+    Macs3FragNarrowPeakRow row;
+    row.chrom = chrom_name;
+    row.start = r.start;
+    row.end = r.end;
+    row.summit = midpts[mxi];
+    row.peak_off = static_cast<int32_t>(row.summit - row.start);
+    row.fc = (static_cast<double>(t_w) + pseudocount) /
+             (static_cast<double>(c_w) + pseudocount);
+    row.p_mlog = Macs3BdgcmpPpoisNegLog10P(t_w, c_w, pseudocount);
+    row.q_mlog = 0.0;
+    rows->push_back(std::move(row));
+  }
+  return true;
+}
+
+bool WriteMacs3FragNarrowPeakRows(
+    std::vector<Macs3FragNarrowPeakRow>* rows,
+    const std::string& path_narrowpeak, const std::string& path_summits_bed) {
+  if (rows == nullptr || (path_narrowpeak.empty() && path_summits_bed.empty())) {
+    return false;
+  }
   std::vector<double> p_lin;
-  p_lin.reserve(w.size());
-  for (const W& e : w) {
+  p_lin.reserve(rows->size());
+  for (const Macs3FragNarrowPeakRow& e : *rows) {
     const double p = std::min(1.0, std::max(0.0, std::pow(10.0, -e.p_mlog)));
     p_lin.push_back(p);
   }
   std::vector<double> qv;
   BenjaminiHochbergFdr(p_lin, &qv);
-  for (size_t i = 0; i < w.size(); ++i) {
+  for (size_t i = 0; i < rows->size(); ++i) {
     const double q = std::min(1.0, std::max(0.0, qv[i]));
-    w[i].q_mlog = -std::log10(std::max(q, 1e-300));
+    rows->at(i).q_mlog = -std::log10(std::max(q, 1e-300));
   }
-  std::sort(w.begin(), w.end(), [](const W& a, const W& b) {
-    if (a.chrom != b.chrom) {
-      return a.chrom < b.chrom;
-    }
-    if (a.start != b.start) {
-      return a.start < b.start;
-    }
-    if (a.end != b.end) {
-      return a.end < b.end;
-    }
-    return a.peak_off < b.peak_off;
-  });
+  std::sort(rows->begin(), rows->end(),
+            [](const Macs3FragNarrowPeakRow& a, const Macs3FragNarrowPeakRow& b) {
+              if (a.chrom != b.chrom) {
+                return a.chrom < b.chrom;
+              }
+              if (a.start != b.start) {
+                return a.start < b.start;
+              }
+              if (a.end != b.end) {
+                return a.end < b.end;
+              }
+              return a.peak_off < b.peak_off;
+            });
   if (!path_narrowpeak.empty()) {
     FILE* fpn = std::fopen(path_narrowpeak.c_str(), "w");
     if (fpn == nullptr) {
       return false;
     }
-    for (size_t i = 0; i < w.size(); ++i) {
-      const W& p = w[i];
+    for (size_t i = 0; i < rows->size(); ++i) {
+      const Macs3FragNarrowPeakRow& p = rows->at(i);
       const std::string name = "peak_" + std::to_string(i + 1);
       const int sc = NarrowPeakIntScoreQ(p.q_mlog);
       if (std::fprintf(fpn, "%s\t%d\t%d\t%s\t%d\t.\t%.6g\t%.6g\t%.6g\t%d\n",
@@ -581,8 +613,8 @@ bool RunMacs3FragPpoisNarrowPeaksFromTracks(
     if (fps == nullptr) {
       return false;
     }
-    for (size_t i = 0; i < w.size(); ++i) {
-      const W& p = w[i];
+    for (size_t i = 0; i < rows->size(); ++i) {
+      const Macs3FragNarrowPeakRow& p = rows->at(i);
       const std::string name = "peak_" + std::to_string(i + 1);
       if (std::fprintf(fps, "%s\t%d\t%d\t%s\t%.6g\n", p.chrom.c_str(),
                        static_cast<int>(p.summit),
@@ -595,24 +627,6 @@ bool RunMacs3FragPpoisNarrowPeaksFromTracks(
     if (std::fclose(fps) != 0) {
       return false;
     }
-  }
-  if (stage_profile) {
-    const StageProfileCollector::Tick t_summits_end = StageProfileCollector::Now();
-    const StageProfileCollector::Tick tm0 = StageProfileCollector::Now();
-    int64_t bbytes = 0, sbytes = 0;
-    if (!path_narrowpeak.empty()) {
-      (void)StageProfileCollector::FileMetrics(path_narrowpeak, &bbytes, nullptr);
-    }
-    if (!path_summits_bed.empty()) {
-      (void)StageProfileCollector::FileMetrics(path_summits_bed, &sbytes, nullptr);
-    }
-    const StageProfileCollector::Tick tm1 = StageProfileCollector::Now();
-    const int64_t in_fr = profile_input_frag_rows >= 0 ? profile_input_frag_rows : 0;
-    stage_profile->Record("narrowpeak_summits", t_np_start, t_summits_end, in_fr,
-                          static_cast<int64_t>(w.size()), bbytes + sbytes,
-                          "in_memory_tracks");
-    stage_profile->Record("profile_file_metrics_narrowpeak_summits", tm0, tm1, 0, 0,
-                          bbytes + sbytes, "stat_size_only");
   }
   return true;
 }

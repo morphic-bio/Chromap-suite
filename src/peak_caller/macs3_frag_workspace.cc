@@ -67,9 +67,9 @@ void ReleaseEvents(std::vector<Macs3FragEvent>* ev) {
   std::vector<Macs3FragEvent>().swap(*ev);
 }
 
-void CoalesceEventPositions(std::vector<Macs3FragEvent>* ev) {
+bool CoalesceEventPositions(std::vector<Macs3FragEvent>* ev) {
   if (ev->empty()) {
-    return;
+    return true;
   }
   std::sort(ev->begin(), ev->end(),
             [](const Macs3FragEvent& a, const Macs3FragEvent& b) {
@@ -81,12 +81,19 @@ void CoalesceEventPositions(std::vector<Macs3FragEvent>* ev) {
   size_t wri = 0;
   for (size_t i = 0; i < ev->size(); ++i) {
     if (wri > 0 && ev->at(i).pos == ev->at(wri - 1).pos) {
-      ev->at(wri - 1).delta += ev->at(i).delta;
+      const int64_t delta = static_cast<int64_t>(ev->at(wri - 1).delta) +
+                            static_cast<int64_t>(ev->at(i).delta);
+      if (delta < std::numeric_limits<int32_t>::min() ||
+          delta > std::numeric_limits<int32_t>::max()) {
+        return false;
+      }
+      ev->at(wri - 1).delta = static_cast<int32_t>(delta);
     } else {
       ev->at(wri++) = ev->at(i);
     }
   }
   ev->resize(wri);
+  return true;
 }
 
 void TrackFromEvents(const std::vector<Macs3FragEvent>& ev, Macs3BdgTrack* out) {
@@ -98,27 +105,22 @@ void TrackFromEvents(const std::vector<Macs3FragEvent>& ev, Macs3BdgTrack* out) 
   double z = 0.0;
   double pre_z = -1.0e4;
   int32_t s = 0;
-  std::vector<std::pair<int32_t, double>> pv;
-  pv.reserve(ev.size() + 1);
+  out->p.reserve(ev.size());
+  out->v.reserve(ev.size());
   for (const auto& e : ev) {
     const int32_t pos = e.pos;
     const double v = static_cast<double>(e.delta);
     if (pos != s) {
-      if (z == pre_z && !pv.empty()) {
-        pv.back().first = pos;
+      if (z == pre_z && !out->p.empty()) {
+        out->p.back() = pos;
       } else {
-        pv.push_back(std::make_pair(pos, z));
+        out->p.push_back(pos);
+        out->v.push_back(Quantize5Float(z));
         pre_z = z;
       }
     }
     z += v;
     s = pos;
-  }
-  out->p.reserve(pv.size());
-  out->v.reserve(pv.size());
-  for (const auto& seg : pv) {
-    out->p.push_back(seg.first);
-    out->v.push_back(Quantize5Float(seg.second));
   }
 }
 
@@ -321,7 +323,9 @@ bool FinalizeMacs3FragTreatTracks(Macs3FragPeakWorkspace* workspace) {
   workspace->treat_tracks.resize(workspace->events_by_chrom.size());
   for (size_t i = 0; i < workspace->events_by_chrom.size(); ++i) {
     std::vector<Macs3FragEvent>& ev = workspace->events_by_chrom[i].treat_span_events;
-    CoalesceEventPositions(&ev);
+    if (!CoalesceEventPositions(&ev)) {
+      return false;
+    }
     TrackFromEvents(ev, &workspace->treat_tracks[i]);
     ReleaseEvents(&ev);
   }
@@ -346,7 +350,9 @@ bool FinalizeMacs3FragLambdaTracks(Macs3FragPeakWorkspace* workspace) {
   workspace->lambda_tracks.resize(workspace->events_by_chrom.size());
   for (size_t i = 0; i < workspace->events_by_chrom.size(); ++i) {
     std::vector<Macs3FragEvent>& ev = workspace->events_by_chrom[i].lambda_end_window_events;
-    CoalesceEventPositions(&ev);
+    if (!CoalesceEventPositions(&ev)) {
+      return false;
+    }
     Macs3BdgTrack ctrl;
     TrackFromEvents(ev, &ctrl);
     ReleaseEvents(&ev);
@@ -370,56 +376,70 @@ bool FinalizeMacs3FragPpoisTracks(Macs3FragPeakWorkspace* workspace) {
   }
   workspace->ppois_tracks.clear();
   workspace->ppois_tracks.resize(workspace->treat_tracks.size());
-  const float pseudocount_f =
-      static_cast<float>(workspace->params.score_pseudocount);
-  std::unordered_map<PpoisScoreKey, double, PpoisScoreKeyHash> score_cache;
   for (size_t c = 0; c < workspace->treat_tracks.size(); ++c) {
-    const Macs3BdgTrack& t = workspace->treat_tracks[c];
-    const Macs3BdgTrack& l = workspace->lambda_tracks[c];
-    Macs3BdgTrack& out = workspace->ppois_tracks[c];
-    if (t.p.empty() || l.p.empty()) {
-      continue;
+    if (!BuildMacs3FragPpoisTrack(workspace->treat_tracks[c],
+                                  workspace->lambda_tracks[c],
+                                  workspace->params.score_pseudocount,
+                                  &workspace->ppois_tracks[c])) {
+      return false;
     }
-    size_t i1 = 0;
-    size_t i2 = 0;
-    int32_t prev = 0;
-    bool has = false;
-    int32_t lo = 0;
-    int32_t hi = 0;
-    double last = 0.0;
-    while (i1 < t.p.size() && i2 < l.p.size()) {
-      const int32_t p1 = t.p[i1];
-      const int32_t p2 = l.p[i2];
-      const int32_t nx = std::min(p1, p2);
-      if (nx > prev) {
-        const int32_t seg_lo = std::max(prev, static_cast<int32_t>(0));
-        const int32_t seg_hi = std::max(nx, static_cast<int32_t>(0));
-        if (seg_hi > seg_lo) {
-          PpoisScoreKey key;
-          key.treat = FloatBits(t.v[i1]);
-          key.lambda = FloatBits(l.v[i2]);
-          auto it = score_cache.find(key);
-          double sp = 0.0;
-          if (it == score_cache.end()) {
-            sp = Round5Score(Macs3BdgcmpPpoisNegLog10P(
-                t.v[i1], l.v[i2], static_cast<double>(pseudocount_f)));
-            score_cache.emplace(key, sp);
-          } else {
-            sp = it->second;
-          }
-          ScoreRunPush(&out, seg_lo, seg_hi, sp, &has, &lo, &hi, &last);
-        }
-      }
-      if (p1 <= p2) {
-        ++i1;
-      }
-      if (p2 <= p1) {
-        ++i2;
-      }
-      prev = nx;
-    }
-    ScoreRunFlush(&out, &has, &lo, &hi, &last);
   }
+  return true;
+}
+
+bool BuildMacs3FragPpoisTrack(const Macs3BdgTrack& treat,
+                              const Macs3BdgTrack& lambda,
+                              double pseudocount, Macs3BdgTrack* out) {
+  if (out == nullptr || treat.p.size() != treat.v.size() ||
+      lambda.p.size() != lambda.v.size()) {
+    return false;
+  }
+  out->p.clear();
+  out->v.clear();
+  if (treat.p.empty() || lambda.p.empty()) {
+    return true;
+  }
+  const float pseudocount_f = static_cast<float>(pseudocount);
+  std::unordered_map<PpoisScoreKey, double, PpoisScoreKeyHash> score_cache;
+  size_t i1 = 0;
+  size_t i2 = 0;
+  int32_t prev = 0;
+  bool has = false;
+  int32_t lo = 0;
+  int32_t hi = 0;
+  double last = 0.0;
+  while (i1 < treat.p.size() && i2 < lambda.p.size()) {
+    const int32_t p1 = treat.p[i1];
+    const int32_t p2 = lambda.p[i2];
+    const int32_t nx = std::min(p1, p2);
+    if (nx > prev) {
+      const int32_t seg_lo = std::max(prev, static_cast<int32_t>(0));
+      const int32_t seg_hi = std::max(nx, static_cast<int32_t>(0));
+      if (seg_hi > seg_lo) {
+        PpoisScoreKey key;
+        key.treat = FloatBits(treat.v[i1]);
+        key.lambda = FloatBits(lambda.v[i2]);
+        auto it = score_cache.find(key);
+        double sp = 0.0;
+        if (it == score_cache.end()) {
+          sp = Round5Score(Macs3BdgcmpPpoisNegLog10P(
+              treat.v[i1], lambda.v[i2], static_cast<double>(pseudocount_f)));
+          score_cache.emplace(key, sp);
+        } else {
+          sp = it->second;
+        }
+        ScoreRunPush(out, seg_lo, seg_hi, sp, &has, &lo, &hi, &last);
+      }
+    }
+    if (p1 <= p2) {
+      ++i1;
+    }
+    if (p2 <= p1) {
+      ++i2;
+    }
+    prev = nx;
+  }
+  ScoreRunFlush(out, &has, &lo, &hi, &last);
   return true;
 }
 

@@ -71,20 +71,21 @@ float BdgPeakCallCutoffFromPValue(double p_value) {
 }
 
 bool RunMacs3FragPeakPipelineFromFragments(
-    const std::vector<ChromFragments>& by_chrom,
+    std::vector<ChromFragments>* by_chrom,
     const Macs3FragPeakPipelineParams& params,
     const Macs3FragPeakPipelinePaths& user_paths,
     const std::string& narrowpeak_out, const std::string& summits_out,
     const std::string& keep_intermediates_dir,
     const std::string& work_dir_parent, std::string* work_dir_used,
-    std::string* error_message, StageProfileCollector* stage_profile) {
+    std::string* error_message, StageProfileCollector* stage_profile,
+    bool release_fragments_after_workspace) {
   auto fail = [&](const char* msg) {
     if (error_message) {
       *error_message = msg;
     }
     return false;
   };
-  if (narrowpeak_out.empty() || summits_out.empty()) {
+  if (by_chrom == nullptr || narrowpeak_out.empty() || summits_out.empty()) {
     return fail("narrowPeak and summits output paths are required");
   }
   if (params.min_length < 1 || params.max_gap < 0 || params.llocal_bp < 1 ||
@@ -97,7 +98,7 @@ bool RunMacs3FragPeakPipelineFromFragments(
 
   int64_t n_frag_rows = 0;
   if (stage_profile) {
-    for (const ChromFragments& ch : by_chrom) {
+    for (const ChromFragments& ch : *by_chrom) {
       n_frag_rows += static_cast<int64_t>(ch.frags.size());
     }
   }
@@ -150,7 +151,12 @@ bool RunMacs3FragPeakPipelineFromFragments(
   Macs3FragPeakWorkspace workspace;
   {
     auto build_workspace = [&]() {
-      return BuildMacs3FragWorkspaceFromFragments(by_chrom, workspace_params, &workspace);
+      const bool ok =
+          BuildMacs3FragWorkspaceFromFragments(*by_chrom, workspace_params, &workspace);
+      if (ok && release_fragments_after_workspace) {
+        std::vector<ChromFragments>().swap(*by_chrom);
+      }
+      return ok;
     };
     if (stage_profile) {
       const StageProfileCollector::Tick t0 = StageProfileCollector::Now();
@@ -223,7 +229,7 @@ bool RunMacs3FragPeakPipelineFromFragments(
       }
     }
   }
-  {
+  if (export_ppois) {
     auto finalize_score = [&]() {
       return FinalizeMacs3FragPpoisTracks(&workspace);
     };
@@ -282,21 +288,96 @@ bool RunMacs3FragPeakPipelineFromFragments(
     }
     return fail("WriteFragMacs3NoControlLambdaBedGraph failed");
   }
-  if (!export_track("export_score_ppois", ppois, workspace.ppois_tracks)) {
-    if (own_workdir) {
-      RemoveTree(work);
+  if (export_ppois) {
+    if (!export_track("export_score_ppois", ppois, workspace.ppois_tracks)) {
+      if (own_workdir) {
+        RemoveTree(work);
+      }
+      return fail("WriteMacs3BdgTracksBedGraph ppois failed");
     }
-    return fail("WriteMacs3BdgTracksBedGraph ppois failed");
-  }
-  if (!RunMacs3FragPpoisNarrowPeaksFromTracks(
-          workspace.chrom_names, workspace.ppois_tracks, workspace.treat_tracks,
-          workspace.lambda_tracks, params.bdgpeakcall_cutoff, params.min_length,
-          params.max_gap, params.score_pseudocount, narrowpeak_out, summits_out,
-          stage_profile, n_frag_rows)) {
-    if (own_workdir) {
-      RemoveTree(work);
+    if (!RunMacs3FragPpoisNarrowPeaksFromTracks(
+            workspace.chrom_names, workspace.ppois_tracks, workspace.treat_tracks,
+            workspace.lambda_tracks, params.bdgpeakcall_cutoff, params.min_length,
+            params.max_gap, params.score_pseudocount, narrowpeak_out, summits_out,
+            stage_profile, n_frag_rows)) {
+      if (own_workdir) {
+        RemoveTree(work);
+      }
+      return fail("RunMacs3FragPpoisNarrowPeaks failed");
     }
-    return fail("RunMacs3FragPpoisNarrowPeaks failed");
+  } else {
+    StageProfileCollector::Tick t_ppois_start{};
+    StageProfileCollector::Tick t_regions_start{};
+    if (stage_profile) {
+      t_ppois_start = StageProfileCollector::Now();
+    }
+    std::vector<Macs3FragNarrowPeakRow> rows;
+    rows.reserve(256);
+    Macs3BdgTrack ppois_one;
+    for (size_t i = 0; i < workspace.chrom_names.size(); ++i) {
+      if (!BuildMacs3FragPpoisTrack(workspace.treat_tracks[i], workspace.lambda_tracks[i],
+                                    params.score_pseudocount, &ppois_one)) {
+        if (own_workdir) {
+          RemoveTree(work);
+        }
+        return fail("BuildMacs3FragPpoisTrack failed");
+      }
+      if (!CollectMacs3FragNarrowPeakRowsFromTracks(
+              workspace.chrom_names[i], ppois_one, workspace.treat_tracks[i],
+              workspace.lambda_tracks[i], params.bdgpeakcall_cutoff, params.min_length,
+              params.max_gap, params.score_pseudocount, &rows)) {
+        if (own_workdir) {
+          RemoveTree(work);
+        }
+        return fail("CollectMacs3FragNarrowPeakRowsFromTracks failed");
+      }
+      ppois_one.p.clear();
+      ppois_one.v.clear();
+      if (!export_treat) {
+        std::vector<int32_t>().swap(workspace.treat_tracks[i].p);
+        std::vector<float>().swap(workspace.treat_tracks[i].v);
+      }
+      if (!export_lambda) {
+        std::vector<int32_t>().swap(workspace.lambda_tracks[i].p);
+        std::vector<float>().swap(workspace.lambda_tracks[i].v);
+      }
+    }
+    if (stage_profile) {
+      t_regions_start = StageProfileCollector::Now();
+      stage_profile->Record("finalize_ppois_tracks", t_ppois_start, t_regions_start,
+                            n_frag_rows, static_cast<int64_t>(workspace.chrom_names.size()),
+                            0, "chromosome_at_a_time;includes_region_collection");
+      stage_profile->Record("bdgpeakcall_regions", t_regions_start, t_regions_start,
+                            n_frag_rows, static_cast<int64_t>(rows.size()), 0,
+                            "included_in_finalize_ppois_tracks");
+    }
+    StageProfileCollector::Tick t_np_start{};
+    if (stage_profile) {
+      t_np_start = StageProfileCollector::Now();
+    }
+    if (!WriteMacs3FragNarrowPeakRows(&rows, narrowpeak_out, summits_out)) {
+      if (own_workdir) {
+        RemoveTree(work);
+      }
+      return fail("WriteMacs3FragNarrowPeakRows failed");
+    }
+    if (stage_profile) {
+      const StageProfileCollector::Tick t_summits_end = StageProfileCollector::Now();
+      const StageProfileCollector::Tick tm0 = StageProfileCollector::Now();
+      int64_t bbytes = 0, sbytes = 0;
+      if (!narrowpeak_out.empty()) {
+        (void)StageProfileCollector::FileMetrics(narrowpeak_out, &bbytes, nullptr);
+      }
+      if (!summits_out.empty()) {
+        (void)StageProfileCollector::FileMetrics(summits_out, &sbytes, nullptr);
+      }
+      const StageProfileCollector::Tick tm1 = StageProfileCollector::Now();
+      stage_profile->Record("narrowpeak_summits", t_np_start, t_summits_end, n_frag_rows,
+                            static_cast<int64_t>(rows.size()), bbytes + sbytes,
+                            "chromosome_at_a_time");
+      stage_profile->Record("profile_file_metrics_narrowpeak_summits", tm0, tm1, 0, 0,
+                            bbytes + sbytes, "stat_size_only");
+    }
   }
   {
     auto do_cleanup = [&]() {
@@ -396,10 +477,6 @@ bool RunMacs3FragPeakPipelineFromWorkspace(
     cleanup_on_fail();
     return fail("FinalizeMacs3FragLambdaTracks failed");
   }
-  if (!FinalizeMacs3FragPpoisTracks(workspace)) {
-    cleanup_on_fail();
-    return fail("FinalizeMacs3FragPpoisTracks failed");
-  }
   if (!treat.empty() &&
       !WriteMacs3BdgTracksBedGraph(treat, workspace->chrom_names, workspace->treat_tracks)) {
     cleanup_on_fail();
@@ -410,18 +487,54 @@ bool RunMacs3FragPeakPipelineFromWorkspace(
     cleanup_on_fail();
     return fail("WriteFragMacs3NoControlLambdaBedGraph failed");
   }
-  if (!ppois.empty() &&
-      !WriteMacs3BdgTracksBedGraph(ppois, workspace->chrom_names, workspace->ppois_tracks)) {
-    cleanup_on_fail();
-    return fail("WriteMacs3BdgTracksBedGraph ppois failed");
-  }
-  if (!RunMacs3FragPpoisNarrowPeaksFromTracks(
-          workspace->chrom_names, workspace->ppois_tracks, workspace->treat_tracks,
-          workspace->lambda_tracks, params.bdgpeakcall_cutoff, params.min_length,
-          params.max_gap, params.score_pseudocount, narrowpeak_out, summits_out,
-          nullptr, -1)) {
-    cleanup_on_fail();
-    return fail("RunMacs3FragPpoisNarrowPeaks failed");
+  if (export_ppois) {
+    if (!FinalizeMacs3FragPpoisTracks(workspace)) {
+      cleanup_on_fail();
+      return fail("FinalizeMacs3FragPpoisTracks failed");
+    }
+    if (!WriteMacs3BdgTracksBedGraph(ppois, workspace->chrom_names,
+                                     workspace->ppois_tracks)) {
+      cleanup_on_fail();
+      return fail("WriteMacs3BdgTracksBedGraph ppois failed");
+    }
+    if (!RunMacs3FragPpoisNarrowPeaksFromTracks(
+            workspace->chrom_names, workspace->ppois_tracks, workspace->treat_tracks,
+            workspace->lambda_tracks, params.bdgpeakcall_cutoff, params.min_length,
+            params.max_gap, params.score_pseudocount, narrowpeak_out, summits_out,
+            nullptr, -1)) {
+      cleanup_on_fail();
+      return fail("RunMacs3FragPpoisNarrowPeaks failed");
+    }
+  } else {
+    std::vector<Macs3FragNarrowPeakRow> rows;
+    rows.reserve(256);
+    Macs3BdgTrack ppois_one;
+    for (size_t i = 0; i < workspace->chrom_names.size(); ++i) {
+      if (!BuildMacs3FragPpoisTrack(workspace->treat_tracks[i],
+                                    workspace->lambda_tracks[i],
+                                    params.score_pseudocount, &ppois_one) ||
+          !CollectMacs3FragNarrowPeakRowsFromTracks(
+              workspace->chrom_names[i], ppois_one, workspace->treat_tracks[i],
+              workspace->lambda_tracks[i], params.bdgpeakcall_cutoff,
+              params.min_length, params.max_gap, params.score_pseudocount, &rows)) {
+        cleanup_on_fail();
+        return fail("chromosome-at-a-time ppois peak collection failed");
+      }
+      ppois_one.p.clear();
+      ppois_one.v.clear();
+      if (!export_treat) {
+        std::vector<int32_t>().swap(workspace->treat_tracks[i].p);
+        std::vector<float>().swap(workspace->treat_tracks[i].v);
+      }
+      if (!export_lambda) {
+        std::vector<int32_t>().swap(workspace->lambda_tracks[i].p);
+        std::vector<float>().swap(workspace->lambda_tracks[i].v);
+      }
+    }
+    if (!WriteMacs3FragNarrowPeakRows(&rows, narrowpeak_out, summits_out)) {
+      cleanup_on_fail();
+      return fail("WriteMacs3FragNarrowPeakRows failed");
+    }
   }
   if (own_workdir) {
     RemoveTree(work);

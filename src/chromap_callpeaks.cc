@@ -430,9 +430,10 @@ int main(int argc, char** argv) {
                                                          : frag_score_ppois_bdg;
     std::string err;
     std::string work_dir;
+    const bool release_fragments_after_workspace = frag_score_fe_bdg.empty();
     if (!chromap::peaks::RunMacs3FragPeakPipelineFromFragments(
-            chs, pr, io, macs3_frag_narrowpeak_out, macs3_frag_summits_out, "", "",
-            &work_dir, &err, profile_coll.get())) {
+            &chs, pr, io, macs3_frag_narrowpeak_out, macs3_frag_summits_out, "", "",
+            &work_dir, &err, profile_coll.get(), release_fragments_after_workspace)) {
       std::cerr << err << "\n";
       return 1;
     }

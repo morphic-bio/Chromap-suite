@@ -1600,7 +1600,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         }
       } else {
         if (!chromap::peaks::RunMacs3FragPeakPipelineFromFragments(
-                chs, pr, chromap::peaks::Macs3FragPeakPipelinePaths(),
+                &chs, pr, chromap::peaks::Macs3FragPeakPipelinePaths(),
                 mapping_parameters.macs3_frag_peaks_narrowpeak_path,
                 mapping_parameters.macs3_frag_peaks_summits_path, keep, parent,
                 &work_used, &err, nullptr)) {

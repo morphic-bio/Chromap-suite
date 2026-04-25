@@ -12,6 +12,17 @@ namespace peaks {
 
 class StageProfileCollector;
 
+struct Macs3FragNarrowPeakRow {
+  std::string chrom;
+  int32_t start = 0;
+  int32_t end = 0;
+  int32_t summit = 0;
+  int32_t peak_off = 0;
+  double fc = 0.0;
+  double p_mlog = 0.0;
+  double q_mlog = 0.0;
+};
+
 // MACS3 `bdgpeakcall` region calling on a score bedGraph (diagnostic).
 // Reads the file like MACS3 BedGraphIO.read_bedGraph / bedGraphTrackI.add_loc
 // (sequential merge; no implicit gap fill). Runs BedGraph.call_peaks with
@@ -44,6 +55,16 @@ bool RunMacs3FragPpoisNarrowPeaksFromTracks(
     const std::string& path_narrowpeak, const std::string& path_summits_bed,
     StageProfileCollector* stage_profile = nullptr,
     int64_t profile_input_frag_rows = -1);
+
+bool CollectMacs3FragNarrowPeakRowsFromTracks(
+    const std::string& chrom_name, const Macs3BdgTrack& ppois,
+    const Macs3BdgTrack& treat, const Macs3BdgTrack& lambda, float cutoff,
+    int32_t min_length, int32_t max_gap, double pseudocount,
+    std::vector<Macs3FragNarrowPeakRow>* rows);
+
+bool WriteMacs3FragNarrowPeakRows(
+    std::vector<Macs3FragNarrowPeakRow>* rows,
+    const std::string& path_narrowpeak, const std::string& path_summits_bed);
 
 }  // namespace peaks
 }  // namespace chromap

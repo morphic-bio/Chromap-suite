@@ -57,9 +57,16 @@ bool BuildMacs3FragWorkspaceFromFragments(
     const Macs3FragWorkspaceParams& params,
     Macs3FragPeakWorkspace* workspace);
 
+// Finalization is one-shot for the event-backed workspace: treat events are
+// released by FinalizeMacs3FragTreatTracks, and lambda events are released by
+// FinalizeMacs3FragLambdaTracks.
 bool FinalizeMacs3FragTreatTracks(Macs3FragPeakWorkspace* workspace);
 bool FinalizeMacs3FragLambdaTracks(Macs3FragPeakWorkspace* workspace);
 bool FinalizeMacs3FragPpoisTracks(Macs3FragPeakWorkspace* workspace);
+
+bool BuildMacs3FragPpoisTrack(const Macs3BdgTrack& treat,
+                              const Macs3BdgTrack& lambda,
+                              double pseudocount, Macs3BdgTrack* out);
 
 bool WriteMacs3BdgTracksBedGraph(const std::string& path,
                                  const std::vector<std::string>& chrom_names,

@@ -41,14 +41,15 @@ float BdgPeakCallCutoffFromPValue(double p_value);
 // (directory is created) and does not delete it. If empty, uses a unique
 // directory under work_dir_parent (or /tmp) and removes it after success.
 bool RunMacs3FragPeakPipelineFromFragments(
-    const std::vector<ChromFragments>& by_chrom,
+    std::vector<ChromFragments>* by_chrom,
     const Macs3FragPeakPipelineParams& params,
     const Macs3FragPeakPipelinePaths& user_paths,
     const std::string& narrowpeak_out, const std::string& summits_out,
     const std::string& keep_intermediates_dir,
     const std::string& work_dir_parent, std::string* work_dir_used,
     std::string* error_message,
-    StageProfileCollector* stage_profile = nullptr);
+    StageProfileCollector* stage_profile = nullptr,
+    bool release_fragments_after_workspace = true);
 
 bool RunMacs3FragPeakPipelineFromWorkspace(
     Macs3FragPeakWorkspace* workspace,
