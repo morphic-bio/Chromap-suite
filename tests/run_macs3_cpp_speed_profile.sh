@@ -4,6 +4,7 @@
 # RUN_MACS3=0 skips external MACS3 even when macs3 is on PATH (C++ only).
 # EXPORT_BDGS=0 skips C++ diagnostic treat/lambda/ppois bedGraph exports and
 # measures the workspace production shape (narrowPeak/summits only).
+# CPP_THREADS controls chromap_callpeaks --peak-caller-threads (default: 1).
 #
 # 5M example (after tests/build_peak_speed_fragments_5m.sh):
 #   FRAGMENTS_TSV_GZ=/path/to/Chromap-suite/out/peak_speed_parity_20260425/fragments_5m.tsv.gz \
@@ -24,6 +25,7 @@ MACS3_BIN="${MACS3_BIN:-macs3}"
 RUN_FULL="${RUN_FULL:-0}"
 RUN_MACS3="${RUN_MACS3:-0}"
 EXPORT_BDGS="${EXPORT_BDGS:-1}"
+CPP_THREADS="${CPP_THREADS:-1}"
 
 CUTOFF="${CUTOFF:-5}"
 MINLEN="${MINLEN:-200}"
@@ -125,6 +127,7 @@ main() {
     --bdgpeakcall-cutoff "${CUTOFF}"
     --bdgpeakcall-min-len "${MINLEN}"
     --bdgpeakcall-max-gap "${MAXGAP}"
+    --peak-caller-threads "${CPP_THREADS}"
   )
   if [[ "${EXPORT_BDGS}" != "0" ]]; then
     cpp_common_args+=(
@@ -185,6 +188,7 @@ main() {
     echo -e "fragments_tsv_gz\t${fr}"
     echo -e "outdir\t${OUTDIR}"
     echo -e "export_bdgs\t${EXPORT_BDGS}"
+    echo -e "cpp_threads\t${CPP_THREADS}"
     echo -e "macs3_wall_sec\t${macs_wall}"
     echo -e "macs3_max_rss_kb\t${macs_rss}"
     echo -e "macs3_narrowpeak\t${macs_np}"

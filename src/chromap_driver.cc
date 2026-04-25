@@ -1585,6 +1585,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       pr.min_length = mapping_parameters.macs3_frag_min_length;
       pr.max_gap = mapping_parameters.macs3_frag_max_gap;
       pr.macs3_uint8_counts = mapping_parameters.macs3_frag_uint8_counts;
+      pr.peak_caller_threads = mapping_parameters.num_threads;
       std::string err;
       std::string work_used;
       const std::string &keep = mapping_parameters.macs3_frag_keep_intermediates_dir;

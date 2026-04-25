@@ -60,9 +60,12 @@ bool BuildMacs3FragWorkspaceFromFragments(
 // Finalization is one-shot for the event-backed workspace: treat events are
 // released by FinalizeMacs3FragTreatTracks, and lambda events are released by
 // FinalizeMacs3FragLambdaTracks.
-bool FinalizeMacs3FragTreatTracks(Macs3FragPeakWorkspace* workspace);
-bool FinalizeMacs3FragLambdaTracks(Macs3FragPeakWorkspace* workspace);
-bool FinalizeMacs3FragPpoisTracks(Macs3FragPeakWorkspace* workspace);
+bool FinalizeMacs3FragTreatTracks(Macs3FragPeakWorkspace* workspace,
+                                   int num_threads = 1);
+bool FinalizeMacs3FragLambdaTracks(Macs3FragPeakWorkspace* workspace,
+                                    int num_threads = 1);
+bool FinalizeMacs3FragPpoisTracks(Macs3FragPeakWorkspace* workspace,
+                                   int num_threads = 1);
 
 bool BuildMacs3FragPpoisTrack(const Macs3BdgTrack& treat,
                               const Macs3BdgTrack& lambda,

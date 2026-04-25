@@ -1,5 +1,6 @@
 #include "macs3_frag_peak_pipeline.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cerrno>
 #include <cstdio>
@@ -61,6 +62,14 @@ std::string DefaultWorkParent(const std::string& work_dir_parent) {
   return "/tmp";
 }
 
+int NormalizeThreads(int requested, size_t n_tasks) {
+  if (requested < 1 || n_tasks <= 1) {
+    return 1;
+  }
+  const size_t rt = static_cast<size_t>(requested);
+  return static_cast<int>(std::min(rt, n_tasks));
+}
+
 }  // namespace
 
 float BdgPeakCallCutoffFromPValue(double p_value) {
@@ -89,12 +98,14 @@ bool RunMacs3FragPeakPipelineFromFragments(
     return fail("narrowPeak and summits output paths are required");
   }
   if (params.min_length < 1 || params.max_gap < 0 || params.llocal_bp < 1 ||
-      params.effective_genome_size < 1) {
+      params.effective_genome_size < 1 || params.peak_caller_threads < 1) {
     return fail("invalid MACS3 FRAG peak pipeline numeric parameters");
   }
   if (params.bdgpeakcall_cutoff <= 0.f) {
     return fail("invalid bdgpeakcall cutoff (expected -log10 p, e.g. 5 for 1e-5)");
   }
+  const int peak_threads =
+      NormalizeThreads(params.peak_caller_threads, by_chrom->size());
 
   int64_t n_frag_rows = 0;
   if (stage_profile) {
@@ -181,7 +192,7 @@ bool RunMacs3FragPeakPipelineFromFragments(
 
   {
     auto finalize_treat = [&]() {
-      return FinalizeMacs3FragTreatTracks(&workspace);
+      return FinalizeMacs3FragTreatTracks(&workspace, peak_threads);
     };
     if (stage_profile) {
       const StageProfileCollector::Tick t0 = StageProfileCollector::Now();
@@ -194,7 +205,7 @@ bool RunMacs3FragPeakPipelineFromFragments(
       const StageProfileCollector::Tick t1 = StageProfileCollector::Now();
       stage_profile->Record("finalize_treat_tracks", t0, t1, n_frag_rows,
                             static_cast<int64_t>(workspace.treat_tracks.size()), 0,
-                            "in_memory_tracks");
+                            "in_memory_tracks;threads=" + std::to_string(peak_threads));
     } else {
       if (!finalize_treat()) {
         if (own_workdir) {
@@ -206,7 +217,7 @@ bool RunMacs3FragPeakPipelineFromFragments(
   }
   {
     auto finalize_lam = [&]() {
-      return FinalizeMacs3FragLambdaTracks(&workspace);
+      return FinalizeMacs3FragLambdaTracks(&workspace, peak_threads);
     };
     if (stage_profile) {
       const StageProfileCollector::Tick t0 = StageProfileCollector::Now();
@@ -219,7 +230,7 @@ bool RunMacs3FragPeakPipelineFromFragments(
       const StageProfileCollector::Tick t1 = StageProfileCollector::Now();
       stage_profile->Record("finalize_lambda_tracks", t0, t1, n_frag_rows,
                             static_cast<int64_t>(workspace.lambda_tracks.size()), 0,
-                            "in_memory_tracks");
+                            "in_memory_tracks;threads=" + std::to_string(peak_threads));
     } else {
       if (!finalize_lam()) {
         if (own_workdir) {
@@ -231,7 +242,7 @@ bool RunMacs3FragPeakPipelineFromFragments(
   }
   if (export_ppois) {
     auto finalize_score = [&]() {
-      return FinalizeMacs3FragPpoisTracks(&workspace);
+      return FinalizeMacs3FragPpoisTracks(&workspace, peak_threads);
     };
     if (stage_profile) {
       const StageProfileCollector::Tick t0 = StageProfileCollector::Now();
@@ -244,7 +255,7 @@ bool RunMacs3FragPeakPipelineFromFragments(
       const StageProfileCollector::Tick t1 = StageProfileCollector::Now();
       stage_profile->Record("finalize_ppois_tracks", t0, t1, n_frag_rows,
                             static_cast<int64_t>(workspace.ppois_tracks.size()), 0,
-                            "in_memory_tracks");
+                            "in_memory_tracks;threads=" + std::to_string(peak_threads));
     } else {
       if (!finalize_score()) {
         if (own_workdir) {
@@ -311,28 +322,26 @@ bool RunMacs3FragPeakPipelineFromFragments(
     if (stage_profile) {
       t_ppois_start = StageProfileCollector::Now();
     }
-    std::vector<Macs3FragNarrowPeakRow> rows;
-    rows.reserve(256);
-    Macs3BdgTrack ppois_one;
-    for (size_t i = 0; i < workspace.chrom_names.size(); ++i) {
+    const size_t n_chrom = workspace.chrom_names.size();
+    std::vector<std::vector<Macs3FragNarrowPeakRow>> rows_by_chrom(n_chrom);
+    std::vector<char> ok(n_chrom, 1);
+    const int threads = NormalizeThreads(peak_threads, n_chrom);
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads) if(threads > 1)
+    for (int64_t ii = 0; ii < static_cast<int64_t>(n_chrom); ++ii) {
+      const size_t i = static_cast<size_t>(ii);
+      Macs3BdgTrack ppois_one;
       if (!BuildMacs3FragPpoisTrack(workspace.treat_tracks[i], workspace.lambda_tracks[i],
                                     params.score_pseudocount, &ppois_one)) {
-        if (own_workdir) {
-          RemoveTree(work);
-        }
-        return fail("BuildMacs3FragPpoisTrack failed");
+        ok[i] = 0;
+        continue;
       }
       if (!CollectMacs3FragNarrowPeakRowsFromTracks(
               workspace.chrom_names[i], ppois_one, workspace.treat_tracks[i],
               workspace.lambda_tracks[i], params.bdgpeakcall_cutoff, params.min_length,
-              params.max_gap, params.score_pseudocount, &rows)) {
-        if (own_workdir) {
-          RemoveTree(work);
-        }
-        return fail("CollectMacs3FragNarrowPeakRowsFromTracks failed");
+              params.max_gap, params.score_pseudocount, &rows_by_chrom[i])) {
+        ok[i] = 0;
+        continue;
       }
-      ppois_one.p.clear();
-      ppois_one.v.clear();
       if (!export_treat) {
         std::vector<int32_t>().swap(workspace.treat_tracks[i].p);
         std::vector<float>().swap(workspace.treat_tracks[i].v);
@@ -342,11 +351,27 @@ bool RunMacs3FragPeakPipelineFromFragments(
         std::vector<float>().swap(workspace.lambda_tracks[i].v);
       }
     }
+    if (std::find(ok.begin(), ok.end(), 0) != ok.end()) {
+      if (own_workdir) {
+        RemoveTree(work);
+      }
+      return fail("chromosome-at-a-time ppois peak collection failed");
+    }
+    std::vector<Macs3FragNarrowPeakRow> rows;
+    size_t row_count = 0;
+    for (const auto& chrom_rows : rows_by_chrom) {
+      row_count += chrom_rows.size();
+    }
+    rows.reserve(row_count);
+    for (auto& chrom_rows : rows_by_chrom) {
+      rows.insert(rows.end(), chrom_rows.begin(), chrom_rows.end());
+    }
     if (stage_profile) {
       t_regions_start = StageProfileCollector::Now();
       stage_profile->Record("finalize_ppois_tracks", t_ppois_start, t_regions_start,
                             n_frag_rows, static_cast<int64_t>(workspace.chrom_names.size()),
-                            0, "chromosome_at_a_time;includes_region_collection");
+                            0, "chromosome_at_a_time;includes_region_collection;threads=" +
+                                   std::to_string(threads));
       stage_profile->Record("bdgpeakcall_regions", t_regions_start, t_regions_start,
                             n_frag_rows, static_cast<int64_t>(rows.size()), 0,
                             "included_in_finalize_ppois_tracks");
@@ -418,12 +443,14 @@ bool RunMacs3FragPeakPipelineFromWorkspace(
     return fail("narrowPeak and summits output paths are required");
   }
   if (params.min_length < 1 || params.max_gap < 0 || params.llocal_bp < 1 ||
-      params.effective_genome_size < 1) {
+      params.effective_genome_size < 1 || params.peak_caller_threads < 1) {
     return fail("invalid MACS3 FRAG peak pipeline numeric parameters");
   }
   if (params.bdgpeakcall_cutoff <= 0.f) {
     return fail("invalid bdgpeakcall cutoff (expected -log10 p, e.g. 5 for 1e-5)");
   }
+  const int peak_threads =
+      NormalizeThreads(params.peak_caller_threads, workspace->chrom_names.size());
 
   const bool export_treat = !keep_intermediates_dir.empty() || !user_paths.treat_bdg.empty();
   const bool export_lambda = !keep_intermediates_dir.empty() || !user_paths.lambda_bdg.empty();
@@ -469,11 +496,11 @@ bool RunMacs3FragPeakPipelineFromWorkspace(
       RemoveTree(work);
     }
   };
-  if (!FinalizeMacs3FragTreatTracks(workspace)) {
+  if (!FinalizeMacs3FragTreatTracks(workspace, peak_threads)) {
     cleanup_on_fail();
     return fail("FinalizeMacs3FragTreatTracks failed");
   }
-  if (!FinalizeMacs3FragLambdaTracks(workspace)) {
+  if (!FinalizeMacs3FragLambdaTracks(workspace, peak_threads)) {
     cleanup_on_fail();
     return fail("FinalizeMacs3FragLambdaTracks failed");
   }
@@ -488,7 +515,7 @@ bool RunMacs3FragPeakPipelineFromWorkspace(
     return fail("WriteFragMacs3NoControlLambdaBedGraph failed");
   }
   if (export_ppois) {
-    if (!FinalizeMacs3FragPpoisTracks(workspace)) {
+    if (!FinalizeMacs3FragPpoisTracks(workspace, peak_threads)) {
       cleanup_on_fail();
       return fail("FinalizeMacs3FragPpoisTracks failed");
     }
@@ -506,22 +533,24 @@ bool RunMacs3FragPeakPipelineFromWorkspace(
       return fail("RunMacs3FragPpoisNarrowPeaks failed");
     }
   } else {
-    std::vector<Macs3FragNarrowPeakRow> rows;
-    rows.reserve(256);
-    Macs3BdgTrack ppois_one;
-    for (size_t i = 0; i < workspace->chrom_names.size(); ++i) {
+    const size_t n_chrom = workspace->chrom_names.size();
+    std::vector<std::vector<Macs3FragNarrowPeakRow>> rows_by_chrom(n_chrom);
+    std::vector<char> ok(n_chrom, 1);
+    const int threads = NormalizeThreads(peak_threads, n_chrom);
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads) if(threads > 1)
+    for (int64_t ii = 0; ii < static_cast<int64_t>(n_chrom); ++ii) {
+      const size_t i = static_cast<size_t>(ii);
+      Macs3BdgTrack ppois_one;
       if (!BuildMacs3FragPpoisTrack(workspace->treat_tracks[i],
                                     workspace->lambda_tracks[i],
                                     params.score_pseudocount, &ppois_one) ||
           !CollectMacs3FragNarrowPeakRowsFromTracks(
               workspace->chrom_names[i], ppois_one, workspace->treat_tracks[i],
-              workspace->lambda_tracks[i], params.bdgpeakcall_cutoff,
-              params.min_length, params.max_gap, params.score_pseudocount, &rows)) {
-        cleanup_on_fail();
-        return fail("chromosome-at-a-time ppois peak collection failed");
+              workspace->lambda_tracks[i], params.bdgpeakcall_cutoff, params.min_length,
+              params.max_gap, params.score_pseudocount, &rows_by_chrom[i])) {
+        ok[i] = 0;
+        continue;
       }
-      ppois_one.p.clear();
-      ppois_one.v.clear();
       if (!export_treat) {
         std::vector<int32_t>().swap(workspace->treat_tracks[i].p);
         std::vector<float>().swap(workspace->treat_tracks[i].v);
@@ -530,6 +559,19 @@ bool RunMacs3FragPeakPipelineFromWorkspace(
         std::vector<int32_t>().swap(workspace->lambda_tracks[i].p);
         std::vector<float>().swap(workspace->lambda_tracks[i].v);
       }
+    }
+    if (std::find(ok.begin(), ok.end(), 0) != ok.end()) {
+      cleanup_on_fail();
+      return fail("chromosome-at-a-time ppois peak collection failed");
+    }
+    std::vector<Macs3FragNarrowPeakRow> rows;
+    size_t row_count = 0;
+    for (const auto& chrom_rows : rows_by_chrom) {
+      row_count += chrom_rows.size();
+    }
+    rows.reserve(row_count);
+    for (auto& chrom_rows : rows_by_chrom) {
+      rows.insert(rows.end(), chrom_rows.begin(), chrom_rows.end());
     }
     if (!WriteMacs3FragNarrowPeakRows(&rows, narrowpeak_out, summits_out)) {
       cleanup_on_fail();

@@ -24,6 +24,7 @@ struct Macs3FragPeakPipelineParams {
   int64_t effective_genome_size = 2913022398LL;
   int32_t llocal_bp = 10000;
   double score_pseudocount = 0.0;
+  int peak_caller_threads = 1;
 };
 
 // Optional explicit intermediate bedGraph paths (empty = files under work_dir).

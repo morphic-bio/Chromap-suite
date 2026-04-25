@@ -67,6 +67,14 @@ void ReleaseEvents(std::vector<Macs3FragEvent>* ev) {
   std::vector<Macs3FragEvent>().swap(*ev);
 }
 
+int NormalizeThreads(int requested, size_t n_tasks) {
+  if (requested < 1 || n_tasks <= 1) {
+    return 1;
+  }
+  const size_t rt = static_cast<size_t>(requested);
+  return static_cast<int>(std::min(rt, n_tasks));
+}
+
 bool CoalesceEventPositions(std::vector<Macs3FragEvent>* ev) {
   if (ev->empty()) {
     return true;
@@ -315,24 +323,32 @@ bool AddMacs3FragWorkspaceFragment(Macs3FragPeakWorkspace* workspace,
   return true;
 }
 
-bool FinalizeMacs3FragTreatTracks(Macs3FragPeakWorkspace* workspace) {
+bool FinalizeMacs3FragTreatTracks(Macs3FragPeakWorkspace* workspace,
+                                   int num_threads) {
   if (workspace == nullptr) {
     return false;
   }
   workspace->treat_tracks.clear();
   workspace->treat_tracks.resize(workspace->events_by_chrom.size());
-  for (size_t i = 0; i < workspace->events_by_chrom.size(); ++i) {
+  const size_t n = workspace->events_by_chrom.size();
+  std::vector<char> ok(n, 1);
+  const int threads = NormalizeThreads(num_threads, n);
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads) if(threads > 1)
+  for (int64_t ii = 0; ii < static_cast<int64_t>(n); ++ii) {
+    const size_t i = static_cast<size_t>(ii);
     std::vector<Macs3FragEvent>& ev = workspace->events_by_chrom[i].treat_span_events;
     if (!CoalesceEventPositions(&ev)) {
-      return false;
+      ok[i] = 0;
+      continue;
     }
     TrackFromEvents(ev, &workspace->treat_tracks[i]);
     ReleaseEvents(&ev);
   }
-  return true;
+  return std::find(ok.begin(), ok.end(), 0) == ok.end();
 }
 
-bool FinalizeMacs3FragLambdaTracks(Macs3FragPeakWorkspace* workspace) {
+bool FinalizeMacs3FragLambdaTracks(Macs3FragPeakWorkspace* workspace,
+                                    int num_threads) {
   if (workspace == nullptr || workspace->total_fragment_count <= 0 ||
       workspace->total_fragment_bp <= 0 ||
       workspace->treat_tracks.size() != workspace->events_by_chrom.size()) {
@@ -348,10 +364,16 @@ bool FinalizeMacs3FragLambdaTracks(Macs3FragPeakWorkspace* workspace) {
 
   workspace->lambda_tracks.clear();
   workspace->lambda_tracks.resize(workspace->events_by_chrom.size());
-  for (size_t i = 0; i < workspace->events_by_chrom.size(); ++i) {
+  const size_t n = workspace->events_by_chrom.size();
+  std::vector<char> ok(n, 1);
+  const int threads = NormalizeThreads(num_threads, n);
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads) if(threads > 1)
+  for (int64_t ii = 0; ii < static_cast<int64_t>(n); ++ii) {
+    const size_t i = static_cast<size_t>(ii);
     std::vector<Macs3FragEvent>& ev = workspace->events_by_chrom[i].lambda_end_window_events;
     if (!CoalesceEventPositions(&ev)) {
-      return false;
+      ok[i] = 0;
+      continue;
     }
     Macs3BdgTrack ctrl;
     TrackFromEvents(ev, &ctrl);
@@ -366,25 +388,31 @@ bool FinalizeMacs3FragLambdaTracks(Macs3FragPeakWorkspace* workspace) {
     BuildLambdaTrackFromTreatAndControl(workspace->treat_tracks[i].p, ctrl,
                                         &workspace->lambda_tracks[i]);
   }
-  return true;
+  return std::find(ok.begin(), ok.end(), 0) == ok.end();
 }
 
-bool FinalizeMacs3FragPpoisTracks(Macs3FragPeakWorkspace* workspace) {
+bool FinalizeMacs3FragPpoisTracks(Macs3FragPeakWorkspace* workspace,
+                                   int num_threads) {
   if (workspace == nullptr ||
       workspace->treat_tracks.size() != workspace->lambda_tracks.size()) {
     return false;
   }
   workspace->ppois_tracks.clear();
   workspace->ppois_tracks.resize(workspace->treat_tracks.size());
-  for (size_t c = 0; c < workspace->treat_tracks.size(); ++c) {
+  const size_t n = workspace->treat_tracks.size();
+  std::vector<char> ok(n, 1);
+  const int threads = NormalizeThreads(num_threads, n);
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads) if(threads > 1)
+  for (int64_t cc = 0; cc < static_cast<int64_t>(n); ++cc) {
+    const size_t c = static_cast<size_t>(cc);
     if (!BuildMacs3FragPpoisTrack(workspace->treat_tracks[c],
                                   workspace->lambda_tracks[c],
                                   workspace->params.score_pseudocount,
                                   &workspace->ppois_tracks[c])) {
-      return false;
+      ok[c] = 0;
     }
   }
-  return true;
+  return std::find(ok.begin(), ok.end(), 0) == ok.end();
 }
 
 bool BuildMacs3FragPpoisTrack(const Macs3BdgTrack& treat,

@@ -61,6 +61,7 @@ void Usage() {
          "  --min-peak-bp   Drop peaks narrower than this width in bp (0 = off)\n"
          "  --min-summit-cuts  Drop peaks whose summit bin count is below this (0 = off)\n"
          "  --profile-stages PATH  Optional stage timing TSV (wall/user/sys/RSS/rows/bytes)\n"
+         "  --peak-caller-threads N  Threads for per-chromosome MACS3 FRAG stages (default: 1)\n"
          "  -h|--help      This message\n";
 }
 
@@ -108,6 +109,7 @@ int main(int argc, char** argv) {
   int32_t min_peak_bp = 0;
   int64_t min_summit_cuts = 0;
   std::string profile_stages_path;
+  int peak_caller_threads = 1;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "-h" || a == "--help") {
@@ -291,6 +293,12 @@ int main(int argc, char** argv) {
         return 2;
       }
       profile_stages_path = argv[++i];
+    } else if (a == "--peak-caller-threads") {
+      if (i + 1 >= argc) {
+        std::cerr << "Missing value for " << a << "\n";
+        return 2;
+      }
+      peak_caller_threads = std::atoi(argv[++i]);
     } else {
       std::cerr << "Unknown argument: " << a << "\n";
       Usage();
@@ -351,6 +359,10 @@ int main(int argc, char** argv) {
   }
   if (bdgpeakcall_min_len < 1 || bdgpeakcall_max_gap < 0) {
     std::cerr << "Invalid --bdgpeakcall-min-len or --bdgpeakcall-max-gap\n";
+    return 2;
+  }
+  if (peak_caller_threads < 1) {
+    std::cerr << "Invalid --peak-caller-threads\n";
     return 2;
   }
   if (fdr < 0.0 || fdr > 1.0 || pval < 0.0 || pval > 1.0) {
@@ -423,6 +435,7 @@ int main(int argc, char** argv) {
     pr.effective_genome_size = frag_lambda_effective_genome;
     pr.llocal_bp = frag_lambda_llocal;
     pr.score_pseudocount = frag_score_pseudocount;
+    pr.peak_caller_threads = peak_caller_threads;
     chromap::peaks::Macs3FragPeakPipelinePaths io;
     io.treat_bdg = frag_span_pileup_bdg;
     io.lambda_bdg = frag_lambda_bdg;
