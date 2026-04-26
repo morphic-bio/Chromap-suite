@@ -6,8 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "peak_caller/frag_compact_store.h"
-#include "peak_caller/macs3_frag_workspace.h"
+#include "libmacs3/frag_compact_store.h"
+#include "libmacs3/macs3_frag_workspace.h"
 
 namespace chromap {
 
