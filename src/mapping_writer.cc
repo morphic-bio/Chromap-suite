@@ -10,7 +10,7 @@
 #include "chromap.h"
 #include "bam_sorter.h"
 #include "libmacs3/frag_compact_store.h"
-#include "libmacs3/macs3_frag_workspace.h"
+#include "libmacs3/fragments.h"
 
 namespace chromap {
 namespace {
@@ -1681,17 +1681,12 @@ void MappingWriter<PairedEndAtacDualMapping>::OutputHeader(
     mapping_parameters_.macs3_frag_memory_accumulator->ResizeForReferenceNames(
         num_reference_sequences, chrom_names);
   }
-  if (mapping_parameters_.macs3_frag_workspace) {
-    std::vector<std::string> chrom_names;
-    chrom_names.reserve(num_reference_sequences);
+  if (mapping_parameters_.macs3_frag_chrom_names) {
+    auto& names = *mapping_parameters_.macs3_frag_chrom_names;
+    names.clear();
+    names.reserve(num_reference_sequences);
     for (uint32_t i = 0; i < num_reference_sequences; ++i) {
-      chrom_names.emplace_back(reference.GetSequenceNameAt(i));
-    }
-    peaks::Macs3FragWorkspaceParams ws_params;
-    ws_params.macs3_uint8_counts = mapping_parameters_.macs3_frag_uint8_counts;
-    if (!peaks::InitMacs3FragWorkspace(chrom_names, ws_params,
-                                       mapping_parameters_.macs3_frag_workspace.get())) {
-      ExitWithMessage("MACS3 FRAG workspace: failed to initialize");
+      names.emplace_back(reference.GetSequenceNameAt(i));
     }
   }
 }
@@ -1718,13 +1713,14 @@ void MappingWriter<PairedEndAtacDualMapping>::AppendMapping(
       ExitWithMessage("MACS3 FRAG memory accumulator: " + acc_err);
     }
   }
-  if (mapping_parameters_.macs3_frag_workspace) {
-    if (!peaks::AddMacs3FragWorkspaceFragment(
-            mapping_parameters_.macs3_frag_workspace.get(), rid,
-            static_cast<int32_t>(frag.GetStartPosition()),
-            static_cast<int32_t>(mapping_end_position),
-            static_cast<int32_t>(frag.num_dups_))) {
-      ExitWithMessage("MACS3 FRAG workspace: failed to add fragment");
+  if (mapping_parameters_.macs3_frag_buffer) {
+    macs3::FragmentRecord rec;
+    rec.chrom_id = static_cast<int32_t>(rid);
+    rec.start = static_cast<int32_t>(frag.GetStartPosition());
+    rec.end = static_cast<int32_t>(mapping_end_position);
+    rec.count = static_cast<uint32_t>(frag.num_dups_);
+    if (rec.end > rec.start && rec.count > 0) {
+      mapping_parameters_.macs3_frag_buffer->push_back(rec);
     }
   }
 
