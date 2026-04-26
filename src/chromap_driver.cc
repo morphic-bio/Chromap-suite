@@ -18,6 +18,7 @@
 #include "cxxopts.hpp"
 #include "libmacs3/fragment_input.h"
 #include "libmacs3/frag_compact_store.h"
+#include "libmacs3/fragments.h"
 #include "libmacs3/macs3_frag_peak_pipeline.h"
 
 namespace chromap {
@@ -1483,8 +1484,10 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
 
     if (mapping_parameters.call_macs3_frag_peaks &&
         mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
-      mapping_parameters.macs3_frag_workspace =
-          std::make_shared<peaks::Macs3FragPeakWorkspace>();
+      mapping_parameters.macs3_frag_buffer =
+          std::make_shared<std::vector<macs3::FragmentRecord>>();
+      mapping_parameters.macs3_frag_chrom_names =
+          std::make_shared<std::vector<std::string>>();
     }
 
     chromap::Chromap chromap_for_mapping(mapping_parameters);
@@ -1575,8 +1578,10 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       }
       std::vector<chromap::peaks::ChromFragments> chs;
       if (mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
-        if (!mapping_parameters.macs3_frag_workspace) {
-          chromap::ExitWithMessage("MACS3 FRAG peaks (memory source): missing workspace");
+        if (!mapping_parameters.macs3_frag_buffer ||
+            !mapping_parameters.macs3_frag_chrom_names) {
+          chromap::ExitWithMessage(
+              "MACS3 FRAG peaks (memory source): missing in-memory buffer or chrom_names");
         }
       } else {
         if (!chromap::peaks::LoadFragmentsFromTsv(
@@ -1598,9 +1603,18 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       const std::string &keep = mapping_parameters.macs3_frag_keep_intermediates_dir;
       const std::string parent = mapping_parameters.temp_directory_path;
       if (mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
-        if (!chromap::peaks::RunMacs3FragPeakPipelineFromWorkspace(
-                mapping_parameters.macs3_frag_workspace.get(), pr,
-                chromap::peaks::Macs3FragPeakPipelinePaths(),
+        // Buffer was filled in mapping order across worker threads; the
+        // VectorFragmentIterator wrapper sorts on construction so the
+        // sweep workspace's chrom-grouped + start-sorted contract is met.
+        auto iter = macs3::WrapVectorFragmentIterator(
+            std::move(*mapping_parameters.macs3_frag_buffer),
+            std::move(*mapping_parameters.macs3_frag_chrom_names));
+        // Drop the now-empty backing vectors so subsequent peaks-from-mem
+        // calls don't see stale state.
+        mapping_parameters.macs3_frag_buffer.reset();
+        mapping_parameters.macs3_frag_chrom_names.reset();
+        if (!chromap::peaks::RunMacs3FragPeakPipelineFromSortedIterator(
+                *iter, pr, chromap::peaks::Macs3FragPeakPipelinePaths(),
                 mapping_parameters.macs3_frag_peaks_narrowpeak_path,
                 mapping_parameters.macs3_frag_peaks_summits_path, keep, parent,
                 &work_used, &err)) {

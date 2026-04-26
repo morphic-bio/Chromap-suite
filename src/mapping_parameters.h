@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "libmacs3/frag_compact_store.h"
-#include "libmacs3/macs3_frag_workspace.h"
+#include "libmacs3/fragments.h"
 
 namespace chromap {
 
@@ -132,7 +132,14 @@ struct MappingParameters {
   Macs3FragPeaksSource macs3_frag_peaks_source = Macs3FragPeaksSource::kFile;
   int macs3_frag_compact_min_count_bits = 16;
   std::shared_ptr<peaks::FragPeakMemoryAccumulator> macs3_frag_memory_accumulator;
-  std::shared_ptr<peaks::Macs3FragPeakWorkspace> macs3_frag_workspace;
+  // kMemory peak source: writer pushes FragmentRecord into this buffer per
+  // mapped fragment (instead of buffering 6 events/fragment in the legacy
+  // Macs3FragPeakWorkspace), and the chrom_names table is populated once
+  // when the writer's reference is loaded. Driver consumes the buffer via
+  // macs3::WrapVectorFragmentIterator → RunMacs3FragPeakPipelineFromSortedIterator.
+  // Memory profile: ~16 B/fragment vs ~48 B/fragment for the events buffer.
+  std::shared_ptr<std::vector<macs3::FragmentRecord>> macs3_frag_buffer;
+  std::shared_ptr<std::vector<std::string>> macs3_frag_chrom_names;
   std::string macs3_frag_peaks_narrowpeak_path;
   std::string macs3_frag_peaks_summits_path;
   double macs3_frag_pvalue = 1e-5;
