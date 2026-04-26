@@ -94,6 +94,11 @@ struct MappingParameters {
   // The order for pairs format flipping.
   std::string pairs_flipping_custom_rid_order_file_path;
   std::string barcode_translate_table_file_path;
+  // If true, the barcode translate table is read in natural source<TAB>dest
+  // order (col1 = from_bc / hash key, col2 = to_bc / value). The default
+  // (false) preserves the historical Chromap convention where col1 = to_bc
+  // and col2 = from_bc.
+  bool barcode_translate_from_first_column = false;
   std::string summary_metadata_file_path;
   std::string temp_directory_path;  // Directory for temporary files (NEW_OVERFLOW)
   bool skip_barcode_check = false;

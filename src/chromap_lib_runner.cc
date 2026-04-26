@@ -158,6 +158,11 @@ int main(int argc, char **argv) {
        cxxopts::value<std::string>(), "FILE")
       ("barcode-translate", "Barcode translation table",
        cxxopts::value<std::string>(), "FILE")
+      ("barcode-translate-from-first",
+       "Treat the translation table as <from_bc>\\t<to_bc> (col1 is the "
+       "hash key / source). Default is the historical Chromap convention "
+       "<to_bc>\\t<from_bc> (col2 is the hash key).",
+       cxxopts::value<bool>()->default_value("false"))
       ("o,output", "Mapping output path",
        cxxopts::value<std::string>(), "FILE")
       ("summary", "Summary metadata output path",
@@ -268,6 +273,8 @@ int main(int argc, char **argv) {
       mapping_parameters.barcode_translate_table_file_path =
           result["barcode-translate"].as<std::string>();
     }
+    mapping_parameters.barcode_translate_from_first_column =
+        result["barcode-translate-from-first"].as<bool>();
     if (result.count("output")) {
       mapping_parameters.mapping_output_file_path =
           result["output"].as<std::string>();

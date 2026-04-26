@@ -39,35 +39,37 @@ class BarcodeTranslator {
     }
   }
 
-  void SetTranslateTable(const std::string &file) {
+  // `from_first_column` selects the table column convention. The historical
+  // Chromap default is `to_bc<TAB>from_bc` (col1 is the destination /
+  // value, col2 is the source / hash key); pass `from_first_column=true`
+  // for the natural `from_bc<TAB>to_bc` order (e.g. ARC-style atac2gex
+  // with ATAC barcode in column 1 and GEX barcode in column 2).
+  void SetTranslateTable(const std::string &file,
+                         bool from_first_column = false) {
     barcode_translate_table_ = kh_init(k64_str);
-    
-    if (1) {
-      gzFile barcode_translate_file = gzopen(file.c_str(), "r");
-      const uint32_t line_buffer_size = 512;
-      char file_line[line_buffer_size];
-      while (gzgets(barcode_translate_file, file_line, line_buffer_size) != NULL) {
-        int line_len = strlen(file_line);
-        if (file_line[line_len - 1] == '\n') {
-          file_line[line_len - 1] = '\0';
-        }
-        std::string tmp_string(file_line);
-        ProcessTranslateFileLine(tmp_string);
-      }
-    } else {
-      // Old implementation, which does not support gzipped input.
-      std::ifstream file_stream(file);
-      std::string file_line;
-      while (getline(file_stream, file_line)) {
-        ProcessTranslateFileLine(file_line);
-      }
+    table_file_path_ = file;
+    from_first_column_ = from_first_column;
+
+    gzFile barcode_translate_file = gzopen(file.c_str(), "r");
+    if (barcode_translate_file == NULL) {
+      std::cerr << "BarcodeTranslator: failed to open translate table file: "
+                << file << std::endl;
+      exit(-1);
     }
+    const uint32_t line_buffer_size = 512;
+    char file_line[line_buffer_size];
+    while (gzgets(barcode_translate_file, file_line, line_buffer_size) !=
+           NULL) {
+      int line_len = strlen(file_line);
+      if (line_len > 0 && file_line[line_len - 1] == '\n') {
+        file_line[line_len - 1] = '\0';
+      }
+      std::string tmp_string(file_line);
+      ProcessTranslateFileLine(tmp_string, from_first_column);
+    }
+    gzclose(barcode_translate_file);
 
     mask_ = (1ull << (2 * from_bc_length_)) - 1;
-    /*for (int i = 0; i < from_bc_length_; ++i)
-    {
-      mask_ |= (3ull << (2*i));
-    }*/
   }
 
   std::string Translate(uint64_t bc, uint32_t bc_length) {
@@ -84,8 +86,21 @@ class BarcodeTranslator {
       khiter_t barcode_translate_table_iter =
           kh_get(k64_str, barcode_translate_table_, seed);
       if (barcode_translate_table_iter == kh_end(barcode_translate_table_)) {
-        std::cerr << "Barcode does not exist in the translation table."
-                  << std::endl;
+        std::cerr
+            << "BarcodeTranslator: barcode '"
+            << Seed2Sequence(seed, from_bc_length_)
+            << "' (segment " << i
+            << ", from_bc_length=" << from_bc_length_
+            << ") not found in translation table.\n"
+            << "  table file       : " << table_file_path_ << "\n"
+            << "  column convention: "
+            << (from_first_column_ ? "from_bc<TAB>to_bc (col1=hash key)"
+                                   : "to_bc<TAB>from_bc (col2=hash key)")
+            << "\n"
+            << "  Hint: if your file is in <source><TAB><dest> order, pass\n"
+            << "        --barcode-translate-from-first (chromap CLI) or set\n"
+            << "        barcode_translate_from_first_column = true\n"
+            << "        in libchromap MappingParameters.\n";
         exit(-1);
       }
       std::string bc_to(
@@ -103,6 +118,8 @@ class BarcodeTranslator {
   khash_t(k64_str) * barcode_translate_table_;
   int from_bc_length_;
   uint64_t mask_;
+  std::string table_file_path_;
+  bool from_first_column_ = false;
 
   std::string Seed2Sequence(uint64_t seed, uint32_t seed_length) const {
     std::string sequence;
@@ -115,19 +132,39 @@ class BarcodeTranslator {
     return sequence;
   }
 
-  void ProcessTranslateFileLine(std::string &line) {
+  void ProcessTranslateFileLine(std::string &line, bool from_first_column) {
     int i;
     int len = line.length();
-    std::string to;
+    if (len == 0) {
+      return;
+    }
     for (i = 0; i < len; ++i) {
       if (line[i] == ',' || line[i] == '\t') break;
     }
+    if (i >= len) {
+      return;  // single-column line; ignore
+    }
 
-    to = line.substr(0, i);
-    // from = line.substr(i + 1, len - i - 1);
-    from_bc_length_ = len - i - 1;
-    uint64_t from_seed =
-        GenerateSeedFromSequence(line.c_str(), len, i + 1, from_bc_length_);
+    int from_offset, from_length;
+    int to_offset, to_length;
+    if (from_first_column) {
+      // Natural "source<TAB>destination" order.
+      from_offset = 0;
+      from_length = i;
+      to_offset = i + 1;
+      to_length = len - i - 1;
+    } else {
+      // Historical Chromap "destination<TAB>source" order.
+      to_offset = 0;
+      to_length = i;
+      from_offset = i + 1;
+      from_length = len - i - 1;
+    }
+
+    std::string to = line.substr(to_offset, to_length);
+    from_bc_length_ = from_length;
+    uint64_t from_seed = GenerateSeedFromSequence(line.c_str(), len, from_offset,
+                                                  from_bc_length_);
 
     int khash_return_code;
     khiter_t barcode_translate_table_iter = kh_put(

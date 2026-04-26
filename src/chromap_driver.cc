@@ -145,6 +145,11 @@ void AddOutputOptions(cxxopts::Options &options) {
           "FILE")(          "barcode-translate",
                   "Convert barcode to the specified sequences during output",
                   cxxopts::value<std::string>(), "FILE")(
+          "barcode-translate-from-first",
+          "Read the translation table as <from_bc>\\t<to_bc> (col1 is the "
+          "hash key / source). Default is the historical Chromap convention "
+          "<to_bc>\\t<from_bc> (col2 is the hash key).",
+          cxxopts::value<bool>()->default_value("false"))(
           "summary",
           "Summarize the mapping statistics at bulk or barcode level",
           cxxopts::value<std::string>(), "FILE")(
@@ -946,6 +951,8 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       mapping_parameters.barcode_translate_table_file_path =
           result["barcode-translate"].as<std::string>();
     }
+    mapping_parameters.barcode_translate_from_first_column =
+        result["barcode-translate-from-first"].as<bool>();
 
     if (result.count("summary")) {
       mapping_parameters.summary_metadata_file_path =

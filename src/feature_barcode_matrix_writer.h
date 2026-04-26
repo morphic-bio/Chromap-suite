@@ -79,8 +79,9 @@ class FeatureBarcodeMatrixWriter {
     fclose(barcode_output_file_);
   }
 
-  inline void SetBarcodeTranslateTable(const std::string &file) {
-    barcode_translator_.SetTranslateTable(file);
+  inline void SetBarcodeTranslateTable(const std::string &file,
+                                       bool from_first_column = false) {
+    barcode_translator_.SetTranslateTable(file, from_first_column);
   }
 
   inline void SetBarcodeLength(uint32_t cell_barcode_length) {

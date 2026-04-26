@@ -59,7 +59,8 @@ class MappingWriter {
         pairs_custom_rid_rank_(pairs_custom_rid_rank) {
     if (!mapping_parameters_.barcode_translate_table_file_path.empty()) {
       barcode_translator_.SetTranslateTable(
-          mapping_parameters_.barcode_translate_table_file_path);
+          mapping_parameters_.barcode_translate_table_file_path,
+          mapping_parameters_.barcode_translate_from_first_column);
     }
     summary_metadata_.SetBarcodeLength(cell_barcode_length);
     if (mapping_parameters_.AtacDualFragmentAndBam()) {
