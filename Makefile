@@ -6,7 +6,16 @@ ifeq (,$(wildcard $(HTSLIB_DIR)/htslib/sam.h))
 $(error "htslib submodule not initialized. Run: git submodule update --init --recursive")
 endif
 
-CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR)
+# libMACS3 submodule (peak-caller library extracted from src/peak_caller/).
+# Built standalone via its own Makefile; we just link the resulting archive.
+LIBMACS3_DIR=third_party/libMACS3
+LIBMACS3_LIB=$(LIBMACS3_DIR)/lib/libmacs3.a
+LIBMACS3_CLI=$(LIBMACS3_DIR)/bin/macs3frag
+ifeq (,$(wildcard $(LIBMACS3_DIR)/include/libmacs3/macs3_frag_peak_pipeline.h))
+$(error "libMACS3 submodule not initialized. Run: git submodule update --init --recursive")
+endif
+
+CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(LIBMACS3_DIR)/include
 LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
 core_cpp_source=sequence_batch.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc chromap.cc
@@ -24,14 +33,6 @@ exec=chromap
 libchromap=libchromap.a
 runner=chromap_lib_runner
 peak_caller=chromap_callpeaks
-peak_caller_lib_cpp_source=peak_caller/fragment_input.cc peak_caller/frag_compact_store.cc \
-	peak_caller/binned_signal.cc \
-	peak_caller/call_peaks.cc peak_caller/peak_io.cc peak_caller/bdgpeakcall.cc \
-	peak_caller/macs3_frag_peak_pipeline.cc peak_caller/macs3_frag_workspace.cc \
-	peak_caller/stage_profile.cc
-peak_caller_lib_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(peak_caller_lib_cpp_source))
-peak_caller_standalone_cpp_source=chromap_callpeaks.cc
-peak_caller_standalone_obj=$(patsubst %.cc,$(objs_dir)/%.o,$(peak_caller_standalone_cpp_source))
 
 ifneq ($(asan),)
 	CXXFLAGS+=-fsanitize=address -g
@@ -43,24 +44,34 @@ ifneq ($(LEGACY_OVERFLOW),)
 endif
 
 all: dir $(exec) $(peak_caller)
-	
+
 dir:
-	mkdir -p $(objs_dir) $(objs_dir)/peak_caller
+	mkdir -p $(objs_dir)
 
-$(exec): $(core_objs) $(driver_objs) $(peak_caller_lib_objs)
-	$(CXX) $(CXXFLAGS) $(core_objs) $(driver_objs) $(peak_caller_lib_objs) -o $(exec) $(LDFLAGS)
+# libMACS3 sub-build. Re-runs the submodule's Makefile every top-level make
+# invocation; submodule make is itself incremental so this is cheap when up
+# to date. Output: third_party/libMACS3/lib/libmacs3.a + bin/macs3frag.
+.PHONY: libmacs3
+libmacs3:
+	$(MAKE) -C $(LIBMACS3_DIR)
 
-$(libchromap): $(core_objs) $(libchromap_objs) $(objs_dir)/peak_caller/frag_compact_store.o
-	ar rcs $(libchromap) $(core_objs) $(libchromap_objs) $(objs_dir)/peak_caller/frag_compact_store.o
+$(LIBMACS3_LIB) $(LIBMACS3_CLI): libmacs3
 
-$(runner): $(libchromap) $(runner_objs)
-	$(CXX) $(CXXFLAGS) $(runner_objs) $(libchromap) -o $(runner) $(LDFLAGS)
+$(exec): $(driver_objs) $(libchromap) $(LIBMACS3_LIB)
+	$(CXX) $(CXXFLAGS) $(driver_objs) $(libchromap) $(LIBMACS3_LIB) -o $(exec) $(LDFLAGS)
 
-$(peak_caller): $(peak_caller_lib_objs) $(peak_caller_standalone_obj) | dir
-	$(CXX) $(CXXFLAGS) $(peak_caller_lib_objs) $(peak_caller_standalone_obj) -o $(peak_caller) $(LDFLAGS)
-	
-# mkdir ensures objs/peak_caller/ (and any future subdir) exists when only
-# a subset of targets (e.g. make chromap_callpeaks) is built.
+$(libchromap): $(core_objs) $(libchromap_objs)
+	rm -f $(libchromap)
+	ar rcs $(libchromap) $(core_objs) $(libchromap_objs)
+
+$(runner): $(libchromap) $(runner_objs) $(LIBMACS3_LIB)
+	$(CXX) $(CXXFLAGS) $(runner_objs) $(libchromap) $(LIBMACS3_LIB) -o $(runner) $(LDFLAGS)
+
+# chromap_callpeaks is now an alias for libMACS3's macs3frag binary.
+# Keeps existing tests/harnesses working without source-level changes here.
+$(peak_caller): $(LIBMACS3_CLI)
+	cp $(LIBMACS3_CLI) $(peak_caller)
+
 $(objs_dir)/%.o: $(src_dir)/%.cc
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -I$(src_dir) -c $< -o $@
@@ -69,9 +80,10 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 	benchmark-peak-memory-fullset test-peak-100k test-peak-calibration-100k \
 	test-peak-input-repr-100k test-peak-pileup-100k test-peak-frag-pileup-100k \
 	test-peak-lambda-100k test-peak-score-100k test-peak-bdgpeakcall-100k \
-	test-peak-narrowpeak-100k test-peak-integration-100k
+	test-peak-narrowpeak-100k test-peak-integration-100k libmacs3
 clean:
 	-rm -rf $(exec) $(libchromap) $(runner) $(peak_caller) $(objs_dir)
+	-$(MAKE) -C $(LIBMACS3_DIR) clean
 
 # 100K fragment peak-caller benchmark. Pair inputs: CHROMAP_PEAK_RUN_ROOT, or
 # FRAGMENTS_TSV_GZ+ATAC_BAM, or same-run auto-pair under CHROMAP_100K_BENCH; RUN_MACS3=0 for internal only.
@@ -120,11 +132,12 @@ test-unit: dir
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_y_filter.cc $(src_dir)/sequence_batch.cc -o tests/test_y_filter $(LDFLAGS)
 	./tests/test_y_filter
 
-# Unit tests for in-memory fragment packing / accumulator
-test-frag-compact-store: dir $(objs_dir)/peak_caller/frag_compact_store.o
+# Unit tests for in-memory fragment packing / accumulator. Now linked
+# against libmacs3.a (frag_compact_store moved to libMACS3).
+test-frag-compact-store: dir $(LIBMACS3_LIB)
 	@mkdir -p tests
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_frag_compact_store.cc \
-		$(objs_dir)/peak_caller/frag_compact_store.o -o tests/test_frag_compact_store $(LDFLAGS)
+		$(LIBMACS3_LIB) -o tests/test_frag_compact_store $(LDFLAGS)
 	./tests/test_frag_compact_store
 
 # 100K: memory vs file fragment source for integrated MACS3 FRAG peaks

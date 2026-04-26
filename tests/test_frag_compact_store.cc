@@ -1,5 +1,5 @@
 // Unit tests for peak_caller/frag_compact_store (packing, policy, materialize).
-#include "peak_caller/frag_compact_store.h"
+#include "libmacs3/frag_compact_store.h"
 
 #include <cstdlib>
 #include <iostream>

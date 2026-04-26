@@ -1,0 +1,3 @@
+[submodule "third_party/libMACS3"]
+	path = third_party/libMACS3
+	url = git@github.com:morphic-bio/libMACS3.git

@@ -16,9 +16,9 @@
 
 #include "chromap.h"
 #include "cxxopts.hpp"
-#include "peak_caller/fragment_input.h"
-#include "peak_caller/frag_compact_store.h"
-#include "peak_caller/macs3_frag_peak_pipeline.h"
+#include "libmacs3/fragment_input.h"
+#include "libmacs3/frag_compact_store.h"
+#include "libmacs3/macs3_frag_peak_pipeline.h"
 
 namespace chromap {
 namespace {
