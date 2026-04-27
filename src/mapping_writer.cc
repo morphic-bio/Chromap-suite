@@ -279,7 +279,26 @@ void MappingWriter<PairedEndMappingWithoutBarcode>::AppendMapping(
 
 template <>
 void MappingWriter<PairedEndMappingWithBarcode>::OutputHeader(
-    uint32_t num_reference_sequences, const SequenceBatch &reference) {}
+    uint32_t num_reference_sequences, const SequenceBatch &reference) {
+  // Populate the macs3 chrom-name table + pre-size per-chrom buckets when
+  // peak calling is requested with BED-only output (MAPPINGFORMAT_BED is
+  // the BED-fragments-only path; TagAlign and other 6-col modes don't
+  // emit fragments). Mirrors the dual writer's OutputHeader.
+  if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BED) {
+    if (mapping_parameters_.macs3_frag_chrom_names) {
+      auto& names = *mapping_parameters_.macs3_frag_chrom_names;
+      names.clear();
+      names.reserve(num_reference_sequences);
+      for (uint32_t i = 0; i < num_reference_sequences; ++i) {
+        names.emplace_back(reference.GetSequenceNameAt(i));
+      }
+    }
+    if (mapping_parameters_.macs3_frag_buffer) {
+      mapping_parameters_.macs3_frag_buffer->assign(
+          num_reference_sequences, std::vector<macs3::FragmentRecord>());
+    }
+  }
+}
 
 template <>
 void MappingWriter<PairedEndMappingWithBarcode>::AppendMapping(
@@ -296,6 +315,22 @@ void MappingWriter<PairedEndMappingWithBarcode>::AppendMapping(
                               barcode_translator_.Translate(
                                   mapping.cell_barcode_, cell_barcode_length_) +
                               "\t" + std::to_string(mapping.num_dups_) + "\n");
+    // BED-only peak calling: capture per-chrom (start, end, count) for the
+    // events workspace (same shape as the dual writer's bucket capture).
+    if (mapping_parameters_.macs3_frag_buffer) {
+      macs3::FragmentRecord rec;
+      rec.chrom_id = static_cast<int32_t>(rid);
+      rec.start = static_cast<int32_t>(mapping.GetStartPosition());
+      rec.end = static_cast<int32_t>(mapping_end_position);
+      rec.count = static_cast<uint32_t>(mapping.num_dups_);
+      if (rec.end > rec.start && rec.count > 0) {
+        auto& buckets = *mapping_parameters_.macs3_frag_buffer;
+        if (rid >= buckets.size()) {
+          buckets.resize(rid + 1);
+        }
+        buckets[rid].push_back(rec);
+      }
+    }
   } else {
     bool positive_strand = mapping.IsPositiveStrand();
     uint32_t positive_read_end =
