@@ -1058,7 +1058,29 @@ void Chromap::MapPairedEndReads() {
       }
     }
 
-#pragma omp parallel shared(num_reads_, num_reference_sequences, reference, index, read_batch1, read_batch2, barcode_batch, read_batch1_for_loading, read_batch2_for_loading, barcode_batch_for_loading, minimizer_generator, candidate_processor, mapping_processor, draft_mapping_generator, mapping_generator, mapping_writer, std::cerr, num_loaded_pairs_for_loading, num_loaded_pairs, mappings_on_diff_ref_seqs_for_diff_threads, mappings_on_diff_ref_seqs_for_diff_threads_for_saving, mappings_on_diff_ref_seqs, num_mappings_in_mem, max_num_mappings_in_mem, temp_mapping_file_handles, mm_to_candidates_cache, mm_history1, mm_history2, read_map_summary, y_contig_rids, thread_y_hit_read_ids) num_threads(mapping_parameters_.num_threads) reduction(+:num_candidates_, num_mappings_, num_mapped_reads_, num_uniquely_mapped_reads_, num_barcode_in_whitelist_, num_corrected_barcode_)
+    // STAR-managed dynamic permit handshake (process_features pf_api shape).
+    // Each PE worker thread holds at most one ATAC permit at a time and
+    // refreshes it every kPermitBatchSize mapped pairs so STAR's permit
+    // controller sees chromap progress and can rebalance permits with the
+    // GEX MAP domain. State is shared across the omp parallel region;
+    // workers index into it by omp_get_thread_num().
+    constexpr int kPermitBatchSize = 64;
+    struct AtacPermitThreadState {
+      int counter = -1;        // -1 => need to acquire on next loop body
+      uint64_t wait_ns = 0;
+      double start_sec = 0.0;
+    };
+    const bool permit_hooks_enabled = mapping_parameters_.PermitHooksEnabled();
+    auto * const permit_acquire_hook = mapping_parameters_.permit_acquire_hook;
+    auto * const permit_release_hook = mapping_parameters_.permit_release_hook;
+    void * const permit_hook_ctx = mapping_parameters_.permit_hook_ctx;
+    std::vector<AtacPermitThreadState> permit_thread_state;
+    if (permit_hooks_enabled) {
+      permit_thread_state.assign(mapping_parameters_.num_threads,
+                                 AtacPermitThreadState{});
+    }
+
+#pragma omp parallel shared(num_reads_, num_reference_sequences, reference, index, read_batch1, read_batch2, barcode_batch, read_batch1_for_loading, read_batch2_for_loading, barcode_batch_for_loading, minimizer_generator, candidate_processor, mapping_processor, draft_mapping_generator, mapping_generator, mapping_writer, std::cerr, num_loaded_pairs_for_loading, num_loaded_pairs, mappings_on_diff_ref_seqs_for_diff_threads, mappings_on_diff_ref_seqs_for_diff_threads_for_saving, mappings_on_diff_ref_seqs, num_mappings_in_mem, max_num_mappings_in_mem, temp_mapping_file_handles, mm_to_candidates_cache, mm_history1, mm_history2, read_map_summary, y_contig_rids, thread_y_hit_read_ids, permit_thread_state) num_threads(mapping_parameters_.num_threads) reduction(+:num_candidates_, num_mappings_, num_mapped_reads_, num_uniquely_mapped_reads_, num_barcode_in_whitelist_, num_corrected_barcode_)
     {
       thread_num_candidates = 0;
       thread_num_mappings = 0;
@@ -1112,7 +1134,17 @@ void Chromap::MapPairedEndReads() {
           for (uint32_t pair_index = 0; pair_index < num_loaded_pairs;
                ++pair_index) {
             int thread_id = omp_get_thread_num();
-            
+
+            // ATAC permit acquire: each worker holds at most one permit at a
+            // time, refreshed every kPermitBatchSize pairs.
+            if (permit_hooks_enabled &&
+                permit_thread_state[thread_id].counter < 0) {
+              permit_thread_state[thread_id].wait_ns =
+                  permit_acquire_hook(permit_hook_ctx);
+              permit_thread_state[thread_id].start_sec = GetRealTime();
+              permit_thread_state[thread_id].counter = 0;
+            }
+
             bool current_barcode_is_whitelisted = true;
             if (!mapping_parameters_.barcode_whitelist_file_path.empty()) {
               current_barcode_is_whitelisted = CorrectBarcodeAt(
@@ -1359,6 +1391,23 @@ void Chromap::MapPairedEndReads() {
               if (read_map_summary != NULL)
                 read_map_summary[pair_index] = 0 ;
             }
+
+            // ATAC permit release: every kPermitBatchSize pairs each worker
+            // returns its permit with telemetry so STAR can retune.
+            if (permit_hooks_enabled) {
+              auto& pstate = permit_thread_state[thread_id];
+              ++pstate.counter;
+              if (pstate.counter >= kPermitBatchSize) {
+                const double end_sec = GetRealTime();
+                const uint64_t work_ns = (end_sec > pstate.start_sec)
+                    ? static_cast<uint64_t>((end_sec - pstate.start_sec) * 1e9)
+                    : 0ULL;
+                permit_release_hook(permit_hook_ctx, pstate.wait_ns,
+                                    static_cast<uint64_t>(pstate.counter),
+                                    /*work_bytes=*/0ULL, work_ns);
+                pstate.counter = -1;
+              }
+            }
           }  // end of for pair_index
 
           // if (num_reads_ / 2 > initial_num_sample_barcodes_) {
@@ -1543,6 +1592,24 @@ void Chromap::MapPairedEndReads() {
       num_mapped_reads_ += thread_num_mapped_reads;
       num_uniquely_mapped_reads_ += thread_num_uniquely_mapped_reads;
     }  // end of openmp parallel region
+
+    // Drain any partial ATAC permits left holding (workers that finished a
+    // partial mini-batch when the taskloop drained). Runs serially on the
+    // master after all workers have joined.
+    if (permit_hooks_enabled) {
+      for (auto &pstate : permit_thread_state) {
+        if (pstate.counter > 0) {
+          const double end_sec = GetRealTime();
+          const uint64_t work_ns = (end_sec > pstate.start_sec)
+              ? static_cast<uint64_t>((end_sec - pstate.start_sec) * 1e9)
+              : 0ULL;
+          permit_release_hook(permit_hook_ctx, pstate.wait_ns,
+                              static_cast<uint64_t>(pstate.counter),
+                              /*work_bytes=*/0ULL, work_ns);
+          pstate.counter = -1;
+        }
+      }
+    }
 
 #ifndef LEGACY_OVERFLOW
     // Close all thread-local overflow writers and collect file paths
