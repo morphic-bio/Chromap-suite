@@ -1091,6 +1091,28 @@ template void MappingWriter<PairedEndAtacDualMapping>::OutputTempMappingsToOverf
 template void MappingWriter<PairedEndAtacDualMapping>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
     uint32_t, uint32_t, const SequenceBatch&, const khash_t(k64_seq)*);
 
+// BED writers (single/paired × with/without barcode). Serialization
+// added in bed_mapping.h; generic templates do all the work.
+template void MappingWriter<MappingWithBarcode>::OutputTempMappingsToOverflow(
+    uint32_t, std::vector<std::vector<MappingWithBarcode>>&);
+template void MappingWriter<MappingWithBarcode>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
+    uint32_t, uint32_t, const SequenceBatch&, const khash_t(k64_seq)*);
+
+template void MappingWriter<MappingWithoutBarcode>::OutputTempMappingsToOverflow(
+    uint32_t, std::vector<std::vector<MappingWithoutBarcode>>&);
+template void MappingWriter<MappingWithoutBarcode>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
+    uint32_t, uint32_t, const SequenceBatch&, const khash_t(k64_seq)*);
+
+template void MappingWriter<PairedEndMappingWithBarcode>::OutputTempMappingsToOverflow(
+    uint32_t, std::vector<std::vector<PairedEndMappingWithBarcode>>&);
+template void MappingWriter<PairedEndMappingWithBarcode>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
+    uint32_t, uint32_t, const SequenceBatch&, const khash_t(k64_seq)*);
+
+template void MappingWriter<PairedEndMappingWithoutBarcode>::OutputTempMappingsToOverflow(
+    uint32_t, std::vector<std::vector<PairedEndMappingWithoutBarcode>>&);
+template void MappingWriter<PairedEndMappingWithoutBarcode>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
+    uint32_t, uint32_t, const SequenceBatch&, const khash_t(k64_seq)*);
+
 template void MappingWriter<PairsMapping>::OutputTempMappingsToOverflow(
     uint32_t, std::vector<std::vector<PairsMapping>>&);
 template void MappingWriter<PairsMapping>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
@@ -1141,71 +1163,13 @@ void MappingWriter<MappingRecord>::RotateThreadOverflowWriter() {
   }
 }
 
-// MappingWithBarcode and MappingWithoutBarcode don't have WriteToFile/LoadFromFile methods
-// so we provide fallback implementations that use the legacy temp file system
-template <>
-void MappingWriter<MappingWithBarcode>::OutputTempMappingsToOverflow(
-    uint32_t num_reference_sequences,
-    std::vector<std::vector<MappingWithBarcode>> &mappings_on_diff_ref_seqs) {
-  // Fallback to legacy temp file system for barcode types
-  // This should not be called in practice since barcode types typically don't use low-memory mode
-  // But we need the symbol to exist for linking
-}
-
-template <>
-void MappingWriter<MappingWithBarcode>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
-    uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
-    const SequenceBatch &reference,
-    const khash_t(k64_seq) * barcode_whitelist_lookup_table) {
-  // Fallback - should not be called for barcode types
-}
-
-template <>
-void MappingWriter<MappingWithoutBarcode>::OutputTempMappingsToOverflow(
-    uint32_t num_reference_sequences,
-    std::vector<std::vector<MappingWithoutBarcode>> &mappings_on_diff_ref_seqs) {
-  // Fallback to legacy temp file system for barcode types
-  // This should not be called in practice since barcode types typically don't use low-memory mode
-  // But we need the symbol to exist for linking
-}
-
-template <>
-void MappingWriter<MappingWithoutBarcode>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
-    uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
-    const SequenceBatch &reference,
-    const khash_t(k64_seq) * barcode_whitelist_lookup_table) {
-  // Fallback - should not be called for barcode types
-}
-
-template <>
-void MappingWriter<PairedEndMappingWithBarcode>::OutputTempMappingsToOverflow(
-    uint32_t num_reference_sequences,
-    std::vector<std::vector<PairedEndMappingWithBarcode>> &mappings_on_diff_ref_seqs) {
-  // Fallback - should not be called for paired-end barcode types
-}
-
-template <>
-void MappingWriter<PairedEndMappingWithBarcode>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
-    uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
-    const SequenceBatch &reference,
-    const khash_t(k64_seq) * barcode_whitelist_lookup_table) {
-  // Fallback - should not be called for barcode types
-}
-
-template <>
-void MappingWriter<PairedEndMappingWithoutBarcode>::OutputTempMappingsToOverflow(
-    uint32_t num_reference_sequences,
-    std::vector<std::vector<PairedEndMappingWithoutBarcode>> &mappings_on_diff_ref_seqs) {
-  // Fallback - should not be called for paired-end barcode types
-}
-
-template <>
-void MappingWriter<PairedEndMappingWithoutBarcode>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
-    uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
-    const SequenceBatch &reference,
-    const khash_t(k64_seq) * barcode_whitelist_lookup_table) {
-  // Fallback - should not be called for barcode types
-}
+// All four BED mapping types (single/paired × with/without barcode) now
+// have WriteToFile / LoadFromFile / SerializedSize in bed_mapping.h plus
+// operator< / operator==, so the generic
+// MappingWriter<MappingRecord>::OutputTempMappingsToOverflow and
+// ProcessAndOutputMappingsInLowMemoryFromOverflow templates apply
+// directly. Explicit template instantiations live below alongside the
+// SAM/PAF/Pairs/Dual instantiations; no per-type stub bodies needed.
 
 // Add explicit instantiation for CloseThreadOverflowWriter
 template void MappingWriter<SAMMapping>::CloseThreadOverflowWriter();

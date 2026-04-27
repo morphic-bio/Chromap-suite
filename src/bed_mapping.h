@@ -1,10 +1,12 @@
 #ifndef BEDMAPPING_H_
 #define BEDMAPPING_H_
 
+#include <cstdio>
 #include <string>
 #include <tuple>
 
 #include "mapping.h"
+#include "utils.h"
 
 namespace chromap {
 
@@ -62,6 +64,55 @@ class MappingWithBarcode : public Mapping {
   uint32_t GetEndPosition() const {  // exclusive
     return fragment_start_position_ + fragment_length_;
   }
+
+  // Overflow-spill serialization (for --low-mem). Magic header catches
+  // accidental type-mismatched reads from a heterogeneous overflow file.
+  static constexpr uint32_t kSerdeMagic = 0x6263736Du;  // 'bcsm' (Barcode Single Mapping)
+  static constexpr size_t SerializedSize() {
+    return sizeof(uint32_t)        // magic
+         + sizeof(uint32_t)        // read_id_
+         + sizeof(uint64_t)        // cell_barcode_
+         + sizeof(uint32_t)        // fragment_start_position_
+         + sizeof(uint16_t)        // fragment_length_
+         + 3 * sizeof(uint8_t)     // mapq/direction/is_unique (bitfields → 3 bytes)
+         + sizeof(uint8_t);        // num_dups_
+  }
+  size_t WriteToFile(FILE *fp) const {
+    uint32_t magic = kSerdeMagic;
+    uint8_t mapq8 = mapq_, dir8 = direction_, uniq8 = is_unique_;
+    if (fwrite(&magic, sizeof(magic), 1, fp) != 1 ||
+        fwrite(&read_id_, sizeof(read_id_), 1, fp) != 1 ||
+        fwrite(&cell_barcode_, sizeof(cell_barcode_), 1, fp) != 1 ||
+        fwrite(&fragment_start_position_, sizeof(fragment_start_position_), 1, fp) != 1 ||
+        fwrite(&fragment_length_, sizeof(fragment_length_), 1, fp) != 1 ||
+        fwrite(&mapq8, 1, 1, fp) != 1 ||
+        fwrite(&dir8, 1, 1, fp) != 1 ||
+        fwrite(&uniq8, 1, 1, fp) != 1 ||
+        fwrite(&num_dups_, sizeof(num_dups_), 1, fp) != 1) {
+      return 0;
+    }
+    return SerializedSize();
+  }
+  void LoadFromFile(FILE *fp) {
+    uint32_t magic = 0;
+    if (fread(&magic, sizeof(magic), 1, fp) != 1 || magic != kSerdeMagic) {
+      ExitWithMessage("Invalid MappingWithBarcode serde header");
+    }
+    uint8_t mapq8 = 0, dir8 = 0, uniq8 = 0;
+    if (fread(&read_id_, sizeof(read_id_), 1, fp) != 1 ||
+        fread(&cell_barcode_, sizeof(cell_barcode_), 1, fp) != 1 ||
+        fread(&fragment_start_position_, sizeof(fragment_start_position_), 1, fp) != 1 ||
+        fread(&fragment_length_, sizeof(fragment_length_), 1, fp) != 1 ||
+        fread(&mapq8, 1, 1, fp) != 1 ||
+        fread(&dir8, 1, 1, fp) != 1 ||
+        fread(&uniq8, 1, 1, fp) != 1 ||
+        fread(&num_dups_, sizeof(num_dups_), 1, fp) != 1) {
+      ExitWithMessage("Truncated MappingWithBarcode payload");
+    }
+    mapq_ = mapq8;
+    direction_ = dir8;
+    is_unique_ = uniq8;
+  }
 };
 
 class MappingWithoutBarcode : public Mapping {
@@ -113,6 +164,50 @@ class MappingWithoutBarcode : public Mapping {
   }
   uint32_t GetEndPosition() const {  // exclusive
     return fragment_start_position_ + fragment_length_;
+  }
+
+  static constexpr uint32_t kSerdeMagic = 0x6E63736Du;  // 'ncsm' (No-barcode Single Mapping)
+  static constexpr size_t SerializedSize() {
+    return sizeof(uint32_t)        // magic
+         + sizeof(uint32_t)        // read_id_
+         + sizeof(uint32_t)        // fragment_start_position_
+         + sizeof(uint16_t)        // fragment_length_
+         + 3 * sizeof(uint8_t)     // mapq/direction/is_unique
+         + sizeof(uint16_t);       // num_dups_
+  }
+  size_t WriteToFile(FILE *fp) const {
+    uint32_t magic = kSerdeMagic;
+    uint8_t mapq8 = mapq_, dir8 = direction_, uniq8 = is_unique_;
+    if (fwrite(&magic, sizeof(magic), 1, fp) != 1 ||
+        fwrite(&read_id_, sizeof(read_id_), 1, fp) != 1 ||
+        fwrite(&fragment_start_position_, sizeof(fragment_start_position_), 1, fp) != 1 ||
+        fwrite(&fragment_length_, sizeof(fragment_length_), 1, fp) != 1 ||
+        fwrite(&mapq8, 1, 1, fp) != 1 ||
+        fwrite(&dir8, 1, 1, fp) != 1 ||
+        fwrite(&uniq8, 1, 1, fp) != 1 ||
+        fwrite(&num_dups_, sizeof(num_dups_), 1, fp) != 1) {
+      return 0;
+    }
+    return SerializedSize();
+  }
+  void LoadFromFile(FILE *fp) {
+    uint32_t magic = 0;
+    if (fread(&magic, sizeof(magic), 1, fp) != 1 || magic != kSerdeMagic) {
+      ExitWithMessage("Invalid MappingWithoutBarcode serde header");
+    }
+    uint8_t mapq8 = 0, dir8 = 0, uniq8 = 0;
+    if (fread(&read_id_, sizeof(read_id_), 1, fp) != 1 ||
+        fread(&fragment_start_position_, sizeof(fragment_start_position_), 1, fp) != 1 ||
+        fread(&fragment_length_, sizeof(fragment_length_), 1, fp) != 1 ||
+        fread(&mapq8, 1, 1, fp) != 1 ||
+        fread(&dir8, 1, 1, fp) != 1 ||
+        fread(&uniq8, 1, 1, fp) != 1 ||
+        fread(&num_dups_, sizeof(num_dups_), 1, fp) != 1) {
+      ExitWithMessage("Truncated MappingWithoutBarcode payload");
+    }
+    mapq_ = mapq8;
+    direction_ = dir8;
+    is_unique_ = uniq8;
   }
 };
 
@@ -182,6 +277,59 @@ class PairedEndMappingWithBarcode : public Mapping {
   uint32_t GetEndPosition() const {  // exclusive
     return fragment_start_position_ + fragment_length_;
   }
+
+  static constexpr uint32_t kSerdeMagic = 0x6263706Du;  // 'bcpm' (Barcode Paired Mapping)
+  static constexpr size_t SerializedSize() {
+    return sizeof(uint32_t)        // magic
+         + sizeof(uint32_t)        // read_id_
+         + sizeof(uint64_t)        // cell_barcode_
+         + sizeof(uint32_t)        // fragment_start_position_
+         + sizeof(uint16_t)        // fragment_length_
+         + 3 * sizeof(uint8_t)     // mapq/direction/is_unique
+         + sizeof(uint8_t)         // num_dups_
+         + sizeof(uint16_t)        // positive_alignment_length_
+         + sizeof(uint16_t);       // negative_alignment_length_
+  }
+  size_t WriteToFile(FILE *fp) const {
+    uint32_t magic = kSerdeMagic;
+    uint8_t mapq8 = mapq_, dir8 = direction_, uniq8 = is_unique_;
+    if (fwrite(&magic, sizeof(magic), 1, fp) != 1 ||
+        fwrite(&read_id_, sizeof(read_id_), 1, fp) != 1 ||
+        fwrite(&cell_barcode_, sizeof(cell_barcode_), 1, fp) != 1 ||
+        fwrite(&fragment_start_position_, sizeof(fragment_start_position_), 1, fp) != 1 ||
+        fwrite(&fragment_length_, sizeof(fragment_length_), 1, fp) != 1 ||
+        fwrite(&mapq8, 1, 1, fp) != 1 ||
+        fwrite(&dir8, 1, 1, fp) != 1 ||
+        fwrite(&uniq8, 1, 1, fp) != 1 ||
+        fwrite(&num_dups_, sizeof(num_dups_), 1, fp) != 1 ||
+        fwrite(&positive_alignment_length_, sizeof(positive_alignment_length_), 1, fp) != 1 ||
+        fwrite(&negative_alignment_length_, sizeof(negative_alignment_length_), 1, fp) != 1) {
+      return 0;
+    }
+    return SerializedSize();
+  }
+  void LoadFromFile(FILE *fp) {
+    uint32_t magic = 0;
+    if (fread(&magic, sizeof(magic), 1, fp) != 1 || magic != kSerdeMagic) {
+      ExitWithMessage("Invalid PairedEndMappingWithBarcode serde header");
+    }
+    uint8_t mapq8 = 0, dir8 = 0, uniq8 = 0;
+    if (fread(&read_id_, sizeof(read_id_), 1, fp) != 1 ||
+        fread(&cell_barcode_, sizeof(cell_barcode_), 1, fp) != 1 ||
+        fread(&fragment_start_position_, sizeof(fragment_start_position_), 1, fp) != 1 ||
+        fread(&fragment_length_, sizeof(fragment_length_), 1, fp) != 1 ||
+        fread(&mapq8, 1, 1, fp) != 1 ||
+        fread(&dir8, 1, 1, fp) != 1 ||
+        fread(&uniq8, 1, 1, fp) != 1 ||
+        fread(&num_dups_, sizeof(num_dups_), 1, fp) != 1 ||
+        fread(&positive_alignment_length_, sizeof(positive_alignment_length_), 1, fp) != 1 ||
+        fread(&negative_alignment_length_, sizeof(negative_alignment_length_), 1, fp) != 1) {
+      ExitWithMessage("Truncated PairedEndMappingWithBarcode payload");
+    }
+    mapq_ = mapq8;
+    direction_ = dir8;
+    is_unique_ = uniq8;
+  }
 };
 
 class PairedEndMappingWithoutBarcode : public Mapping {
@@ -241,6 +389,56 @@ class PairedEndMappingWithoutBarcode : public Mapping {
   }
   uint32_t GetEndPosition() const {  // exclusive
     return fragment_start_position_ + fragment_length_;
+  }
+
+  static constexpr uint32_t kSerdeMagic = 0x6E63706Du;  // 'ncpm' (No-barcode Paired Mapping)
+  static constexpr size_t SerializedSize() {
+    return sizeof(uint32_t)        // magic
+         + sizeof(uint32_t)        // read_id_
+         + sizeof(uint32_t)        // fragment_start_position_
+         + sizeof(uint16_t)        // fragment_length_
+         + 3 * sizeof(uint8_t)     // mapq/direction/is_unique
+         + sizeof(uint8_t)         // num_dups_
+         + sizeof(uint16_t)        // positive_alignment_length_
+         + sizeof(uint16_t);       // negative_alignment_length_
+  }
+  size_t WriteToFile(FILE *fp) const {
+    uint32_t magic = kSerdeMagic;
+    uint8_t mapq8 = mapq_, dir8 = direction_, uniq8 = is_unique_;
+    if (fwrite(&magic, sizeof(magic), 1, fp) != 1 ||
+        fwrite(&read_id_, sizeof(read_id_), 1, fp) != 1 ||
+        fwrite(&fragment_start_position_, sizeof(fragment_start_position_), 1, fp) != 1 ||
+        fwrite(&fragment_length_, sizeof(fragment_length_), 1, fp) != 1 ||
+        fwrite(&mapq8, 1, 1, fp) != 1 ||
+        fwrite(&dir8, 1, 1, fp) != 1 ||
+        fwrite(&uniq8, 1, 1, fp) != 1 ||
+        fwrite(&num_dups_, sizeof(num_dups_), 1, fp) != 1 ||
+        fwrite(&positive_alignment_length_, sizeof(positive_alignment_length_), 1, fp) != 1 ||
+        fwrite(&negative_alignment_length_, sizeof(negative_alignment_length_), 1, fp) != 1) {
+      return 0;
+    }
+    return SerializedSize();
+  }
+  void LoadFromFile(FILE *fp) {
+    uint32_t magic = 0;
+    if (fread(&magic, sizeof(magic), 1, fp) != 1 || magic != kSerdeMagic) {
+      ExitWithMessage("Invalid PairedEndMappingWithoutBarcode serde header");
+    }
+    uint8_t mapq8 = 0, dir8 = 0, uniq8 = 0;
+    if (fread(&read_id_, sizeof(read_id_), 1, fp) != 1 ||
+        fread(&fragment_start_position_, sizeof(fragment_start_position_), 1, fp) != 1 ||
+        fread(&fragment_length_, sizeof(fragment_length_), 1, fp) != 1 ||
+        fread(&mapq8, 1, 1, fp) != 1 ||
+        fread(&dir8, 1, 1, fp) != 1 ||
+        fread(&uniq8, 1, 1, fp) != 1 ||
+        fread(&num_dups_, sizeof(num_dups_), 1, fp) != 1 ||
+        fread(&positive_alignment_length_, sizeof(positive_alignment_length_), 1, fp) != 1 ||
+        fread(&negative_alignment_length_, sizeof(negative_alignment_length_), 1, fp) != 1) {
+      ExitWithMessage("Truncated PairedEndMappingWithoutBarcode payload");
+    }
+    mapq_ = mapq8;
+    direction_ = dir8;
+    is_unique_ = uniq8;
   }
 };
 
