@@ -1064,7 +1064,7 @@ void Chromap::MapPairedEndReads() {
     // controller sees chromap progress and can rebalance permits with the
     // GEX MAP domain. State is shared across the omp parallel region;
     // workers index into it by omp_get_thread_num().
-    constexpr int kPermitBatchSize = 64;
+    constexpr int kPermitBatchSize = 256;
     struct AtacPermitThreadState {
       int counter = -1;        // -1 => need to acquire on next loop body
       uint64_t wait_ns = 0;
