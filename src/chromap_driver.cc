@@ -240,7 +240,12 @@ void AddMacs3FragPeakOptions(cxxopts::Options &options) {
       "macs3-frag-compact-min-count-bits",
       "When using --macs3-frag-peaks-source memory, minimum high bits for duplicate "
       "count in Compact64 packing (falls back to 12-byte wide rows if too small) [16]",
-      cxxopts::value<int>()->default_value("16"), "INT");
+      cxxopts::value<int>()->default_value("16"), "INT")(
+      "macs3-frag-low-mem",
+      "Use sweep-line workspace for MACS3 FRAG peak calling (lower RSS, slightly "
+      "slower wall). Default: events workspace (faster, ~+3.8 GB at PBMC scale). "
+      "Recommended when sharing a host with STAR or another large-RAM consumer.",
+      cxxopts::value<bool>()->default_value("false")->implicit_value("true"));
 }
 
 void AddDevelopmentOptions(cxxopts::Options &options) {
@@ -981,6 +986,8 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     mapping_parameters.macs3_frag_min_length =
         result["macs3-frag-min-length"].as<int>();
     mapping_parameters.macs3_frag_max_gap = result["macs3-frag-max-gap"].as<int>();
+    mapping_parameters.macs3_frag_low_mem =
+        result["macs3-frag-low-mem"].as<bool>();
     if (result.count("macs3-frag-no-uint8-counts")) {
       mapping_parameters.macs3_frag_uint8_counts = false;
     }
@@ -1485,7 +1492,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     if (mapping_parameters.call_macs3_frag_peaks &&
         mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
       mapping_parameters.macs3_frag_buffer =
-          std::make_shared<std::vector<macs3::FragmentRecord>>();
+          std::make_shared<std::vector<std::vector<macs3::FragmentRecord>>>();
       mapping_parameters.macs3_frag_chrom_names =
           std::make_shared<std::vector<std::string>>();
     }
@@ -1603,22 +1610,65 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       const std::string &keep = mapping_parameters.macs3_frag_keep_intermediates_dir;
       const std::string parent = mapping_parameters.temp_directory_path;
       if (mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
-        // Buffer was filled in mapping order across worker threads; the
-        // VectorFragmentIterator wrapper sorts on construction so the
-        // sweep workspace's chrom-grouped + start-sorted contract is met.
-        auto iter = macs3::WrapVectorFragmentIterator(
-            std::move(*mapping_parameters.macs3_frag_buffer),
-            std::move(*mapping_parameters.macs3_frag_chrom_names));
-        // Drop the now-empty backing vectors so subsequent peaks-from-mem
-        // calls don't see stale state.
-        mapping_parameters.macs3_frag_buffer.reset();
-        mapping_parameters.macs3_frag_chrom_names.reset();
-        if (!chromap::peaks::RunMacs3FragPeakPipelineFromSortedIterator(
-                *iter, pr, chromap::peaks::Macs3FragPeakPipelinePaths(),
-                mapping_parameters.macs3_frag_peaks_narrowpeak_path,
-                mapping_parameters.macs3_frag_peaks_summits_path, keep, parent,
-                &work_used, &err)) {
-          chromap::ExitWithMessage("MACS3 FRAG peaks: " + err);
+        auto& buckets = *mapping_parameters.macs3_frag_buffer;
+        auto& chrom_names = *mapping_parameters.macs3_frag_chrom_names;
+        if (mapping_parameters.macs3_frag_low_mem) {
+          // Sweep workspace: lower RSS, slightly slower wall. Flatten the
+          // per-chrom buckets into a single sorted FragmentRecord stream
+          // (buckets are already chrom-grouped + start-sorted because
+          // OutputMappingsInVector iterates rid in order, so concatenation
+          // preserves the contract).
+          mem_mode = "workspace_sweep_low_mem";
+          std::vector<macs3::FragmentRecord> flat;
+          size_t total = 0;
+          for (const auto& b : buckets) total += b.size();
+          flat.reserve(total);
+          for (auto& b : buckets) {
+            for (auto& rec : b) flat.push_back(rec);
+            std::vector<macs3::FragmentRecord>().swap(b);
+          }
+          std::vector<std::vector<macs3::FragmentRecord>>().swap(buckets);
+          auto iter = macs3::WrapVectorFragmentIterator(
+              std::move(flat), std::move(chrom_names));
+          mapping_parameters.macs3_frag_buffer.reset();
+          mapping_parameters.macs3_frag_chrom_names.reset();
+          if (!chromap::peaks::RunMacs3FragPeakPipelineFromSortedIterator(
+                  *iter, pr, chromap::peaks::Macs3FragPeakPipelinePaths(),
+                  mapping_parameters.macs3_frag_peaks_narrowpeak_path,
+                  mapping_parameters.macs3_frag_peaks_summits_path, keep, parent,
+                  &work_used, &err)) {
+            chromap::ExitWithMessage("MACS3 FRAG peaks: " + err);
+          }
+        } else {
+          // Events workspace (default): parallel per-chrom finalize; ~+3.8GB
+          // RAM at PBMC scale; ~25-30s wall vs ~64s sweep on the same input.
+          mem_mode = "workspace_events_parallel";
+          std::vector<chromap::peaks::ChromFragments> per_chrom;
+          per_chrom.reserve(buckets.size());
+          for (size_t i = 0; i < buckets.size(); ++i) {
+            chromap::peaks::ChromFragments cf;
+            cf.name = (i < chrom_names.size()) ? chrom_names[i] : std::string();
+            cf.frags.reserve(buckets[i].size());
+            for (const auto& rec : buckets[i]) {
+              chromap::peaks::Fragment f;
+              f.start = rec.start;
+              f.end = rec.end;
+              f.count = static_cast<int32_t>(rec.count);
+              cf.frags.push_back(f);
+            }
+            std::vector<macs3::FragmentRecord>().swap(buckets[i]);
+            per_chrom.push_back(std::move(cf));
+          }
+          std::vector<std::vector<macs3::FragmentRecord>>().swap(buckets);
+          mapping_parameters.macs3_frag_buffer.reset();
+          mapping_parameters.macs3_frag_chrom_names.reset();
+          if (!chromap::peaks::RunMacs3FragPeakPipelineFromFragments(
+                  &per_chrom, pr, chromap::peaks::Macs3FragPeakPipelinePaths(),
+                  mapping_parameters.macs3_frag_peaks_narrowpeak_path,
+                  mapping_parameters.macs3_frag_peaks_summits_path, keep, parent,
+                  &work_used, &err, nullptr)) {
+            chromap::ExitWithMessage("MACS3 FRAG peaks: " + err);
+          }
         }
       } else {
         if (!chromap::peaks::RunMacs3FragPeakPipelineFromFragments(

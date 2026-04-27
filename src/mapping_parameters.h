@@ -132,13 +132,22 @@ struct MappingParameters {
   Macs3FragPeaksSource macs3_frag_peaks_source = Macs3FragPeaksSource::kFile;
   int macs3_frag_compact_min_count_bits = 16;
   std::shared_ptr<peaks::FragPeakMemoryAccumulator> macs3_frag_memory_accumulator;
-  // kMemory peak source: writer pushes FragmentRecord into this buffer per
-  // mapped fragment (instead of buffering 6 events/fragment in the legacy
-  // Macs3FragPeakWorkspace), and the chrom_names table is populated once
-  // when the writer's reference is loaded. Driver consumes the buffer via
-  // macs3::WrapVectorFragmentIterator → RunMacs3FragPeakPipelineFromSortedIterator.
-  // Memory profile: ~16 B/fragment vs ~48 B/fragment for the events buffer.
-  std::shared_ptr<std::vector<macs3::FragmentRecord>> macs3_frag_buffer;
+  // kMemory peak source: writer pushes FragmentRecord into per-chrom
+  // buckets (indexed by chrom_id) instead of one flat vector. Fragments
+  // arrive chrom-grouped + start-sorted from OutputMappingsInVector
+  // (single-threaded loop), so each bucket ends up sorted with no extra
+  // work. The driver feeds the buckets into either:
+  //   - the events workspace (RunMacs3FragPeakPipelineFromFragments,
+  //     parallel per-chrom finalize) when macs3_frag_low_mem == false
+  //     (default — fast, ~+3.8 GB RAM for the events buffer), or
+  //   - the sweep workspace (WrapVectorFragmentIterator +
+  //     RunMacs3FragPeakPipelineFromSortedIterator) when
+  //     macs3_frag_low_mem == true (~tens of KB peak heap; pick this
+  //     when sharing a host with STAR or another large-RAM consumer).
+  // Memory profile of the buckets themselves: ~16 B/fragment regardless
+  // of mode.
+  std::shared_ptr<std::vector<std::vector<macs3::FragmentRecord>>>
+      macs3_frag_buffer;
   std::shared_ptr<std::vector<std::string>> macs3_frag_chrom_names;
   std::string macs3_frag_peaks_narrowpeak_path;
   std::string macs3_frag_peaks_summits_path;
@@ -146,6 +155,12 @@ struct MappingParameters {
   int macs3_frag_min_length = 200;
   int macs3_frag_max_gap = 30;
   bool macs3_frag_uint8_counts = true;
+  // When true, force the sweep-line workspace for the in-memory peak
+  // path (lower peak RSS, slightly slower wall). When false (default),
+  // use the events workspace (parallel per-chrom finalize, faster wall,
+  // ~+3.8 GB RAM at PBMC 3k scale). The kFile peak source always uses
+  // the events workspace regardless of this flag.
+  bool macs3_frag_low_mem = false;
   std::string macs3_frag_keep_intermediates_dir;
 
   // Dual ATAC: BAM/CRAM to mapping_output_file_path and fragments to
