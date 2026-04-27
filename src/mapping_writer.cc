@@ -1689,6 +1689,10 @@ void MappingWriter<PairedEndAtacDualMapping>::OutputHeader(
       names.emplace_back(reference.GetSequenceNameAt(i));
     }
   }
+  if (mapping_parameters_.macs3_frag_buffer) {
+    mapping_parameters_.macs3_frag_buffer->assign(
+        num_reference_sequences, std::vector<macs3::FragmentRecord>());
+  }
 }
 
 template <>
@@ -1720,7 +1724,11 @@ void MappingWriter<PairedEndAtacDualMapping>::AppendMapping(
     rec.end = static_cast<int32_t>(mapping_end_position);
     rec.count = static_cast<uint32_t>(frag.num_dups_);
     if (rec.end > rec.start && rec.count > 0) {
-      mapping_parameters_.macs3_frag_buffer->push_back(rec);
+      auto& buckets = *mapping_parameters_.macs3_frag_buffer;
+      if (rid >= buckets.size()) {
+        buckets.resize(rid + 1);
+      }
+      buckets[rid].push_back(rec);
     }
   }
 
