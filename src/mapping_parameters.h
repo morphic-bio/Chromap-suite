@@ -163,6 +163,23 @@ struct MappingParameters {
   bool macs3_frag_low_mem = false;
   std::string macs3_frag_keep_intermediates_dir;
 
+  // Optional STAR-managed dynamic-permit hooks. Signatures match
+  // process_features' pf_permit_{acquire,release}_fn so the same STAR-side
+  // shim shape can carry both domains. When both pointers are non-null
+  // the chromap PE batch loop will call acquire() before each per-thread
+  // mini-batch (~64 read pairs) and release() at the end of the batch
+  // with telemetry (waitNs from acquire, work_units, work_bytes, work_ns).
+  uint64_t (*permit_acquire_hook)(void *hook_ctx) = nullptr;
+  void (*permit_release_hook)(void *hook_ctx,
+                              uint64_t wait_ns,
+                              uint64_t work_units,
+                              uint64_t work_bytes,
+                              uint64_t work_ns) = nullptr;
+  void *permit_hook_ctx = nullptr;
+  bool PermitHooksEnabled() const {
+    return permit_acquire_hook != nullptr && permit_release_hook != nullptr;
+  }
+
   // Dual ATAC: BAM/CRAM to mapping_output_file_path and fragments to
   // atac_fragment_output_file_path (one pass; not supported with --low-mem).
   bool AtacDualFragmentAndBam() const {
