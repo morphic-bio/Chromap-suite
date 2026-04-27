@@ -1103,10 +1103,21 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     }
 
     if (mapping_parameters.call_macs3_frag_peaks) {
-      if (!mapping_parameters.AtacDualFragmentAndBam()) {
+      // Two reachable shapes:
+      //   (a) BAM/CRAM dual + --atac-fragments  (AtacDualFragmentAndBam() true)
+      //   (b) BED-only PE+barcoded output       (BED format, paired-end, -b set)
+      const bool be_dual = mapping_parameters.AtacDualFragmentAndBam();
+      const bool be_bed = (mapping_parameters.mapping_output_format ==
+                               MAPPINGFORMAT_BED &&
+                           !mapping_parameters.read_file2_paths.empty() &&
+                           !mapping_parameters.barcode_file_paths.empty());
+      if (!be_dual && !be_bed) {
         chromap::ExitWithMessage(
-            "--call-macs3-frag-peaks requires paired-end barcoded reads, --BAM or "
-            "--CRAM, and --atac-fragments (same constraints as dual ATAC output)");
+            "--call-macs3-frag-peaks requires either:\n"
+            "  (a) BAM/CRAM dual: paired-end barcoded reads, --BAM or --CRAM, "
+            "and --atac-fragments\n"
+            "  (b) BED-only:      paired-end barcoded reads with default "
+            "(BED) output");
       }
       if (mapping_parameters.macs3_frag_peaks_narrowpeak_path.empty() ||
           mapping_parameters.macs3_frag_peaks_summits_path.empty()) {
@@ -1580,9 +1591,15 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         std::cerr
             << "(This C++ pipeline is slower than standalone MACS3 on large inputs.)\n";
       } else {
+        // kFile source: dual ATAC reads from --atac-fragments TSV; BED-only
+        // peak calling reads from -o (which IS the fragments BED).
+        const std::string& fragments_path =
+            mapping_parameters.AtacDualFragmentAndBam()
+                ? mapping_parameters.atac_fragment_output_file_path
+                : mapping_parameters.mapping_output_file_path;
         std::cerr
             << "MACS3-compatible FRAG peak calling (opt-in): reading fragments from "
-            << mapping_parameters.atac_fragment_output_file_path
+            << fragments_path
             << "\n(This C++ pipeline is slower than standalone MACS3 on large inputs.)\n";
       }
       std::vector<chromap::peaks::ChromFragments> chs;
@@ -1593,11 +1610,13 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
               "MACS3 FRAG peaks (memory source): missing in-memory buffer or chrom_names");
         }
       } else {
-        if (!chromap::peaks::LoadFragmentsFromTsv(
-                mapping_parameters.atac_fragment_output_file_path, &chs)) {
+        const std::string& fragments_path =
+            mapping_parameters.AtacDualFragmentAndBam()
+                ? mapping_parameters.atac_fragment_output_file_path
+                : mapping_parameters.mapping_output_file_path;
+        if (!chromap::peaks::LoadFragmentsFromTsv(fragments_path, &chs)) {
           chromap::ExitWithMessage(
-              "MACS3 FRAG peaks: failed to read fragments file " +
-              mapping_parameters.atac_fragment_output_file_path);
+              "MACS3 FRAG peaks: failed to read fragments file " + fragments_path);
         }
       }
       chromap::peaks::Macs3FragPeakPipelineParams pr;

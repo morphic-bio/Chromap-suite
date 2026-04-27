@@ -7,9 +7,11 @@
 #   macs3-frag-peaks-source : memory | file
 #   --macs3-frag-low-mem    : on (sweep workspace) | off (events workspace)
 #
-# Effective cells (BAM + atac-fragments dual; chromap --low-mem is now
-# supported via the PairedEndAtacDualMapping overflow path):
+# Cells fall into two output shapes:
+#   - BAM + atac-fragments dual (rows 1-6)
+#   - BED-only output, peak calling on the BED file directly (rows 7-12)
 #
+# BAM-dual cells:
 #   #1: kMemory + events                         (default)
 #   #2: kMemory + sweep   (--macs3-frag-low-mem)
 #   #3: kFile   + events  (--macs3-frag-peaks-source file)
@@ -17,8 +19,13 @@
 #   #5: kMemory + events  + chromap --low-mem
 #   #6: kMemory + sweep   + chromap --low-mem    (full lo-mem stack)
 #
-# BED-only peak-calling (no BAM, no atac-fragments) is currently rejected
-# by chromap_driver.cc validation; that path is a deferred follow-up.
+# BED-only cells (no --BAM, no --atac-fragments; -o is the BED fragments):
+#   #7:  BED kMemory + events                    (default for BED)
+#   #8:  BED kMemory + sweep
+#   #9:  BED kFile   + events
+#   #10: BED kMemory + events  + chromap --low-mem
+#   #11: BED kMemory + sweep   + chromap --low-mem
+#   #12: BED kFile   + events  + chromap --low-mem  (full lo-mem stack)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,10 +48,16 @@ R1="${FIXTURE_ATAC}/pbmc_unsorted_3k_S3_L001_R1_001.fastq.gz,${FIXTURE_ATAC}/pbm
 R2="${FIXTURE_ATAC}/pbmc_unsorted_3k_S3_L001_R3_001.fastq.gz,${FIXTURE_ATAC}/pbmc_unsorted_3k_S3_L002_R3_001.fastq.gz,${FIXTURE_ATAC}/pbmc_unsorted_3k_S3_L003_R3_001.fastq.gz,${FIXTURE_ATAC}/pbmc_unsorted_3k_S3_L004_R3_001.fastq.gz"
 BC="${FIXTURE_ATAC}/pbmc_unsorted_3k_S3_L001_R2_001.fastq.gz,${FIXTURE_ATAC}/pbmc_unsorted_3k_S3_L002_R2_001.fastq.gz,${FIXTURE_ATAC}/pbmc_unsorted_3k_S3_L003_R2_001.fastq.gz,${FIXTURE_ATAC}/pbmc_unsorted_3k_S3_L004_R2_001.fastq.gz"
 
-chromap_common_args=(
+chromap_dual_args=(
   -t "${THREADS}" -x "${INDEX}" -r "${REF}" -1 "${R1}" -2 "${R2}" -b "${BC}"
   --barcode-whitelist "${WHITELIST}" -l 2000 --trim-adapters --remove-pcr-duplicates
   --remove-pcr-duplicates-at-cell-level --Tn5-shift --BAM --sort-bam
+)
+
+chromap_bed_args=(
+  -t "${THREADS}" -x "${INDEX}" -r "${REF}" -1 "${R1}" -2 "${R2}" -b "${BC}"
+  --barcode-whitelist "${WHITELIST}" -l 2000 --trim-adapters --remove-pcr-duplicates
+  --remove-pcr-duplicates-at-cell-level --Tn5-shift
 )
 
 mkdir -p "${OUTROOT}"
@@ -55,10 +68,29 @@ run_cell() {
   local cell_dir="${OUTROOT}/${label}"
   mkdir -p "${cell_dir}"
   echo "[matrix] ${label}: chromap $*" >&2
-  "${CHROMAP}" "${chromap_common_args[@]}" \
+  "${CHROMAP}" "${chromap_dual_args[@]}" \
     --atac-fragments "${cell_dir}/fragments.tsv.gz" \
     --summary "${cell_dir}/summary.tsv" \
     -o "${cell_dir}/possorted_bam.bam" \
+    --call-macs3-frag-peaks \
+    --macs3-frag-peaks-output "${cell_dir}/chromap_macs3_frag.narrowPeak" \
+    --macs3-frag-summits-output "${cell_dir}/chromap_macs3_frag_summits.bed" \
+    --macs3-frag-pvalue 1e-5 \
+    --macs3-frag-min-length "${MINLEN}" \
+    --macs3-frag-max-gap "${MAXGAP}" \
+    "$@" \
+    >>"${cell_dir}/run.log" 2>&1
+}
+
+run_bed_cell() {
+  local label=$1
+  shift
+  local cell_dir="${OUTROOT}/${label}"
+  mkdir -p "${cell_dir}"
+  echo "[matrix] ${label}: chromap (BED) $*" >&2
+  "${CHROMAP}" "${chromap_bed_args[@]}" \
+    --summary "${cell_dir}/summary.tsv" \
+    -o "${cell_dir}/fragments.bed" \
     --call-macs3-frag-peaks \
     --macs3-frag-peaks-output "${cell_dir}/chromap_macs3_frag.narrowPeak" \
     --macs3-frag-summits-output "${cell_dir}/chromap_macs3_frag_summits.bed" \
@@ -91,13 +123,23 @@ run_cell cell4_kFile_events_chromap_lowmem --macs3-frag-peaks-source file --low-
 run_cell cell5_kMemory_events_chromap_lowmem --macs3-frag-peaks-source memory --low-mem
 run_cell cell6_kMemory_sweep_chromap_lowmem --macs3-frag-peaks-source memory --macs3-frag-low-mem --low-mem
 
+run_bed_cell cell7_BED_kMemory_events --macs3-frag-peaks-source memory
+run_bed_cell cell8_BED_kMemory_sweep  --macs3-frag-peaks-source memory --macs3-frag-low-mem
+run_bed_cell cell9_BED_kFile_events   --macs3-frag-peaks-source file
+run_bed_cell cell10_BED_kMemory_events_chromap_lowmem --macs3-frag-peaks-source memory --low-mem
+run_bed_cell cell11_BED_kMemory_sweep_chromap_lowmem  --macs3-frag-peaks-source memory --macs3-frag-low-mem --low-mem
+run_bed_cell cell12_BED_kFile_events_chromap_lowmem   --macs3-frag-peaks-source file --low-mem
+
 # Validate each cell produces byte-identical narrowPeak vs the standalone reference,
 # and that all cells are byte-identical to each other (transitive via #1).
 echo "[matrix] validating byte-identity..." >&2
 fail=0
 for cell in cell1_kMemory_events cell2_kMemory_sweep cell3_kFile_events \
             cell4_kFile_events_chromap_lowmem cell5_kMemory_events_chromap_lowmem \
-            cell6_kMemory_sweep_chromap_lowmem ; do
+            cell6_kMemory_sweep_chromap_lowmem \
+            cell7_BED_kMemory_events cell8_BED_kMemory_sweep cell9_BED_kFile_events \
+            cell10_BED_kMemory_events_chromap_lowmem cell11_BED_kMemory_sweep_chromap_lowmem \
+            cell12_BED_kFile_events_chromap_lowmem ; do
   np="${OUTROOT}/${cell}/chromap_macs3_frag.narrowPeak"
   sm="${OUTROOT}/${cell}/chromap_macs3_frag_summits.bed"
   if ! cmp -s "${np}" "${REF_NP}" ; then
@@ -118,5 +160,5 @@ fi
 NP_MD5=$(md5sum "${REF_NP}" | cut -d' ' -f1)
 SM_MD5=$(md5sum "${REF_SM}" | cut -d' ' -f1)
 N_PEAKS=$(wc -l < "${REF_NP}")
-echo "MATRIX PASS: 6 cells × byte-identical narrowPeak (md5=${NP_MD5}, peaks=${N_PEAKS}, summits md5=${SM_MD5})"
+echo "MATRIX PASS: 12 cells × byte-identical narrowPeak (md5=${NP_MD5}, peaks=${N_PEAKS}, summits md5=${SM_MD5})"
 echo "outputs: ${OUTROOT}"
