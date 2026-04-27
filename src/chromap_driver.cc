@@ -1089,10 +1089,12 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         chromap::ExitWithMessage(
             "--atac-fragments requires --BAM or --CRAM primary output (-o)");
       }
-      if (mapping_parameters.low_memory_mode) {
-        chromap::ExitWithMessage(
-            "--atac-fragments is not supported with --low-mem");
-      }
+      // --atac-fragments + --low-mem is now supported by the
+      // PairedEndAtacDualMapping overflow path (see mapping_writer.cc
+      // explicit instantiations). The dual writer's AppendMapping is
+      // called from ProcessAndOutputMappingsInLowMemoryFromOverflow in
+      // chrom-sorted order on read-back, emitting both BAM rows and
+      // fragments TSV identically to the non-low-mem path.
       if (mapping_parameters.atac_fragment_output_file_path ==
           mapping_parameters.mapping_output_file_path) {
         chromap::ExitWithMessage(
