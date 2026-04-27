@@ -80,7 +80,8 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 	benchmark-peak-memory-fullset test-peak-100k test-peak-calibration-100k \
 	test-peak-input-repr-100k test-peak-pileup-100k test-peak-frag-pileup-100k \
 	test-peak-lambda-100k test-peak-score-100k test-peak-bdgpeakcall-100k \
-	test-peak-narrowpeak-100k test-peak-integration-100k libmacs3
+	test-peak-narrowpeak-100k test-peak-integration-100k \
+	test-peak-integration-matrix-100k test-lowmem-bed-100k test-smoke libmacs3
 clean:
 	-rm -rf $(exec) $(libchromap) $(runner) $(peak_caller) $(objs_dir)
 	-$(MAKE) -C $(LIBMACS3_DIR) clean
@@ -125,6 +126,27 @@ test-peak-narrowpeak-100k: chromap_callpeaks
 # Integrated chromap opt-in peak caller vs chromap_callpeaks + MACS3 BED3 (100K fixture).
 test-peak-integration-100k: chromap chromap_callpeaks
 	RUN_MACS3=0 ./tests/run_chromap_peak_integration_100k.sh
+
+# 6-cell integration matrix on 100K: every reachable combination of
+#   macs3-frag-peaks-source = {memory, file}
+#   --macs3-frag-low-mem    = {on, off}    (sweep vs events MACS3 workspace)
+#   chromap --low-mem       = {on, off}    (chromap mapping spill mode)
+# All cells assert byte-identical narrowPeak vs the standalone reference.
+test-peak-integration-matrix-100k: chromap chromap_callpeaks
+	./tests/run_chromap_peak_integration_matrix_100k.sh
+
+# chromap --low-mem BED output regression: paired+barcode, paired+nobarcode,
+# single+barcode. Each pair (no-low-mem, --low-mem) must produce sorted
+# byte-identical BED. Guards against the empty-overflow-stub bug.
+test-lowmem-bed-100k: chromap
+	./tests/run_chromap_lowmem_bed_smoke_100k.sh
+
+# Cheap smoke bundle: unit + frag_compact_store + the two integration
+# matrices that cover the chromap+MACS3 integration surface end-to-end.
+# ~3 min total; suitable for pre-commit CI.
+test-smoke: test-unit test-frag-compact-store \
+            test-lowmem-bed-100k \
+            test-peak-integration-matrix-100k
 
 # Unit test for Y-filtering
 test-unit: dir
