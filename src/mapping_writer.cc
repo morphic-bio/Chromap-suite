@@ -1086,6 +1086,11 @@ template void MappingWriter<PAFMapping>::OutputTempMappingsToOverflow(
 template void MappingWriter<PAFMapping>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
     uint32_t, uint32_t, const SequenceBatch&, const khash_t(k64_seq)*);
 
+template void MappingWriter<PairedEndAtacDualMapping>::OutputTempMappingsToOverflow(
+    uint32_t, std::vector<std::vector<PairedEndAtacDualMapping>>&);
+template void MappingWriter<PairedEndAtacDualMapping>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
+    uint32_t, uint32_t, const SequenceBatch&, const khash_t(k64_seq)*);
+
 template void MappingWriter<PairsMapping>::OutputTempMappingsToOverflow(
     uint32_t, std::vector<std::vector<PairsMapping>>&);
 template void MappingWriter<PairsMapping>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
@@ -1224,17 +1229,11 @@ template void MappingWriter<PairedEndMappingWithBarcode>::RotateThreadOverflowWr
 template void MappingWriter<PairedEndMappingWithoutBarcode>::RotateThreadOverflowWriter();
 template void MappingWriter<PairedEndAtacDualMapping>::RotateThreadOverflowWriter();
 
-template <>
-void MappingWriter<PairedEndAtacDualMapping>::OutputTempMappingsToOverflow(
-    uint32_t num_reference_sequences,
-    std::vector<std::vector<PairedEndAtacDualMapping>>
-        &mappings_on_diff_ref_seqs) {}
-
-template <>
-void MappingWriter<PairedEndAtacDualMapping>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
-    uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
-    const SequenceBatch &reference,
-    const khash_t(k64_seq) *barcode_whitelist_lookup_table) {}
+// PairedEndAtacDualMapping has WriteToFile / LoadFromFile / SerializedSize
+// (see atac_dual_mapping.h) and operator< / operator==, so the generic
+// MappingWriter<MappingRecord> overflow templates apply directly. Use
+// explicit instantiations below in place of the empty stubs that
+// previously blocked --low-mem + --atac-fragments dual ATAC output.
 
 #endif  // LEGACY_OVERFLOW
 

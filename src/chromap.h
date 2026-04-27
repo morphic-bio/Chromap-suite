@@ -785,12 +785,10 @@ template <typename MappingRecord>
 void Chromap::MapPairedEndReads() {
   double real_start_time = GetRealTime();
 
-  if (mapping_parameters_.AtacDualFragmentAndBam() &&
-      mapping_parameters_.low_memory_mode) {
-    chromap::ExitWithMessage(
-        "ATAC dual output (--atac-fragments with --BAM/--CRAM) is not "
-        "supported together with --low-mem");
-  }
+  // ATAC dual output (--atac-fragments + --BAM/--CRAM) under --low-mem
+  // is supported as of relink-libmacs3 — the PairedEndAtacDualMapping
+  // overflow path in mapping_writer.cc emits both streams identically
+  // to the non-low-mem path on read-back.
 
   // Load reference
   SequenceBatch reference;

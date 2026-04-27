@@ -7,12 +7,15 @@
 #   macs3-frag-peaks-source : memory | file
 #   --macs3-frag-low-mem    : on (sweep workspace) | off (events workspace)
 #
-# Effective cells (chromap --low-mem is mutually exclusive with
-# --atac-fragments, so it's not a usable axis):
+# Effective cells (BAM + atac-fragments dual; chromap --low-mem is now
+# supported via the PairedEndAtacDualMapping overflow path):
 #
-#   #1: kMemory + events  (default)
+#   #1: kMemory + events                         (default)
 #   #2: kMemory + sweep   (--macs3-frag-low-mem)
 #   #3: kFile   + events  (--macs3-frag-peaks-source file)
+#   #4: kFile   + events  + chromap --low-mem
+#   #5: kMemory + events  + chromap --low-mem
+#   #6: kMemory + sweep   + chromap --low-mem    (full lo-mem stack)
 #
 # BED-only peak-calling (no BAM, no atac-fragments) is currently rejected
 # by chromap_driver.cc validation; that path is a deferred follow-up.
@@ -84,12 +87,17 @@ REF_SM="${OUTROOT}/standalone_ref/cpp_macs3_frag_summits.bed"
 run_cell cell1_kMemory_events --macs3-frag-peaks-source memory
 run_cell cell2_kMemory_sweep  --macs3-frag-peaks-source memory --macs3-frag-low-mem
 run_cell cell3_kFile_events   --macs3-frag-peaks-source file
+run_cell cell4_kFile_events_chromap_lowmem --macs3-frag-peaks-source file --low-mem
+run_cell cell5_kMemory_events_chromap_lowmem --macs3-frag-peaks-source memory --low-mem
+run_cell cell6_kMemory_sweep_chromap_lowmem --macs3-frag-peaks-source memory --macs3-frag-low-mem --low-mem
 
 # Validate each cell produces byte-identical narrowPeak vs the standalone reference,
 # and that all cells are byte-identical to each other (transitive via #1).
 echo "[matrix] validating byte-identity..." >&2
 fail=0
-for cell in cell1_kMemory_events cell2_kMemory_sweep cell3_kFile_events ; do
+for cell in cell1_kMemory_events cell2_kMemory_sweep cell3_kFile_events \
+            cell4_kFile_events_chromap_lowmem cell5_kMemory_events_chromap_lowmem \
+            cell6_kMemory_sweep_chromap_lowmem ; do
   np="${OUTROOT}/${cell}/chromap_macs3_frag.narrowPeak"
   sm="${OUTROOT}/${cell}/chromap_macs3_frag_summits.bed"
   if ! cmp -s "${np}" "${REF_NP}" ; then
@@ -110,5 +118,5 @@ fi
 NP_MD5=$(md5sum "${REF_NP}" | cut -d' ' -f1)
 SM_MD5=$(md5sum "${REF_SM}" | cut -d' ' -f1)
 N_PEAKS=$(wc -l < "${REF_NP}")
-echo "MATRIX PASS: 3 cells × byte-identical narrowPeak (md5=${NP_MD5}, peaks=${N_PEAKS}, summits md5=${SM_MD5})"
+echo "MATRIX PASS: 6 cells × byte-identical narrowPeak (md5=${NP_MD5}, peaks=${N_PEAKS}, summits md5=${SM_MD5})"
 echo "outputs: ${OUTROOT}"
