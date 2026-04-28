@@ -83,39 +83,6 @@ uint64_t ParseSizeString(const std::string &value,
   return static_cast<uint64_t>(number * multiplier);
 }
 
-void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
-  if (mapping_parameters.reference_file_path.empty()) {
-    chromap::ExitWithMessage("No reference specified");
-  }
-  if (mapping_parameters.index_file_path.empty()) {
-    chromap::ExitWithMessage("No index specified");
-  }
-  if (mapping_parameters.mapping_output_file_path.empty()) {
-    chromap::ExitWithMessage("No output specified");
-  }
-  if (mapping_parameters.read_file1_paths.empty()) {
-    chromap::ExitWithMessage("No read 1 input specified");
-  }
-  if (!mapping_parameters.read_file2_paths.empty() &&
-      mapping_parameters.read_file1_paths.size() !=
-          mapping_parameters.read_file2_paths.size()) {
-    chromap::ExitWithMessage("Read 1 and read 2 input counts differ");
-  }
-  if (!mapping_parameters.barcode_file_paths.empty() &&
-      mapping_parameters.read_file1_paths.size() !=
-          mapping_parameters.barcode_file_paths.size()) {
-    chromap::ExitWithMessage("Read 1 and barcode input counts differ");
-  }
-  if (mapping_parameters.barcode_file_paths.empty() &&
-      !mapping_parameters.barcode_whitelist_file_path.empty()) {
-    chromap::ExitWithMessage(
-        "Barcode whitelist was supplied without barcode reads");
-  }
-  if (mapping_parameters.write_index && !mapping_parameters.sort_bam) {
-    chromap::ExitWithMessage("--write-index requires --sort-bam");
-  }
-}
-
 void PrintRunSummary(const chromap::MappingParameters &mapping_parameters) {
   std::cerr << "chromap_lib_runner launching libchromap\n";
   std::cerr << "Reference file: " << mapping_parameters.reference_file_path
@@ -428,7 +395,13 @@ int main(int argc, char **argv) {
       mapping_parameters.skip_barcode_check = true;
     }
 
-    ValidateInputs(mapping_parameters);
+    const chromap::ChromapRunResult validation =
+        chromap::ValidateMappingParameters(mapping_parameters);
+    if (!validation.ok) {
+      std::cerr << "chromap_lib_runner validation failed: "
+                << validation.message << "\n";
+      return validation.exit_code == 0 ? 1 : validation.exit_code;
+    }
     PrintRunSummary(mapping_parameters);
 
     const chromap::ChromapRunResult run_result =

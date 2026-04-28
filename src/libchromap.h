@@ -15,6 +15,11 @@ struct ChromapRunResult {
   std::string summary_path;
 };
 
+// Validates option combinations that are meaningful once MappingParameters have
+// been populated by a CLI, runner, or embedding application.
+ChromapRunResult ValidateMappingParameters(
+    const MappingParameters &mapping_parameters);
+
 // Runs Chromap mapping through the callable core. This first library boundary
 // preserves Chromap's file-output semantics so it can be validated directly
 // against the existing CLI before any STAR-suite integration.

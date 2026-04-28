@@ -47,11 +47,12 @@ all: dir $(exec) $(peak_caller)
 dir:
 	mkdir -p $(objs_dir) $(objs_dir)/peak_caller
 
-$(exec): $(core_objs) $(driver_objs) $(peak_caller_lib_objs)
-	$(CXX) $(CXXFLAGS) $(core_objs) $(driver_objs) $(peak_caller_lib_objs) -o $(exec) $(LDFLAGS)
+$(exec): $(driver_objs) $(libchromap)
+	$(CXX) $(CXXFLAGS) $(driver_objs) $(libchromap) -o $(exec) $(LDFLAGS)
 
-$(libchromap): $(core_objs) $(libchromap_objs) $(objs_dir)/peak_caller/frag_compact_store.o
-	ar rcs $(libchromap) $(core_objs) $(libchromap_objs) $(objs_dir)/peak_caller/frag_compact_store.o
+$(libchromap): $(core_objs) $(libchromap_objs) $(peak_caller_lib_objs)
+	rm -f $(libchromap)
+	ar rcs $(libchromap) $(core_objs) $(libchromap_objs) $(peak_caller_lib_objs)
 
 $(runner): $(libchromap) $(runner_objs)
 	$(CXX) $(CXXFLAGS) $(runner_objs) $(libchromap) -o $(runner) $(LDFLAGS)

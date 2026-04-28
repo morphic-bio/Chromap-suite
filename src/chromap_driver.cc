@@ -3,7 +3,6 @@
 #include <glob.h>
 #include <cctype>
 #include <cmath>
-#include <cstdio>
 
 #include <algorithm>
 #include <array>
@@ -12,13 +11,10 @@
 #include <regex>
 #include <string>
 #include <vector>
-#include <memory>
 
 #include "chromap.h"
 #include "cxxopts.hpp"
-#include "peak_caller/fragment_input.h"
-#include "peak_caller/frag_compact_store.h"
-#include "peak_caller/macs3_frag_peak_pipeline.h"
+#include "libchromap.h"
 
 namespace chromap {
 namespace {
@@ -364,8 +360,7 @@ std::string DeriveSecondaryOutputPath(const std::string &primary_path,
   // Handle special device paths and stdout indicator
   if (primary_path == "/dev/stdout" || primary_path == "/dev/stderr" || primary_path == "-") {
     // For stdout, cannot derive secondary paths - user must specify explicitly
-    // Return a default name but this should be caught by validation
-    return "chromap_output" + suffix + ".sam";
+    return "";
   }
   
   size_t slash_pos = primary_path.rfind('/');
@@ -525,50 +520,6 @@ std::string DeriveFastqOutputPath(const std::string &input_path,
   return result;
 }
 
-void WriteMacs3FragPeakSidecar(
-    const std::string &summary_path, const std::string &fragments_path,
-    const std::string &narrow_path, const std::string &summits_path,
-    const std::string &temp_work_dir_used, const std::string &keep_intermediates,
-    double pvalue, int min_len, int max_gap, bool uint8_counts,
-    const std::string &fragments_source,
-    const std::string &memory_storage_mode_label) {
-  if (summary_path.empty()) {
-    return;
-  }
-  const std::string sidecar = summary_path + ".macs3_frag_peaks.tsv";
-  FILE *fp = std::fopen(sidecar.c_str(), "w");
-  if (fp == nullptr) {
-    return;
-  }
-  std::fprintf(fp, "# Opt-in MACS3-compatible FRAG peaks (same C++ path as chromap_callpeaks).\n");
-  std::fprintf(fp, "# Note: qValue and signalValue columns are not byte-for-byte MACS3 parity yet.\n");
-  std::fprintf(fp, "key\tvalue\n");
-  std::fprintf(fp, "fragments_file\t%s\n", fragments_path.c_str());
-  std::fprintf(fp, "fragments_source\t%s\n", fragments_source.c_str());
-  if (fragments_source == "memory" && !memory_storage_mode_label.empty()) {
-    std::fprintf(fp, "memory_storage_mode\t%s\n",
-                 memory_storage_mode_label.c_str());
-  }
-  std::fprintf(fp, "narrowpeak_out\t%s\n", narrow_path.c_str());
-  std::fprintf(fp, "summits_out\t%s\n", summits_path.c_str());
-  std::fprintf(fp, "macs3_frag_pvalue\t%.10g\n", pvalue);
-  std::fprintf(fp, "bdgpeakcall_cutoff_neg_log10_p\t%.10g\n",
-               static_cast<double>(
-                   chromap::peaks::BdgPeakCallCutoffFromPValue(pvalue)));
-  std::fprintf(fp, "macs3_frag_min_length\t%d\n", min_len);
-  std::fprintf(fp, "macs3_frag_max_gap\t%d\n", max_gap);
-  std::fprintf(fp, "macs3_uint8_counts\t%d\n", uint8_counts ? 1 : 0);
-  std::fprintf(fp, "effective_genome_size\t%lld\n",
-               static_cast<long long>(2913022398LL));
-  std::fprintf(fp, "llocal_bp\t%d\n", 10000);
-  if (!keep_intermediates.empty()) {
-    std::fprintf(fp, "keep_intermediates_dir\t%s\n", keep_intermediates.c_str());
-  } else if (!temp_work_dir_used.empty()) {
-    std::fprintf(fp, "temp_work_dir_removed\t%s\n", temp_work_dir_used.c_str());
-  }
-  std::fclose(fp);
-}
-
 }  // namespace
 
 void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
@@ -696,15 +647,9 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
   // check cache-related parameters
   if (result.count("cache-update-param")) {
     mapping_parameters.cache_update_param = result["cache-update-param"].as<double>();
-    if (mapping_parameters.cache_update_param < 0.0 || mapping_parameters.cache_update_param > 1.0){
-      chromap::ExitWithMessage("cache update param is not approriate, must be in this range (0, 1]");
-    }
   } 
   if (result.count("cache-size")) {
     mapping_parameters.cache_size = result["cache-size"].as<int>();
-    if (mapping_parameters.cache_size < 2000000 || mapping_parameters.cache_size > 15000000) {
-        chromap::ExitWithMessage("cache size is not in appropriate range\n");
-    }
   }
   if (result.count("debug-cache")) {
     mapping_parameters.debug_cache = true;
@@ -720,9 +665,6 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
   }
   if (result.count("k-for-minhash")) {
     mapping_parameters.k_for_minhash = result["k-for-minhash"].as<int>();
-    if (mapping_parameters.k_for_minhash < 1 || mapping_parameters.k_for_minhash >= 2000) {
-      chromap::ExitWithMessage("Invalid paramter for size of MinHash sketch (--k-for-minhash)");
-    }
   }
 
 
@@ -812,9 +754,6 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
   }
   if (result.count("hts-threads")) {
     mapping_parameters.hts_threads = result["hts-threads"].as<int>();
-    if (mapping_parameters.hts_threads < 0) {
-      chromap::ExitWithMessage("--hts-threads must be >= 0");
-    }
   }
   if (result.count("read-group")) {
     mapping_parameters.read_group_id = result["read-group"].as<std::string>();
@@ -880,25 +819,17 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     std::cerr << "Start to map reads.\n";
     if (result.count("r")) {
       mapping_parameters.reference_file_path = result["ref"].as<std::string>();
-    } else {
-      chromap::ExitWithMessage("No reference specified!");
     }
     if (result.count("o")) {
       mapping_parameters.mapping_output_file_path =
           result["output"].as<std::string>();
-    } else {
-      chromap::ExitWithMessage("No output file specified!");
     }
     if (result.count("x")) {
       mapping_parameters.index_file_path = result["index"].as<std::string>();
-    } else {
-      chromap::ExitWithMessage("No index file specified!");
     }
     if (result.count("1")) {
       mapping_parameters.read_file1_paths =
           GetMatchedFilePaths(result["read1"].as<std::vector<std::string>>());
-    } else {
-      chromap::ExitWithMessage("No read file specified!");
     }
     if (result.count("2")) {
       mapping_parameters.read_file2_paths =
@@ -916,11 +847,6 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     }
 
     if (result.count("barcode-whitelist")) {
-      if (mapping_parameters.is_bulk_data) {
-        chromap::ExitWithMessage(
-            "No barcode file specified but the barcode whitelist file is "
-            "given!");
-      }
       mapping_parameters.barcode_whitelist_file_path =
           result["barcode-whitelist"].as<std::string>();
     }
@@ -928,10 +854,6 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     if (result.count("p")) {
       mapping_parameters.matrix_output_prefix =
           result["matrix-output-prefix"].as<std::string>();
-      if (mapping_parameters.is_bulk_data) {
-        chromap::ExitWithMessage(
-            "No barcode file specified but asked to output matrix files!");
-      }
     }
     if (result.count("read-format")) {
       mapping_parameters.read_format = result["read-format"].as<std::string>();
@@ -1013,124 +935,6 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       mapping_parameters.emit_Y_stream = true;
     }
     
-    // Validate: Y-filtering requires SAM/BAM/CRAM mode
-    if ((mapping_parameters.emit_noY_stream || mapping_parameters.emit_Y_stream) &&
-        mapping_parameters.mapping_output_format != MAPPINGFORMAT_SAM &&
-        mapping_parameters.mapping_output_format != MAPPINGFORMAT_BAM &&
-        mapping_parameters.mapping_output_format != MAPPINGFORMAT_CRAM) {
-      chromap::ExitWithMessage(
-          "--emit-noY-bam and --emit-Y-bam require --SAM, --BAM, or --CRAM output format");
-    }
-    
-    // Validate: Y-filtering with stdout requires explicit output paths
-    if ((mapping_parameters.emit_noY_stream || mapping_parameters.emit_Y_stream) &&
-        (mapping_parameters.mapping_output_file_path == "-" ||
-         mapping_parameters.mapping_output_file_path == "/dev/stdout" ||
-         mapping_parameters.mapping_output_file_path == "/dev/stderr")) {
-      bool has_noY_path = result.count("noY-output");
-      bool has_Y_path = result.count("Y-output");
-      if (mapping_parameters.emit_noY_stream && !has_noY_path) {
-        chromap::ExitWithMessage("--emit-noY-bam requires --noY-output when primary output is stdout");
-      }
-      if (mapping_parameters.emit_Y_stream && !has_Y_path) {
-        chromap::ExitWithMessage("--emit-Y-bam requires --Y-output when primary output is stdout");
-      }
-    }
-    
-    // Validate: CRAM requires reference
-    if (mapping_parameters.mapping_output_format == MAPPINGFORMAT_CRAM &&
-        mapping_parameters.reference_file_path.empty()) {
-      chromap::ExitWithMessage("--CRAM requires --ref/-r reference file");
-    }
-    
-    // Validate: --sort-bam constraints
-    if (mapping_parameters.sort_bam) {
-      if (mapping_parameters.mapping_output_format != MAPPINGFORMAT_BAM &&
-          mapping_parameters.mapping_output_format != MAPPINGFORMAT_CRAM) {
-        chromap::ExitWithMessage("--sort-bam requires --BAM or --CRAM output format");
-      }
-    }
-    
-    // Validate: --write-index constraints
-    if (mapping_parameters.write_index) {
-      if (!mapping_parameters.sort_bam) {
-        chromap::ExitWithMessage("--write-index requires --sort-bam for coordinate-sorted output");
-      }
-      if (mapping_parameters.mapping_output_file_path == "-" ||
-          mapping_parameters.mapping_output_file_path == "/dev/stdout" ||
-          mapping_parameters.mapping_output_file_path == "/dev/stderr") {
-        chromap::ExitWithMessage("--write-index is incompatible with stdout output (-o - or -o /dev/stdout).");
-      }
-      if (mapping_parameters.mapping_output_format != MAPPINGFORMAT_BAM &&
-          mapping_parameters.mapping_output_format != MAPPINGFORMAT_CRAM) {
-        chromap::ExitWithMessage("--write-index only works with --BAM or --CRAM output format");
-      }
-    }
-
-    if (!mapping_parameters.atac_fragment_output_file_path.empty()) {
-      if (mapping_parameters.read_file2_paths.empty()) {
-        chromap::ExitWithMessage(
-            "--atac-fragments requires paired-end reads (-2)");
-      }
-      if (mapping_parameters.barcode_file_paths.empty()) {
-        chromap::ExitWithMessage(
-            "--atac-fragments requires cell barcode reads (-b)");
-      }
-      if (mapping_parameters.mapping_output_format != MAPPINGFORMAT_BAM &&
-          mapping_parameters.mapping_output_format != MAPPINGFORMAT_CRAM) {
-        chromap::ExitWithMessage(
-            "--atac-fragments requires --BAM or --CRAM primary output (-o)");
-      }
-      if (mapping_parameters.low_memory_mode) {
-        chromap::ExitWithMessage(
-            "--atac-fragments is not supported with --low-mem");
-      }
-      if (mapping_parameters.atac_fragment_output_file_path ==
-          mapping_parameters.mapping_output_file_path) {
-        chromap::ExitWithMessage(
-            "--atac-fragments path must differ from -o/--output");
-      }
-    }
-
-    if (mapping_parameters.call_macs3_frag_peaks) {
-      if (!mapping_parameters.AtacDualFragmentAndBam()) {
-        chromap::ExitWithMessage(
-            "--call-macs3-frag-peaks requires paired-end barcoded reads, --BAM or "
-            "--CRAM, and --atac-fragments (same constraints as dual ATAC output)");
-      }
-      if (mapping_parameters.macs3_frag_peaks_narrowpeak_path.empty() ||
-          mapping_parameters.macs3_frag_peaks_summits_path.empty()) {
-        chromap::ExitWithMessage(
-            "--call-macs3-frag-peaks requires --macs3-frag-peaks-output and "
-            "--macs3-frag-summits-output");
-      }
-      if (mapping_parameters.macs3_frag_pvalue <= 0.0 ||
-          mapping_parameters.macs3_frag_pvalue > 1.0) {
-        chromap::ExitWithMessage(
-            "--macs3-frag-pvalue must be in (0, 1] (macs3 callpeak -p semantics)");
-      }
-      if (chromap::peaks::BdgPeakCallCutoffFromPValue(
-              mapping_parameters.macs3_frag_pvalue) <= 0.f) {
-        chromap::ExitWithMessage("Invalid --macs3-frag-pvalue for bdgpeakcall cutoff");
-      }
-      if (mapping_parameters.macs3_frag_min_length < 1 ||
-          mapping_parameters.macs3_frag_max_gap < 0) {
-        chromap::ExitWithMessage(
-            "Invalid --macs3-frag-min-length or --macs3-frag-max-gap");
-      }
-    }
-    if (mapping_parameters.macs3_frag_compact_min_count_bits < 1 ||
-        mapping_parameters.macs3_frag_compact_min_count_bits > 31) {
-      chromap::ExitWithMessage(
-          "--macs3-frag-compact-min-count-bits must be in [1, 31]");
-    }
-    if (mapping_parameters.macs3_frag_peaks_source ==
-            Macs3FragPeaksSource::kMemory &&
-        !mapping_parameters.call_macs3_frag_peaks) {
-      chromap::ExitWithMessage(
-          "--macs3-frag-peaks-source memory requires --call-macs3-frag-peaks");
-    }
-
     // Derive or set explicit paths
     if (mapping_parameters.emit_noY_stream) {
       if (result.count("noY-output")) {
@@ -1163,14 +967,15 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         // Derive from output path: <output>.Y.names.txt
         std::string output_path = mapping_parameters.mapping_output_file_path;
         if (output_path == "-" || output_path == "/dev/stdout" || output_path == "/dev/stderr") {
-          chromap::ExitWithMessage("--emit-Y-read-names requires --Y-read-names-output when primary output is stdout");
-        }
-        // Find last dot or use full path
-        size_t dot_pos = output_path.rfind('.');
-        if (dot_pos != std::string::npos) {
-          mapping_parameters.y_read_names_output_path = output_path.substr(0, dot_pos) + ".Y.names.txt";
+          mapping_parameters.y_read_names_output_path.clear();
         } else {
-          mapping_parameters.y_read_names_output_path = output_path + ".Y.names.txt";
+          // Find last dot or use full path
+          size_t dot_pos = output_path.rfind('.');
+          if (dot_pos != std::string::npos) {
+            mapping_parameters.y_read_names_output_path = output_path.substr(0, dot_pos) + ".Y.names.txt";
+          } else {
+            mapping_parameters.y_read_names_output_path = output_path + ".Y.names.txt";
+          }
         }
       }
       std::cerr << "Y read names output file: " << mapping_parameters.y_read_names_output_path << "\n";
@@ -1182,9 +987,6 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     }
     if (result.count("emit-Y-noY-fastq-compression")) {
       std::string compression = result["emit-Y-noY-fastq-compression"].as<std::string>();
-      if (compression != "gz" && compression != "none") {
-        chromap::ExitWithMessage("--emit-Y-noY-fastq-compression must be 'gz' or 'none'");
-      }
       mapping_parameters.y_noy_fastq_compression = compression;
     }
     if (result.count("Y-fastq-output-prefix")) {
@@ -1194,21 +996,15 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       mapping_parameters.noy_fastq_output_prefix = result["noY-fastq-output-prefix"].as<std::string>();
     }
     
-    // Validate: FASTQ emission with stdout requires explicit prefixes
-    if (mapping_parameters.emit_y_noy_fastq &&
-        (mapping_parameters.mapping_output_file_path == "-" ||
-         mapping_parameters.mapping_output_file_path == "/dev/stdout" ||
-         mapping_parameters.mapping_output_file_path == "/dev/stderr")) {
-      if (mapping_parameters.y_fastq_output_prefix.empty() ||
-          mapping_parameters.noy_fastq_output_prefix.empty()) {
-        chromap::ExitWithMessage("--emit-Y-noY-fastq requires --Y-fastq-output-prefix and --noY-fastq-output-prefix when primary output is stdout");
-      }
-    }
-    
     // Derive FASTQ output paths if FASTQ emission is enabled
     if (mapping_parameters.emit_y_noy_fastq) {
       std::string output_dir =
           GetDirectoryFromPath(mapping_parameters.mapping_output_file_path);
+      if (mapping_parameters.mapping_output_file_path == "-" ||
+          mapping_parameters.mapping_output_file_path == "/dev/stdout" ||
+          mapping_parameters.mapping_output_file_path == "/dev/stderr") {
+        output_dir.clear();
+      }
       const std::string compression = mapping_parameters.y_noy_fastq_compression;
 
       const bool is_paired = !mapping_parameters.read_file2_paths.empty();
@@ -1244,11 +1040,13 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
                 mapping_parameters.y_fastq_output_prefix + "mate2" + index_suffix + read2_ext;
           } else {
             mapping_parameters.y_fastq_output_paths_per_file[file_index][0] =
-                DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
-                                      output_dir, "_Y", compression, output_file_index, 1);
+                output_dir == "" ? "" :
+                    DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
+                                          output_dir, "_Y", compression, output_file_index, 1);
             mapping_parameters.y_fastq_output_paths_per_file[file_index][1] =
-                DeriveFastqOutputPath(mapping_parameters.read_file2_paths[file_index],
-                                      output_dir, "_Y", compression, output_file_index, 2);
+                output_dir == "" ? "" :
+                    DeriveFastqOutputPath(mapping_parameters.read_file2_paths[file_index],
+                                          output_dir, "_Y", compression, output_file_index, 2);
           }
 
           if (!mapping_parameters.noy_fastq_output_prefix.empty()) {
@@ -1260,11 +1058,13 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
                 mapping_parameters.noy_fastq_output_prefix + "mate2" + index_suffix + read2_ext;
           } else {
             mapping_parameters.noy_fastq_output_paths_per_file[file_index][0] =
-                DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
-                                      output_dir, "_noY", compression, output_file_index, 1);
+                output_dir == "" ? "" :
+                    DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
+                                          output_dir, "_noY", compression, output_file_index, 1);
             mapping_parameters.noy_fastq_output_paths_per_file[file_index][1] =
-                DeriveFastqOutputPath(mapping_parameters.read_file2_paths[file_index],
-                                      output_dir, "_noY", compression, output_file_index, 2);
+                output_dir == "" ? "" :
+                    DeriveFastqOutputPath(mapping_parameters.read_file2_paths[file_index],
+                                          output_dir, "_noY", compression, output_file_index, 2);
           }
         } else {
           mapping_parameters.y_fastq_output_paths_per_file[file_index].resize(1);
@@ -1281,8 +1081,9 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
                 mapping_parameters.y_fastq_output_prefix + "reads" + index_suffix + read_ext;
           } else {
             mapping_parameters.y_fastq_output_paths_per_file[file_index][0] =
-                DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
-                                      output_dir, "_Y", compression, output_file_index, 1);
+                output_dir == "" ? "" :
+                    DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
+                                          output_dir, "_Y", compression, output_file_index, 1);
           }
 
           if (!mapping_parameters.noy_fastq_output_prefix.empty()) {
@@ -1292,8 +1093,9 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
                 mapping_parameters.noy_fastq_output_prefix + "reads" + index_suffix + read_ext;
           } else {
             mapping_parameters.noy_fastq_output_paths_per_file[file_index][0] =
-                DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
-                                      output_dir, "_noY", compression, output_file_index, 1);
+                output_dir == "" ? "" :
+                    DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
+                                          output_dir, "_noY", compression, output_file_index, 1);
           }
         }
       }
@@ -1321,6 +1123,14 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         } else {
           std::cerr << file_label << paths[0] << "\n";
         }
+      }
+    }
+
+    {
+      const chromap::ChromapRunResult validation =
+          chromap::ValidateMappingParameters(mapping_parameters);
+      if (!validation.ok) {
+        chromap::ExitWithMessage(validation.message);
       }
     }
 
@@ -1481,148 +1291,25 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
                 << mapping_parameters.matrix_output_prefix << "\n";
     }
 
-    if (mapping_parameters.call_macs3_frag_peaks &&
-        mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
-      mapping_parameters.macs3_frag_workspace =
-          std::make_shared<peaks::Macs3FragPeakWorkspace>();
-    }
-
-    chromap::Chromap chromap_for_mapping(mapping_parameters);
-
-    if (result.count("2") == 0) {
-      // Single-end reads.
-      switch (mapping_parameters.mapping_output_format) {
-        case MAPPINGFORMAT_PAF: {
-          chromap_for_mapping.MapSingleEndReads<chromap::PAFMapping>();
-          break;
-        }
-        case MAPPINGFORMAT_SAM:
-        case MAPPINGFORMAT_BAM:
-        case MAPPINGFORMAT_CRAM: {
-          chromap_for_mapping.MapSingleEndReads<chromap::SAMMapping>();
-          break;
-        }
-        case MAPPINGFORMAT_PAIRS:
-          chromap::ExitWithMessage("No support for single-end HiC yet!");
-          break;
-        case MAPPINGFORMAT_BED:
-        case MAPPINGFORMAT_TAGALIGN:
-          if (result.count("b") != 0) {
-            chromap_for_mapping
-                .MapSingleEndReads<chromap::MappingWithBarcode>();
-          } else {
-            chromap_for_mapping
-                .MapSingleEndReads<chromap::MappingWithoutBarcode>();
-          }
-          break;
-        default:
-          chromap::ExitWithMessage("Unknown mapping output format!");
-          break;
-      }
-    } else {
-      // Paired-end reads.
-      if (mapping_parameters.AtacDualFragmentAndBam()) {
-        chromap_for_mapping
-            .MapPairedEndReads<chromap::PairedEndAtacDualMapping>();
-      } else
-      switch (mapping_parameters.mapping_output_format) {
-        case MAPPINGFORMAT_PAF: {
-          chromap_for_mapping.MapPairedEndReads<chromap::PairedPAFMapping>();
-          break;
-        }
-        case MAPPINGFORMAT_SAM:
-        case MAPPINGFORMAT_BAM:
-        case MAPPINGFORMAT_CRAM: {
-          chromap_for_mapping.MapPairedEndReads<chromap::SAMMapping>();
-          break;
-        }
-        case MAPPINGFORMAT_PAIRS: {
-          chromap_for_mapping.MapPairedEndReads<chromap::PairsMapping>();
-          break;
-        }
-        case MAPPINGFORMAT_BED:
-        case MAPPINGFORMAT_TAGALIGN:
-          if (result.count("b") != 0) {
-            chromap_for_mapping
-                .MapPairedEndReads<chromap::PairedEndMappingWithBarcode>();
-          } else {
-            chromap_for_mapping
-                .MapPairedEndReads<chromap::PairedEndMappingWithoutBarcode>();
-          }
-          break;
-        default:
-          chromap::ExitWithMessage("Unknown mapping output format!");
-          break;
-      }
-    }
-
     if (mapping_parameters.call_macs3_frag_peaks) {
-      std::string fragments_source = "file";
-      std::string mem_mode;
-      if (mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
+      if (mapping_parameters.macs3_frag_peaks_source ==
+          Macs3FragPeaksSource::kMemory) {
         std::cerr << "MACS3-compatible FRAG peak calling (opt-in): in-memory "
                      "fragment rows (--macs3-frag-peaks-source memory)\n";
-        fragments_source = "memory";
-        mem_mode = "workspace_events";
-        std::cerr << "MACS3 FRAG memory storage mode: " << mem_mode << "\n";
-        std::cerr
-            << "(This C++ pipeline is slower than standalone MACS3 on large inputs.)\n";
+        std::cerr << "MACS3 FRAG memory storage mode: workspace_events\n";
       } else {
         std::cerr
             << "MACS3-compatible FRAG peak calling (opt-in): reading fragments from "
-            << mapping_parameters.atac_fragment_output_file_path
-            << "\n(This C++ pipeline is slower than standalone MACS3 on large inputs.)\n";
+            << mapping_parameters.atac_fragment_output_file_path << "\n";
       }
-      std::vector<chromap::peaks::ChromFragments> chs;
-      if (mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
-        if (!mapping_parameters.macs3_frag_workspace) {
-          chromap::ExitWithMessage("MACS3 FRAG peaks (memory source): missing workspace");
-        }
-      } else {
-        if (!chromap::peaks::LoadFragmentsFromTsv(
-                mapping_parameters.atac_fragment_output_file_path, &chs)) {
-          chromap::ExitWithMessage(
-              "MACS3 FRAG peaks: failed to read fragments file " +
-              mapping_parameters.atac_fragment_output_file_path);
-        }
-      }
-      chromap::peaks::Macs3FragPeakPipelineParams pr;
-      pr.bdgpeakcall_cutoff = chromap::peaks::BdgPeakCallCutoffFromPValue(
-          mapping_parameters.macs3_frag_pvalue);
-      pr.min_length = mapping_parameters.macs3_frag_min_length;
-      pr.max_gap = mapping_parameters.macs3_frag_max_gap;
-      pr.macs3_uint8_counts = mapping_parameters.macs3_frag_uint8_counts;
-      pr.peak_caller_threads = mapping_parameters.num_threads;
-      std::string err;
-      std::string work_used;
-      const std::string &keep = mapping_parameters.macs3_frag_keep_intermediates_dir;
-      const std::string parent = mapping_parameters.temp_directory_path;
-      if (mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
-        if (!chromap::peaks::RunMacs3FragPeakPipelineFromWorkspace(
-                mapping_parameters.macs3_frag_workspace.get(), pr,
-                chromap::peaks::Macs3FragPeakPipelinePaths(),
-                mapping_parameters.macs3_frag_peaks_narrowpeak_path,
-                mapping_parameters.macs3_frag_peaks_summits_path, keep, parent,
-                &work_used, &err)) {
-          chromap::ExitWithMessage("MACS3 FRAG peaks: " + err);
-        }
-      } else {
-        if (!chromap::peaks::RunMacs3FragPeakPipelineFromFragments(
-                &chs, pr, chromap::peaks::Macs3FragPeakPipelinePaths(),
-                mapping_parameters.macs3_frag_peaks_narrowpeak_path,
-                mapping_parameters.macs3_frag_peaks_summits_path, keep, parent,
-                &work_used, &err, nullptr)) {
-          chromap::ExitWithMessage("MACS3 FRAG peaks: " + err);
-        }
-      }
-      WriteMacs3FragPeakSidecar(
-          mapping_parameters.summary_metadata_file_path,
-          mapping_parameters.atac_fragment_output_file_path,
-          mapping_parameters.macs3_frag_peaks_narrowpeak_path,
-          mapping_parameters.macs3_frag_peaks_summits_path, work_used, keep,
-          mapping_parameters.macs3_frag_pvalue, mapping_parameters.macs3_frag_min_length,
-          mapping_parameters.macs3_frag_max_gap, mapping_parameters.macs3_frag_uint8_counts,
-          fragments_source, mem_mode);
+      std::cerr
+          << "(This C++ pipeline is slower than standalone MACS3 on large inputs.)\n";
+    }
+
+    const chromap::ChromapRunResult run_result =
+        chromap::RunMapping(mapping_parameters);
+    if (!run_result.ok) {
+      chromap::ExitWithMessage(run_result.message);
     }
   } else {
     std::cerr << options.help(
