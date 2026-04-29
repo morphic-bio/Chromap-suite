@@ -88,6 +88,10 @@ struct MappingParameters {
   // When set alongside paired-end barcoded reads and BAM/CRAM primary output,
   // emit fragment lines (BED/TagAlign) to this path in the same alignment pass.
   std::string atac_fragment_output_file_path;
+  // Optional fixed-record binary replacement for the secondary ATAC fragments
+  // TSV. Records store chrom_id/start/end/count/packed barcode key; chrom
+  // names are written to <path>.chroms.tsv.
+  std::string atac_fragment_binary_output_file_path;
   std::string matrix_output_prefix;
   // The order for general sorting.
   std::string custom_rid_order_file_path;
@@ -149,6 +153,7 @@ struct MappingParameters {
   std::shared_ptr<std::vector<std::vector<macs3::FragmentRecord>>>
       macs3_frag_buffer;
   std::shared_ptr<std::vector<std::string>> macs3_frag_chrom_names;
+
   std::string macs3_frag_peaks_narrowpeak_path;
   std::string macs3_frag_peaks_summits_path;
   double macs3_frag_pvalue = 1e-5;

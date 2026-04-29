@@ -6,6 +6,7 @@
 #include <cinttypes>
 #include <cstring>
 #include <functional>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -39,12 +40,38 @@
 #include <htslib/faidx.h>
 #include <zlib.h>
 #include <memory>
+#include <unistd.h>
 
 // Include bam_sorter.h before namespace chromap to avoid namespace collision
 // We need complete type for unique_ptr destructor
 #include "bam_sorter.h"
 
 namespace chromap {
+
+#pragma pack(push, 1)
+struct AtacEvidenceBinaryHeader {
+  char magic[4];
+  uint32_t format_version;
+  uint32_t record_size;
+  uint32_t barcode_length;
+  uint32_t num_chroms;
+  uint32_t flags;
+  uint64_t num_records;
+};
+
+struct AtacEvidenceBinaryRecord {
+  int32_t chrom_id;
+  int32_t start;
+  int32_t end;
+  uint32_t count;
+  uint64_t barcode_key;
+};
+#pragma pack(pop)
+
+static_assert(sizeof(AtacEvidenceBinaryHeader) == 32,
+              "ATAC evidence binary header must be 32 bytes");
+static_assert(sizeof(AtacEvidenceBinaryRecord) == 24,
+              "ATAC evidence binary record must be 24 bytes");
 
 template <typename MappingRecord>
 class MappingWriter {
@@ -63,7 +90,8 @@ class MappingWriter {
           mapping_parameters_.barcode_translate_from_first_column);
     }
     summary_metadata_.SetBarcodeLength(cell_barcode_length);
-    if (mapping_parameters_.AtacDualFragmentAndBam()) {
+    if (mapping_parameters_.AtacDualFragmentAndBam() &&
+        mapping_parameters_.atac_fragment_binary_output_file_path.empty()) {
       const std::string &af =
           mapping_parameters_.atac_fragment_output_file_path;
       if (af.size() >= 3 && af.compare(af.size() - 3, 3, ".gz") == 0) {
@@ -86,6 +114,7 @@ class MappingWriter {
   }
 
   ~MappingWriter() {
+    FinalizeAtacEvidenceBinaryOutput();
     if (atac_fragment_gz_output_) {
       gzclose(atac_fragment_gz_output_);
       atac_fragment_gz_output_ = nullptr;
@@ -213,6 +242,104 @@ class MappingWriter {
       }
     }
   }
+
+  void OpenAtacEvidenceBinaryOutput(uint32_t num_reference_sequences,
+                                    const SequenceBatch &reference) {
+    const std::string &path =
+        mapping_parameters_.atac_fragment_binary_output_file_path;
+    if (path.empty() || atac_evidence_fp_) {
+      return;
+    }
+    atac_evidence_output_path_ = path;
+    atac_evidence_tmp_path_ = path + ".tmp";
+    atac_evidence_chroms_tmp_path_ = path + ".chroms.tsv.tmp";
+    atac_evidence_chroms_path_ = path + ".chroms.tsv";
+    atac_evidence_fp_ = fopen(atac_evidence_tmp_path_.c_str(), "wb");
+    if (!atac_evidence_fp_) {
+      ExitWithMessage("Failed to open ATAC evidence binary sidecar: " +
+                      atac_evidence_tmp_path_);
+    }
+    setvbuf(atac_evidence_fp_, nullptr, _IOFBF, 1 << 16);
+    AtacEvidenceBinaryHeader hdr = {{'A', 'E', 'V', '1'},
+                                    1,
+                                    sizeof(AtacEvidenceBinaryRecord),
+                                    cell_barcode_length_,
+                                    num_reference_sequences,
+                                    0,
+                                    0};
+    if (fwrite(&hdr, sizeof(hdr), 1, atac_evidence_fp_) != 1) {
+      ExitWithMessage("Failed to write ATAC evidence binary header: " +
+                      atac_evidence_tmp_path_);
+    }
+    std::ofstream chroms(atac_evidence_chroms_tmp_path_.c_str());
+    if (!chroms.is_open()) {
+      ExitWithMessage("Failed to open ATAC evidence chrom metadata: " +
+                      atac_evidence_chroms_tmp_path_);
+    }
+    for (uint32_t i = 0; i < num_reference_sequences; ++i) {
+      chroms << i << '\t' << reference.GetSequenceNameAt(i) << '\n';
+    }
+    chroms.close();
+    if (!chroms) {
+      ExitWithMessage("Failed to write ATAC evidence chrom metadata: " +
+                      atac_evidence_chroms_tmp_path_);
+    }
+  }
+
+  void AppendAtacEvidenceBinaryRecord(uint32_t rid,
+                                      uint32_t start,
+                                      uint32_t end,
+                                      uint32_t count,
+                                      uint64_t barcode_key) {
+    if (!atac_evidence_fp_) {
+      return;
+    }
+    AtacEvidenceBinaryRecord rec;
+    rec.chrom_id = static_cast<int32_t>(rid);
+    rec.start = static_cast<int32_t>(start);
+    rec.end = static_cast<int32_t>(end);
+    rec.count = count;
+    rec.barcode_key = barcode_key;
+    if (fwrite(&rec, sizeof(rec), 1, atac_evidence_fp_) != 1) {
+      ExitWithMessage("Failed to write ATAC evidence binary record: " +
+                      atac_evidence_tmp_path_);
+    }
+    ++atac_evidence_records_written_;
+  }
+
+  void FinalizeAtacEvidenceBinaryOutput() {
+    if (!atac_evidence_fp_) {
+      return;
+    }
+    const uint64_t num_records = atac_evidence_records_written_;
+    if (fflush(atac_evidence_fp_) != 0) {
+      ExitWithMessage("Failed to flush ATAC evidence binary sidecar: " +
+                      atac_evidence_tmp_path_);
+    }
+    const int fd = fileno(atac_evidence_fp_);
+    if (fd < 0 ||
+        pwrite(fd, &num_records, sizeof(num_records), 24) !=
+            static_cast<ssize_t>(sizeof(num_records))) {
+      ExitWithMessage("Failed to finalize ATAC evidence binary header: " +
+                      atac_evidence_tmp_path_);
+    }
+    if (fclose(atac_evidence_fp_) != 0) {
+      atac_evidence_fp_ = nullptr;
+      ExitWithMessage("Failed to close ATAC evidence binary sidecar: " +
+                      atac_evidence_tmp_path_);
+    }
+    atac_evidence_fp_ = nullptr;
+    if (rename(atac_evidence_tmp_path_.c_str(),
+               atac_evidence_output_path_.c_str()) != 0) {
+      ExitWithMessage("Failed to rename ATAC evidence binary sidecar to: " +
+                      atac_evidence_output_path_);
+    }
+    if (rename(atac_evidence_chroms_tmp_path_.c_str(),
+               atac_evidence_chroms_path_.c_str()) != 0) {
+      ExitWithMessage("Failed to rename ATAC evidence chrom metadata to: " +
+                      atac_evidence_chroms_path_);
+    }
+  }
   
   // Helper methods for htslib BAM/CRAM output (only implemented for SAMMapping)
   void OpenHtsOutput() {}  // Default no-op, specialized for SAMMapping
@@ -266,6 +393,12 @@ class MappingWriter {
 
   FILE *atac_fragment_output_file_ = nullptr;
   gzFile atac_fragment_gz_output_ = nullptr;
+  FILE *atac_evidence_fp_ = nullptr;
+  uint64_t atac_evidence_records_written_ = 0;
+  std::string atac_evidence_output_path_;
+  std::string atac_evidence_tmp_path_;
+  std::string atac_evidence_chroms_path_;
+  std::string atac_evidence_chroms_tmp_path_;
 
   // Y-chromosome filtering (SAM/BAM/CRAM mode)
   FILE *noY_output_file_ = nullptr;

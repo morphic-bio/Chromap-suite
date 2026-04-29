@@ -16,6 +16,7 @@ $(error "libMACS3 submodule not initialized. Run: git submodule update --init --
 endif
 
 CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(LIBMACS3_DIR)/include
+DEPFLAGS=-MMD -MP
 LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
 core_cpp_source=sequence_batch.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc chromap.cc
@@ -28,11 +29,14 @@ core_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(core_cpp_source))
 driver_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(driver_cpp_source))
 libchromap_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(libchromap_cpp_source))
 runner_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(runner_cpp_source))
+deps=$(core_objs:.o=.d) $(driver_objs:.o=.d) $(libchromap_objs:.o=.d) $(runner_objs:.o=.d)
 
 exec=chromap
 libchromap=libchromap.a
 runner=chromap_lib_runner
 peak_caller=chromap_callpeaks
+
+.DEFAULT_GOAL := all
 
 ifneq ($(asan),)
 	CXXFLAGS+=-fsanitize=address -g
@@ -74,7 +78,9 @@ $(peak_caller): $(LIBMACS3_CLI)
 
 $(objs_dir)/%.o: $(src_dir)/%.cc
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -I$(src_dir) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -I$(src_dir) -c $< -o $@
+
+-include $(deps)
 
 .PHONY: clean test-unit test-frag-compact-store test-peak-memory-source-100k \
 	benchmark-peak-memory-fullset test-peak-100k test-peak-calibration-100k \
