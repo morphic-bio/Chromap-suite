@@ -308,12 +308,13 @@ void MappingWriter<PairedEndMappingWithBarcode>::AppendMapping(
     std::string strand = mapping.IsPositiveStrand() ? "+" : "-";
     const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
     uint32_t mapping_end_position = mapping.GetEndPosition();
+    const std::string translated_barcode = barcode_translator_.Translate(
+        mapping.cell_barcode_, cell_barcode_length_);
     this->AppendMappingOutput(std::string(reference_sequence_name) + "\t" +
                               std::to_string(mapping.GetStartPosition()) +
                               "\t" + std::to_string(mapping_end_position) +
                               "\t" +
-                              barcode_translator_.Translate(
-                                  mapping.cell_barcode_, cell_barcode_length_) +
+                              translated_barcode +
                               "\t" + std::to_string(mapping.num_dups_) + "\n");
     // BED-only peak calling: capture per-chrom (start, end, count) for the
     // events workspace (same shape as the dual writer's bucket capture).
@@ -1691,6 +1692,7 @@ void MappingWriter<PairedEndAtacDualMapping>::OutputHeader(
     mapping_parameters_.macs3_frag_buffer->assign(
         num_reference_sequences, std::vector<macs3::FragmentRecord>());
   }
+  OpenAtacEvidenceBinaryOutput(num_reference_sequences, reference);
 }
 
 template <>
@@ -1698,14 +1700,22 @@ void MappingWriter<PairedEndAtacDualMapping>::AppendMapping(
     uint32_t rid, const SequenceBatch &reference,
     const PairedEndAtacDualMapping &mapping) {
   const PairedEndMappingWithBarcode &frag = mapping;
-  const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
   uint32_t mapping_end_position = frag.GetEndPosition();
-  AppendAtacFragmentOutput(
-      std::string(reference_sequence_name) + "\t" +
-      std::to_string(frag.GetStartPosition()) + "\t" +
-      std::to_string(mapping_end_position) + "\t" +
-      barcode_translator_.Translate(frag.cell_barcode_, cell_barcode_length_) +
-      "\t" + std::to_string(frag.num_dups_) + "\n");
+  if (atac_evidence_fp_) {
+    AppendAtacEvidenceBinaryRecord(rid, frag.GetStartPosition(),
+                                   mapping_end_position,
+                                   static_cast<uint32_t>(frag.num_dups_),
+                                   frag.cell_barcode_);
+  } else {
+    const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
+    AppendAtacFragmentOutput(
+        std::string(reference_sequence_name) + "\t" +
+        std::to_string(frag.GetStartPosition()) + "\t" +
+        std::to_string(mapping_end_position) + "\t" +
+        barcode_translator_.Translate(frag.cell_barcode_,
+                                      cell_barcode_length_) +
+        "\t" + std::to_string(frag.num_dups_) + "\n");
+  }
   if (mapping_parameters_.macs3_frag_memory_accumulator &&
       mapping_parameters_.macs3_frag_memory_accumulator->IsValid()) {
     std::string acc_err;

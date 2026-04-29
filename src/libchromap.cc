@@ -167,8 +167,8 @@ ChromapRunResult RunMacs3FragPeaksFromMappingParameters(
         std::vector<macs3::FragmentRecord>().swap(b);
       }
       std::vector<std::vector<macs3::FragmentRecord>>().swap(buckets);
-      auto iter = macs3::WrapVectorFragmentIterator(std::move(flat),
-                                                    std::move(chrom_names));
+      auto iter = macs3::WrapVectorFragmentIterator(
+          std::move(flat), std::move(chrom_names));
       mapping_parameters.macs3_frag_buffer.reset();
       mapping_parameters.macs3_frag_chrom_names.reset();
       if (!peaks::RunMacs3FragPeakPipelineFromSortedIterator(
@@ -257,7 +257,8 @@ ChromapRunResult RunAtacMapping(const MappingParameters &mapping_parameters) {
       params.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
     params.macs3_frag_buffer =
         std::make_shared<std::vector<std::vector<macs3::FragmentRecord>>>();
-    params.macs3_frag_chrom_names = std::make_shared<std::vector<std::string>>();
+    params.macs3_frag_chrom_names =
+        std::make_shared<std::vector<std::string>>();
   }
 
   const ChromapRunResult mapping_result = RunMapping(params);
