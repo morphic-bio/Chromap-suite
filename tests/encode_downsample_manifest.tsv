@@ -1,0 +1,4 @@
+assay	case_id	experiment	r1_accession	r2_accession	r1_url	r2_url	default_read_count	chromap_args	description
+chip	C03_chip_tagalign	ENCSR089DTY	ENCFF851YSO	ENCFF451LIG	https://www.encodeproject.org/files/ENCFF851YSO/@@download/ENCFF851YSO.fastq.gz	https://www.encodeproject.org/files/ENCFF451LIG/@@download/ENCFF451LIG.fastq.gz	10000	--preset chip --TagAlign	CTCF TF ChIP-seq real-data smoke
+atac	C04_atac_bed	ENCSR803FKU	ENCFF013DXQ	ENCFF473SZG	https://www.encodeproject.org/files/ENCFF013DXQ/@@download/ENCFF013DXQ.fastq.gz	https://www.encodeproject.org/files/ENCFF473SZG/@@download/ENCFF473SZG.fastq.gz	10000	--preset atac --BED	Bulk ATAC-seq real-data smoke
+hic	C10_hic_pairs	ENCSR173DMV	ENCFF396ZOI	ENCFF995XRN	https://www.encodeproject.org/files/ENCFF396ZOI/@@download/ENCFF396ZOI.fastq.gz	https://www.encodeproject.org/files/ENCFF995XRN/@@download/ENCFF995XRN.fastq.gz	10000	--split-alignment --pairs --MAPQ-threshold 1	Hi-C real-data smoke stopping at pairs
