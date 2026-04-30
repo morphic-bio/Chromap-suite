@@ -33,6 +33,7 @@ out/
 plans/artifacts/
 
 # Logs and temp files
+__pycache__/
 *.log
 *.tmp
 *.temp*
