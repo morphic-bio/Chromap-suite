@@ -82,7 +82,8 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 
 -include $(deps)
 
-.PHONY: clean test-unit test-frag-compact-store test-peak-memory-source-100k \
+.PHONY: clean test-unit test-frag-compact-store test-libchromap-core-smoke \
+	 test-peak-memory-source-100k \
 	benchmark-peak-memory-fullset test-peak-100k test-peak-calibration-100k \
 	test-peak-input-repr-100k test-peak-pileup-100k test-peak-frag-pileup-100k \
 	test-peak-lambda-100k test-peak-score-100k test-peak-bdgpeakcall-100k \
@@ -167,6 +168,11 @@ test-frag-compact-store: dir $(LIBMACS3_LIB)
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_frag_compact_store.cc \
 		$(LIBMACS3_LIB) -o tests/test_frag_compact_store $(LDFLAGS)
 	./tests/test_frag_compact_store
+
+# Hermetic synthetic smoke for CLI vs libchromap parity. Artifacts are written
+# under CHROMAP_ARTIFACT_ROOT (default: plans/artifacts).
+test-libchromap-core-smoke: chromap chromap_lib_runner
+	./tests/run_libchromap_core_smoke.sh
 
 # 100K: memory vs file fragment source for integrated MACS3 FRAG peaks
 test-peak-memory-source-100k: chromap chromap_callpeaks

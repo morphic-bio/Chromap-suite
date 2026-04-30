@@ -309,6 +309,7 @@ Small default gate:
 ```bash
 make chromap chromap_lib_runner
 tests/run_libchromap_core_smoke.sh
+make test-libchromap-core-smoke
 python3 -m pytest mcp_server/tests -q
 ```
 

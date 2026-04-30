@@ -1,4 +1,6 @@
 #include <cstdint>
+#include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -83,6 +85,66 @@ uint64_t ParseSizeString(const std::string &value,
   return static_cast<uint64_t>(number * multiplier);
 }
 
+std::string DeriveSecondaryOutputPath(const std::string &primary_path,
+                                      const std::string &suffix) {
+  if (primary_path == "/dev/stdout" || primary_path == "/dev/stderr" ||
+      primary_path == "-") {
+    chromap::ExitWithMessage(
+        "Y/noY stream outputs require explicit secondary output paths when "
+        "primary output is stdout");
+    return "";
+  }
+
+  const size_t slash_pos = primary_path.rfind('/');
+  const size_t search_start =
+      slash_pos == std::string::npos ? 0 : slash_pos + 1;
+
+  std::string lower_path = primary_path;
+  std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+
+  if (lower_path.size() > 7 &&
+      lower_path.substr(lower_path.size() - 7) == ".sam.gz") {
+    return primary_path.substr(0, primary_path.size() - 7) + suffix +
+           ".sam.gz";
+  }
+  if (lower_path.size() > 4 &&
+      lower_path.substr(lower_path.size() - 4) == ".bam") {
+    return primary_path.substr(0, primary_path.size() - 4) + suffix + ".bam";
+  }
+  if (lower_path.size() > 5 &&
+      lower_path.substr(lower_path.size() - 5) == ".cram") {
+    return primary_path.substr(0, primary_path.size() - 5) + suffix + ".cram";
+  }
+  if (lower_path.size() > 4 &&
+      lower_path.substr(lower_path.size() - 4) == ".sam") {
+    return primary_path.substr(0, primary_path.size() - 4) + suffix + ".sam";
+  }
+
+  const size_t dot_pos = primary_path.rfind('.');
+  if (dot_pos != std::string::npos && dot_pos > search_start) {
+    return primary_path.substr(0, dot_pos) + suffix +
+           primary_path.substr(dot_pos);
+  }
+  return primary_path + suffix + ".sam";
+}
+
+std::string DeriveYReadNamesOutputPath(const std::string &primary_path) {
+  if (primary_path == "/dev/stdout" || primary_path == "/dev/stderr" ||
+      primary_path == "-") {
+    chromap::ExitWithMessage(
+        "--emit-Y-read-names requires --Y-read-names-output when primary "
+        "output is stdout");
+    return "";
+  }
+
+  const size_t dot_pos = primary_path.rfind('.');
+  if (dot_pos == std::string::npos) {
+    return primary_path + ".Y.names.txt";
+  }
+  return primary_path.substr(0, dot_pos) + ".Y.names.txt";
+}
+
 void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
   if (mapping_parameters.reference_file_path.empty()) {
     chromap::ExitWithMessage("No reference specified");
@@ -113,6 +175,20 @@ void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
   }
   if (mapping_parameters.write_index && !mapping_parameters.sort_bam) {
     chromap::ExitWithMessage("--write-index requires --sort-bam");
+  }
+  const bool primary_is_stdout =
+      mapping_parameters.mapping_output_file_path == "-" ||
+      mapping_parameters.mapping_output_file_path == "/dev/stdout" ||
+      mapping_parameters.mapping_output_file_path == "/dev/stderr";
+  if (primary_is_stdout && mapping_parameters.emit_noY_stream &&
+      mapping_parameters.noY_output_path.empty()) {
+    chromap::ExitWithMessage(
+        "--emit-noY-bam requires --noY-output when primary output is stdout");
+  }
+  if (primary_is_stdout && mapping_parameters.emit_Y_stream &&
+      mapping_parameters.Y_output_path.empty()) {
+    chromap::ExitWithMessage(
+        "--emit-Y-bam requires --Y-output when primary output is stdout");
   }
 }
 
@@ -164,6 +240,8 @@ int main(int argc, char **argv) {
        "<to_bc>\\t<from_bc> (col2 is the hash key).",
        cxxopts::value<bool>()->default_value("false"))
       ("o,output", "Mapping output path",
+       cxxopts::value<std::string>(), "FILE")
+      ("atac-fragments", "Secondary ATAC fragments output path",
        cxxopts::value<std::string>(), "FILE")
       ("summary", "Summary metadata output path",
        cxxopts::value<std::string>(), "FILE")
@@ -224,6 +302,22 @@ int main(int argc, char **argv) {
       ("sort-bam-ram", "Sort RAM limit",
        cxxopts::value<std::string>(), "SIZE")
       ("write-index", "Write BAM/CRAM index")
+      ("emit-noY-bam", "Emit additional stream excluding Y-chromosome reads")
+      ("noY-output", "Explicit noY output path",
+       cxxopts::value<std::string>(), "FILE")
+      ("emit-Y-bam", "Emit additional stream with only Y-chromosome reads")
+      ("Y-output", "Explicit Y-only output path",
+       cxxopts::value<std::string>(), "FILE")
+      ("emit-Y-read-names", "Emit Y read names")
+      ("Y-read-names-output", "Explicit Y read names output path",
+       cxxopts::value<std::string>(), "FILE")
+      ("emit-Y-noY-fastq", "Emit Y/noY FASTQ files")
+      ("emit-Y-noY-fastq-compression", "Y/noY FASTQ compression: gz or none",
+       cxxopts::value<std::string>(), "STR")
+      ("Y-fastq-output-prefix", "Prefix for Y FASTQ outputs",
+       cxxopts::value<std::string>(), "PREFIX")
+      ("noY-fastq-output-prefix", "Prefix for noY FASTQ outputs",
+       cxxopts::value<std::string>(), "PREFIX")
       ("skip-barcode-check", "Skip barcode compatibility check");
 
   chromap::MappingParameters mapping_parameters;
@@ -278,6 +372,10 @@ int main(int argc, char **argv) {
     if (result.count("output")) {
       mapping_parameters.mapping_output_file_path =
           result["output"].as<std::string>();
+    }
+    if (result.count("atac-fragments")) {
+      mapping_parameters.atac_fragment_output_file_path =
+          result["atac-fragments"].as<std::string>();
     }
     if (result.count("summary")) {
       mapping_parameters.summary_metadata_file_path =
@@ -423,6 +521,52 @@ int main(int argc, char **argv) {
     }
     if (result.count("write-index")) {
       mapping_parameters.write_index = true;
+    }
+    if (result.count("emit-noY-bam")) {
+      mapping_parameters.emit_noY_stream = true;
+    }
+    if (result.count("noY-output")) {
+      mapping_parameters.noY_output_path =
+          result["noY-output"].as<std::string>();
+    } else if (mapping_parameters.emit_noY_stream) {
+      mapping_parameters.noY_output_path = DeriveSecondaryOutputPath(
+          mapping_parameters.mapping_output_file_path, ".noY");
+    }
+    if (result.count("emit-Y-bam")) {
+      mapping_parameters.emit_Y_stream = true;
+    }
+    if (result.count("Y-output")) {
+      mapping_parameters.Y_output_path =
+          result["Y-output"].as<std::string>();
+    } else if (mapping_parameters.emit_Y_stream) {
+      mapping_parameters.Y_output_path = DeriveSecondaryOutputPath(
+          mapping_parameters.mapping_output_file_path, ".Y");
+    }
+    if (result.count("emit-Y-read-names")) {
+      mapping_parameters.emit_y_read_names = true;
+    }
+    if (result.count("Y-read-names-output")) {
+      mapping_parameters.y_read_names_output_path =
+          result["Y-read-names-output"].as<std::string>();
+    } else if (mapping_parameters.emit_y_read_names) {
+      mapping_parameters.y_read_names_output_path =
+          DeriveYReadNamesOutputPath(
+              mapping_parameters.mapping_output_file_path);
+    }
+    if (result.count("emit-Y-noY-fastq")) {
+      mapping_parameters.emit_y_noy_fastq = true;
+    }
+    if (result.count("emit-Y-noY-fastq-compression")) {
+      mapping_parameters.y_noy_fastq_compression =
+          result["emit-Y-noY-fastq-compression"].as<std::string>();
+    }
+    if (result.count("Y-fastq-output-prefix")) {
+      mapping_parameters.y_fastq_output_prefix =
+          result["Y-fastq-output-prefix"].as<std::string>();
+    }
+    if (result.count("noY-fastq-output-prefix")) {
+      mapping_parameters.noy_fastq_output_prefix =
+          result["noY-fastq-output-prefix"].as<std::string>();
     }
     if (result.count("skip-barcode-check")) {
       mapping_parameters.skip_barcode_check = true;
