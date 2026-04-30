@@ -83,6 +83,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 -include $(deps)
 
 .PHONY: clean test-unit test-frag-compact-store test-libchromap-core-smoke \
+	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 test-peak-memory-source-100k \
 	benchmark-peak-memory-fullset test-peak-100k test-peak-calibration-100k \
 	test-peak-input-repr-100k test-peak-pileup-100k test-peak-frag-pileup-100k \
@@ -173,6 +174,14 @@ test-frag-compact-store: dir $(LIBMACS3_LIB)
 # under CHROMAP_ARTIFACT_ROOT (default: plans/artifacts).
 test-libchromap-core-smoke: chromap chromap_lib_runner
 	./tests/run_libchromap_core_smoke.sh
+
+# Optional real-data smoke. Requires CHROMAP_GRCH38_REF and
+# CHROMAP_GRCH38_INDEX; downloads require ENCODE_ALLOW_DOWNLOAD=1.
+prepare-encode-downsample-fixtures:
+	./tests/prepare_encode_downsample_fixtures.sh
+
+test-encode-downsample-smoke: chromap chromap_lib_runner
+	./tests/run_encode_downsample_smoke.sh
 
 # 100K: memory vs file fragment source for integrated MACS3 FRAG peaks
 test-peak-memory-source-100k: chromap chromap_callpeaks

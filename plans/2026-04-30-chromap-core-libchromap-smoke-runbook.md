@@ -1,7 +1,7 @@
 # Chromap Core + libchromap Small-Set Regression Runbook
 
 Date: 2026-04-30
-Status: draft runbook, no tests implemented yet
+Status: S0 implemented; S1 ENCODE fixture preparation and smoke harness implemented
 Scope: Stage 1.5 hardening after MCP/Launchpad Stage 1
 
 ## Goal
@@ -322,5 +322,40 @@ ENCODE_FIXTURE_CACHE=/path/to/cache \
 tests/run_encode_downsample_smoke.sh
 ```
 
+To create the ignored ENCODE downsample cache explicitly:
+
+```bash
+ENCODE_ALLOW_DOWNLOAD=1 \
+ENCODE_ASSAYS=chip,atac,hic \
+ENCODE_DOWNSAMPLE_READS=10000 \
+tests/prepare_encode_downsample_fixtures.sh
+```
+
+The committed source manifest is `tests/encode_downsample_manifest.tsv`. The
+generated manifest and FASTQs stay under
+`plans/artifacts/encode_fixture_cache/` by default.
+
 No test in this plan should call downstream Hi-C TAD tools. The Hi-C handoff
 artifact is `.pairs`.
+
+## Validation Record
+
+2026-04-30 S1 implementation check:
+
+- Materialized ignored ENCODE downsample cache at
+  `plans/artifacts/encode_fixture_cache/`.
+- Read count: 1,000 paired reads per assay.
+- Reference:
+  `/mnt/pikachu/refdata-cellranger-arc-GRCh38-2020-A-2.0.0/fasta/genome.fa`
+- Chromap index:
+  `/mnt/pikachu/atac-seq/benchmarks/pbmc_unsorted_3k_100k/chromap_index/genome.index`
+- Smoke output:
+  `plans/artifacts/encode_downsample_smoke/20260430T151521Z/summary.tsv`
+
+Observed real-data smoke result:
+
+| Case | Assay | Status | Non-header rows | Args |
+| --- | --- | --- | ---: | --- |
+| C03_chip_tagalign | ChIP | PASS | 1516 | `--preset chip --TagAlign` |
+| C04_atac_bed | ATAC | PASS | 676 | `--preset atac --BED` |
+| C10_hic_pairs | Hi-C | PASS | 763 | `--split-alignment --pairs --MAPQ-threshold 1` |

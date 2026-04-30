@@ -1,3 +1,48 @@
+# Tests
+
+## Core libchromap Smoke
+
+`run_libchromap_core_smoke.sh` is the default small regression gate for the
+Chromap CLI and `libchromap` runner boundary. It generates synthetic FASTA and
+FASTQ inputs under `plans/artifacts/chromap_core_smoke/<timestamp>/`, builds a
+temporary index, runs CLI and `chromap_lib_runner` cases, and compares BED,
+TagAlign, pairs, BAM, ATAC fragments, barcode summary, and Y/noY outputs.
+
+Run it with:
+
+```bash
+make test-libchromap-core-smoke
+```
+
+## ENCODE Downsample Smoke
+
+`prepare_encode_downsample_fixtures.sh` creates ignored real-data fixtures from
+the candidate ENCODE pairs listed in `encode_downsample_manifest.tsv`. It
+downloads full FASTQs only when `ENCODE_ALLOW_DOWNLOAD=1`, then writes
+pair-preserving first-N downsampled FASTQs plus a generated manifest under
+`plans/artifacts/encode_fixture_cache/`.
+
+`run_encode_downsample_smoke.sh` consumes that generated manifest and runs
+Chromap CLI vs `chromap_lib_runner` on real ChIP, ATAC, and Hi-C read pairs.
+It requires a matching full-genome reference and Chromap index:
+
+```bash
+CHROMAP_GRCH38_REF=/path/to/genome.fa \
+CHROMAP_GRCH38_INDEX=/path/to/genome.index \
+ENCODE_ALLOW_DOWNLOAD=1 \
+make test-encode-downsample-smoke
+```
+
+Useful knobs:
+
+- `ENCODE_ASSAYS=chip,atac,hic` selects a subset; default is `all`.
+- `ENCODE_DOWNSAMPLE_READS=10000` overrides the manifest default.
+- `ENCODE_FIXTURE_CACHE=/path/to/cache` relocates the ignored cache.
+- `ENCODE_SKIP_PREPARE=1` reuses an existing generated manifest/cache.
+
+Hi-C coverage stops at Chromap `.pairs` output. Downstream `.hic`, `.cool`, and
+TAD callers are outside this smoke gate.
+
 # Tests for Y-Chromosome Filtering Feature
 
 This directory contains tests for the three-stream SAM Y-filtering feature.

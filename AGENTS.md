@@ -107,6 +107,7 @@ Recommended layout:
 ```text
 plans/artifacts/chromap_core_smoke/<timestamp>/
 plans/artifacts/encode_fixture_cache/
+plans/artifacts/encode_downsample_smoke/<timestamp>/
 plans/artifacts/launchpad_server.log
 ```
 
