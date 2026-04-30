@@ -47,6 +47,11 @@ from ..tools.workflows import (
     render_workflow_command,
     validate_workflow_parameters,
 )
+from ..tools.run_manifest import (
+    recipe_id_for_workflow,
+    update_run_manifest,
+    write_run_manifest,
+)
 
 from .composition_bridge import (
     build_composition_artifacts,
@@ -728,14 +733,41 @@ async def lp_launch(request: Request) -> JSONResponse:
     if not argv:
         return _json_error("INTERNAL_ERROR", "Empty argv after render", 500)
 
+    recipe_id = recipe_id_for_workflow(wf_id)
+    if recipe_id is None:
+        return _json_error(
+            "INTERNAL_ERROR",
+            f"No recipe registry entry is linked to workflow {wf_id!r}",
+            500,
+        )
+
+    try:
+        manifest_result = write_run_manifest(
+            recipe_id,
+            params,
+            execution_status="starting",
+            argv=argv,
+            shell_preview=result.shell_preview,
+            env_overrides=dict(result.env_overrides or {}),
+        )
+    except Exception as e:
+        return _json_error("MANIFEST_FAILED", str(e), 500)
+
+    manifest_path = manifest_result["manifest_path"]
+    log_paths = manifest_result["manifest"]["log_paths"]
+    stdout_path = Path(log_paths["stdout"])
+    stderr_path = Path(log_paths["stderr"])
+
     env = os.environ.copy()
     for k, v in (result.env_overrides or {}).items():
         env[str(k)] = str(v)
 
+    stdout_fh = stdout_path.open("ab")
+    stderr_fh = stderr_path.open("ab")
     popen_kw: dict = {
         "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
+        "stdout": stdout_fh,
+        "stderr": stderr_fh,
         "env": env,
     }
     if os.name != "nt":
@@ -744,15 +776,34 @@ async def lp_launch(request: Request) -> JSONResponse:
     try:
         proc = subprocess.Popen(argv, **popen_kw)
     except OSError as e:
+        stdout_fh.close()
+        stderr_fh.close()
+        update_run_manifest(
+            manifest_path,
+            execution_status="failed_to_start",
+            error=str(e),
+            ended_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
         return _json_error("EXEC_FAILED", str(e), 500)
+    finally:
+        if not stdout_fh.closed:
+            stdout_fh.close()
+        if not stderr_fh.closed:
+            stderr_fh.close()
+
+    update_run_manifest(manifest_path, execution_status="running", pid=proc.pid)
 
     return JSONResponse(
         {
             "ok": True,
             "pid": proc.pid,
+            "manifest_path": manifest_path,
+            "artifact_dir": manifest_result["artifact_dir"],
+            "stdout_log": str(stdout_path),
+            "stderr_log": str(stderr_path),
             "message": (
                 f"Started process {proc.pid} on the server host (detached). "
-                "Chromap writes logs under your chosen output prefix; stdout/stderr are not captured here."
+                "Launchpad captured stdout/stderr under the run manifest artifact directory."
             ),
         }
     )

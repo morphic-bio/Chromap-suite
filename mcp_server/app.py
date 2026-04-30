@@ -62,6 +62,7 @@ from .tools.recipes import (
     get_recipe as _get_recipe,
     list_recipes as _list_recipes,
 )
+from .tools.run_manifest import write_run_manifest as _write_run_manifest
 from .launchpad.api import get_launchpad_routes
 
 
@@ -388,6 +389,46 @@ def preflight_recipe(
     except Exception as e:
         return ErrorResponse(
             code="RECIPE_PREFLIGHT_FAILED",
+            message=str(e),
+        ).model_dump()
+
+
+@mcp.tool()
+def write_recipe_run_manifest(
+    recipe_id: str,
+    params: dict,
+    execution_status: str = "dry_run",
+    auth_token: Optional[str] = None,
+) -> dict:
+    """Write a reproducibility manifest for a recipe run.
+
+    This is side-effect free with respect to Chromap execution. The default
+    `execution_status="dry_run"` records the rendered command, inputs, outputs,
+    git state, binary metadata, environment, and recipe preflight result under
+    `plans/artifacts/mcp_runs/.../run.json`.
+
+    Args:
+        recipe_id: Recipe identifier from mcp_server/recipes/registry.yaml.
+        params: Recipe parameter values.
+        execution_status: Manifest status, normally `dry_run`.
+        auth_token: Authentication token (required if server has auth configured).
+
+    Returns:
+        Manifest path, artifact directory, and manifest payload.
+    """
+    auth_error = check_auth(auth_token)
+    if auth_error:
+        return auth_error.model_dump()
+
+    try:
+        return _write_run_manifest(
+            recipe_id,
+            params,
+            execution_status=execution_status,
+        )
+    except Exception as e:
+        return ErrorResponse(
+            code="RUN_MANIFEST_FAILED",
             message=str(e),
         ).model_dump()
 

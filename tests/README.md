@@ -61,6 +61,13 @@ locations, and the Hi-C `.pairs` boundary:
 python3 -m pytest mcp_server/tests/test_chromap_preflight.py -q
 ```
 
+Recipe run-manifest tests cover dry-run manifest creation, MCP tool exposure,
+serial benchmark policy recording, and Launchpad launch log/manifest plumbing:
+
+```bash
+python3 -m pytest mcp_server/tests/test_run_manifest.py -q
+```
+
 # Tests for Y-Chromosome Filtering Feature
 
 This directory contains tests for the three-stream SAM Y-filtering feature.
