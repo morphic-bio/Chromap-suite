@@ -61,6 +61,7 @@ Important tools exposed by `mcp_server.app`:
 - `list_recipes`
 - `describe_recipe`
 - `preflight_recipe`
+- `write_recipe_run_manifest`
 - `list_workflows`
 - `describe_workflow`
 - `get_workflow_parameter_schema`
@@ -76,6 +77,12 @@ in `.chromap_build_state.json`.
 `preflight_recipe` validates recipe parameters against the registry's preflight
 rule ids before command rendering or execution. It returns per-rule
 `pass`/`warn`/`fail` results with messages, paths, and suggested fixes.
+
+`write_recipe_run_manifest` writes a dry-run reproducibility record under
+`plans/artifacts/mcp_runs/.../run.json`. The manifest captures recipe metadata,
+rendered argv, shell preview, git state, binary metadata, inputs, outputs,
+preflight results, log paths, host/user context, and benchmark policy before any
+real execution.
 
 ## Verification
 

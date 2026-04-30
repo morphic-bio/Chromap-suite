@@ -1,7 +1,7 @@
 # Runbook: Chromap MCP, Agents, and Launchpad Hardening
 
 Date: 2026-04-30
-Status: Stage 0-2 implemented; Stage 3+ proposed
+Status: Stage 0-3 implemented; Stage 4+ proposed
 Prerequisites:
 
 - MCP/Launchpad Stage 1 is present.
@@ -299,6 +299,26 @@ Record:
 - Tests assert required fields.
 
 ### Gates
+
+```bash
+python3 -m pytest mcp_server/tests/test_run_manifest.py -q
+python3 -m pytest mcp_server/tests -q
+```
+
+### Stage 3 Implementation Note
+
+Implemented in `mcp_server/tools/run_manifest.py` with MCP exposure through
+`write_recipe_run_manifest` and Launchpad launch integration through
+`mcp_server/launchpad/api.py`.
+
+Run manifests are written under `plans/artifacts/mcp_runs/.../run.json` and
+record the recipe id, registry version, rendered argv, shell preview, git
+state, binary metadata, input/reference/output paths, artifact/log paths,
+host/user context, relevant environment variables, preflight results, and
+smoke/benchmark classification. Launchpad now captures stdout/stderr into the
+same artifact directory instead of discarding them.
+
+Validation:
 
 ```bash
 python3 -m pytest mcp_server/tests/test_run_manifest.py -q
