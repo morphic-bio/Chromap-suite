@@ -43,6 +43,16 @@ Useful knobs:
 Hi-C coverage stops at Chromap `.pairs` output. Downstream `.hic`, `.cool`, and
 TAD callers are outside this smoke gate.
 
+## MCP Recipe Registry Tests
+
+The MCP/Launchpad hardening work adds recipe metadata under
+`mcp_server/recipes/registry.yaml`. These tests check that public workflows have
+recipe entries, expected outputs, preflight rule ids, smoke coverage, and docs:
+
+```bash
+python3 -m pytest mcp_server/tests/test_recipe_registry.py -q
+```
+
 # Tests for Y-Chromosome Filtering Feature
 
 This directory contains tests for the three-stream SAM Y-filtering feature.

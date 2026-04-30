@@ -5,8 +5,13 @@ How to add a new workflow to the Chromap-suite MCP server.
 ## Overview
 
 A workflow is a structured parameter contract for a shell script. Adding one
-requires two things: a YAML schema file and a config entry. No code changes are
-needed.
+requires three tracked metadata updates:
+
+1. a workflow YAML schema,
+2. a `mcp_server/config.yaml` workflow entry,
+3. a `mcp_server/recipes/registry.yaml` recipe entry.
+
+No code changes are needed for a basic command-rendering recipe.
 
 ## Step 1: Create the schema YAML
 
@@ -212,10 +217,76 @@ workflows:
     schema_file: "mcp_server/workflows/my_workflow.yaml"
 ```
 
-That's it. The MCP server will automatically pick up the new workflow on the
-next config load (or call `reload_config`).
+## Step 3: Register in the recipe registry
 
-## Step 3: Verify
+Add a matching entry to `mcp_server/recipes/registry.yaml`.
+
+The registry is the shared metadata layer intended for MCP tools, Launchpad,
+docs, tests, and future preflight/run-manifest work. A workflow YAML says how
+to render a command; a recipe entry says why the command exists, what artifacts
+it produces, how it is tested, and what safety checks apply.
+
+Minimal executable recipe example:
+
+```yaml
+  - id: my_workflow
+    title: My Workflow
+    purpose: One-line description of the operator intent.
+    enabled: true
+    workflow_id: my_workflow
+    runtime_class: interactive
+    benchmark_policy: not_benchmark
+    command_template:
+      - scripts/my_workflow.sh
+      - --input-dir
+      - "{input_dir}"
+    inputs:
+      - name: input_dir
+        type: directory
+        required: true
+        description: Input data directory.
+    outputs:
+      - name: result_dir
+        artifact_type: directory
+        path_template: "{out_dir}"
+        description: Workflow output directory.
+    preflight:
+      - input_dir_exists
+      - output_parent_trusted_or_creatable
+    smoke_coverage:
+      S0: tests/run_my_workflow_smoke.sh
+    docs:
+      - path: mcp_server/workflows/my_workflow.yaml
+        description: Workflow schema.
+```
+
+Registry field policy:
+
+| Field | Required for enabled recipes | Description |
+|-------|------------------------------|-------------|
+| `id` | yes | Stable recipe id; usually matches workflow id. |
+| `title` | yes | Human-readable label. |
+| `purpose` | yes | Operator intent, not just command syntax. |
+| `enabled` | yes | `true` exposes the recipe as executable metadata. |
+| `workflow_id` | yes | Workflow schema id for executable recipes. |
+| `runtime_class` | yes | `smoke`, `interactive`, `long`, or `benchmark`. |
+| `benchmark_policy` | yes | `not_benchmark`, `serial_required`, or `parallel_safe`. |
+| `command_template` | yes | Argv template, not a shell string. |
+| `inputs` | yes | Typed input metadata. |
+| `outputs` | yes | Expected artifacts and path templates. |
+| `preflight` | yes | Preflight rule ids. Rules may be implemented later. |
+| `smoke_coverage` | yes | S0/S1/S2 test coverage reference. |
+| `docs` | yes | Durable documentation references. |
+| `handoff_artifacts` | recommended | STAR Suite or downstream handoff artifacts. |
+
+Metadata-only planned recipes may set `enabled: false`. They still need output
+and smoke-coverage metadata so the roadmap stays testable.
+
+The MCP server will automatically pick up workflow YAML changes on the next
+config load (or call `reload_config`). The recipe registry is loaded separately
+by `mcp_server.tools.recipes`.
+
+## Step 4: Verify
 
 ```python
 # List workflows -- your new one should appear
@@ -238,6 +309,13 @@ client.call_tool("render_workflow_command", {
     "workflow_id": "my_workflow",
     "params": {"input_dir": "/path/to/data", "threads": 4, "dry_run": True},
 })
+```
+
+Run the registry tests as well:
+
+```bash
+python3 -m pytest mcp_server/tests/test_recipe_registry.py -q
+python3 -m pytest mcp_server/tests -q
 ```
 
 ## Step 4: Add tests (recommended)

@@ -54,6 +54,10 @@ from .tools.scaffold import (
     scaffold_workflow_schema as _scaffold_workflow_schema,
     validate_draft_workflow_schema as _validate_draft_workflow_schema,
 )
+from .tools.recipes import (
+    get_recipe as _get_recipe,
+    list_recipes as _list_recipes,
+)
 from .launchpad.api import get_launchpad_routes
 
 
@@ -587,6 +591,67 @@ def ensure_fresh_build(
 
 
 # --- Workflow Tools ---
+
+
+@mcp.tool()
+def list_recipes(
+    enabled_only: bool = False,
+    auth_token: Optional[str] = None,
+) -> dict:
+    """List Chromap recipe registry entries.
+
+    Recipes add operator intent, output artifacts, preflight rule ids, smoke
+    coverage, benchmark policy, and handoff metadata on top of workflow command
+    schemas.
+
+    Args:
+        enabled_only: If true, return only executable/current recipes.
+        auth_token: Authentication token (optional if public_discovery is enabled).
+
+    Returns:
+        Dictionary with recipe metadata from mcp_server/recipes/registry.yaml.
+    """
+    auth_error = check_auth(auth_token, is_discovery=True)
+    if auth_error:
+        return auth_error.model_dump()
+
+    try:
+        return {
+            "recipes": [
+                recipe.model_dump()
+                for recipe in _list_recipes(enabled_only=enabled_only)
+            ]
+        }
+    except Exception as e:
+        return ErrorResponse(
+            code="RECIPE_ERROR",
+            message=str(e),
+        ).model_dump()
+
+
+@mcp.tool()
+def describe_recipe(
+    recipe_id: str,
+    auth_token: Optional[str] = None,
+) -> dict:
+    """Return one Chromap recipe registry entry."""
+    auth_error = check_auth(auth_token, is_discovery=True)
+    if auth_error:
+        return auth_error.model_dump()
+
+    try:
+        recipe = _get_recipe(recipe_id)
+        if recipe is None:
+            return ErrorResponse(
+                code="RECIPE_NOT_FOUND",
+                message=f"Unknown recipe: {recipe_id}",
+            ).model_dump()
+        return recipe.model_dump()
+    except Exception as e:
+        return ErrorResponse(
+            code="RECIPE_ERROR",
+            message=str(e),
+        ).model_dump()
 
 
 @mcp.tool()
