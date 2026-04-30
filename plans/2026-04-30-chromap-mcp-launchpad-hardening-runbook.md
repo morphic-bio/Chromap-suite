@@ -1,7 +1,7 @@
 # Runbook: Chromap MCP, Agents, and Launchpad Hardening
 
 Date: 2026-04-30
-Status: Stage 0-4 implemented; Stage 5+ proposed
+Status: Stage 0-8 implemented
 Prerequisites:
 
 - MCP/Launchpad Stage 1 is present.
@@ -430,6 +430,14 @@ Estimated effort: 1-2 days.
 python3 -m pytest mcp_server/tests -q
 ```
 
+### Stage 5 Implementation Note
+
+Launchpad execution now resolves through an enabled recipe id and linked
+workflow id, constructs argv arrays, reruns recipe preflight immediately before
+execution, rejects untrusted or shell-like path parameters, requires explicit
+opt-in for long and benchmark recipes, monitors local launches with a timeout,
+and stores stdout/stderr with the run manifest artifact directory.
+
 ## Stage 6: Agent and User Documentation
 
 Purpose: make the repository self-explanatory for future agents and users.
@@ -465,6 +473,13 @@ Document:
 - Recipe authoring docs list every required registry field.
 - Docs clearly state that S1 ENCODE downloads are opt-in.
 
+### Stage 6 Implementation Note
+
+Updated `AGENTS.md`, `mcp_server/README.md`, `docs/chromap_launchpad.md`,
+`docs/index.md`, `tests/README.md`, and `mcp_server/workflows/AUTHORING.md`
+with recipe registry, safety model, artifact sandbox, benchmark policy,
+test-tier, STAR Suite, and no co-authorship guidance.
+
 ## Stage 7: STAR Suite Handoff Metadata
 
 Purpose: document integration boundaries without coupling Chromap execution to
@@ -485,6 +500,13 @@ Estimated effort: 0.5-1 day.
 - Registry records which artifacts are Chromap-owned handoff points.
 - Docs say STAR Suite lives at `/mnt/pikachu/STAR-suite`.
 - No STAR Suite workflow becomes a Chromap Launchpad default.
+
+### Stage 7 Implementation Note
+
+Registry handoff metadata now covers ATAC BAM, fragments TSV, optional fragments
+binary sidecar, MACS3 peak outputs, ATAC evidence TSV, and Hi-C `.pairs`.
+STAR Suite remains a documented sister repository and is not added as a
+Chromap Launchpad default.
 
 ## Stage 8: CI and Local Gates
 
@@ -523,6 +545,12 @@ bash scripts/launchpad_server.sh down
 - Default gate remains cheap and hermetic.
 - S1 ENCODE gate is documented but opt-in.
 - Benchmark recipes are excluded from default CI/local gates.
+
+### Stage 8 Implementation Note
+
+The default local gate remains MCP tests, core libchromap smoke, and
+`git diff --check`. S1 ENCODE and Launchpad HTTP probes are documented as
+explicit optional gates, and benchmark recipes are not enabled by default.
 
 ## Suggested Implementation Order
 

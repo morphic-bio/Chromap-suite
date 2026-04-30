@@ -40,6 +40,9 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+_SHELL_METACHARS = set(";&|`$<>")
+
+
 def _check(
     rule_id: str,
     status: str,
@@ -111,6 +114,15 @@ def _check_output_parent(recipe: RecipeEntry, params: dict[str, Any]) -> RecipeP
 
     checked: list[str] = []
     for output_path in paths:
+        if any(ch in output_path for ch in _SHELL_METACHARS):
+            return _check(
+                "output_parent_trusted_or_creatable",
+                "fail",
+                "Output path contains shell metacharacters",
+                path=str(output_path),
+                suggested_fix="Use literal output paths only; do not pass shell syntax through recipe parameters.",
+                outputs=paths,
+            )
         parent = Path(output_path).parent
         valid, error = validate_path(parent, must_be_writable=True)
         if not valid:
@@ -326,6 +338,44 @@ def _check_binary_exists(rule_id: str, binary_name: str) -> RecipePreflightCheck
     return _check(rule_id, "pass", f"{binary_name} found", path=str(path))
 
 
+def _check_input_paths_trusted(recipe: RecipeEntry, params: dict[str, Any]) -> RecipePreflightCheck:
+    path_values: list[str] = []
+    for input_def in recipe.inputs:
+        if input_def.name not in params:
+            continue
+        value = params.get(input_def.name)
+        if value in (None, ""):
+            continue
+        if input_def.type in ("file", "directory", "string_list"):
+            path_values.extend(_csv_items(value))
+        elif input_def.type == "string" and input_def.name in {"read1", "read2", "barcode"}:
+            path_values.extend(_csv_items(value))
+
+    for raw_path in path_values:
+        if any(ch in raw_path for ch in _SHELL_METACHARS):
+            return _check(
+                "input_paths_trusted",
+                "fail",
+                "Input path contains shell metacharacters",
+                path=raw_path,
+                suggested_fix="Use literal file paths only; do not pass shell syntax through recipe parameters.",
+            )
+        if not is_path_allowed(raw_path):
+            return _check(
+                "input_paths_trusted",
+                "fail",
+                "Input path is outside trusted roots",
+                path=raw_path,
+                suggested_fix="Place inputs under a configured trusted root.",
+            )
+    return _check(
+        "input_paths_trusted",
+        "pass",
+        "Recipe input paths are under trusted roots and contain no shell metacharacters",
+        path_count=len(path_values),
+    )
+
+
 def _run_recipe_rule(recipe: RecipeEntry, params: dict[str, Any], rule_id: str) -> RecipePreflightCheck:
     if rule_id == "reference_fasta_exists":
         return _validate_existing_file(rule_id, params, "reference")
@@ -385,6 +435,8 @@ def preflight_recipe(recipe_id: str, params: dict[str, Any]) -> RecipePreflightR
                     suggested_fix=f"Provide {input_def.name}.",
                 )
             )
+
+    checks.append(_check_input_paths_trusted(recipe, supplied))
 
     for rule_id in recipe.preflight:
         checks.append(_run_recipe_rule(recipe, supplied, rule_id))

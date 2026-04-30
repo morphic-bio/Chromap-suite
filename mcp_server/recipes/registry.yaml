@@ -169,6 +169,11 @@ recipes:
         artifact_type: fragments
         path_template: "{atac_fragments}"
         description: scATAC fragments table.
+      - name: fragments_binary_sidecar
+        artifact_type: other
+        path_template: "{atac_fragments}.bin"
+        required: false
+        description: Optional binary sidecar equivalent of the fragments table.
     preflight:
       - reference_fasta_exists
       - chromap_index_exists
@@ -187,6 +192,7 @@ recipes:
     handoff_artifacts:
       - BAM consumed by downstream alignment/QC tools.
       - fragments TSV consumed by ATAC peak and evidence workflows.
+      - fragments binary sidecar may replace TSV rereads in in-memory evidence workflows.
       - STAR Suite may consume fragments or derived evidence TSVs.
 
   - id: chromap_hic_pairs
@@ -364,6 +370,43 @@ recipes:
     docs:
       - path: plans/2026-04-24-macs3-frag-peaks-handoff.md
         description: Integrated FRAG peaks handoff.
+    handoff_artifacts:
+      - narrowPeak and summit BED outputs consumed by ATAC evidence workflows.
+
+  - id: chromap_atac_evidence_from_peaks
+    title: Chromap ATAC evidence from peaks
+    purpose: Produce ATAC evidence TSV from fragments and MACS3 peak calls.
+    enabled: false
+    runtime_class: long
+    benchmark_policy: serial_required
+    command_template: []
+    inputs:
+      - name: atac_fragments
+        type: file
+        required: true
+        description: Fragments TSV/TSV.GZ or equivalent binary sidecar source.
+      - name: macs3_frag_peaks_output
+        type: file
+        required: true
+        description: MACS3 narrowPeak output.
+      - name: atac_evidence_output
+        type: file
+        required: true
+        description: Output evidence TSV.
+    outputs:
+      - name: evidence
+        artifact_type: other
+        path_template: "{atac_evidence_output}"
+        description: ATAC evidence TSV consumed by STAR Suite multiome orchestration.
+    preflight:
+      - output_parent_trusted_or_creatable
+    smoke_coverage:
+      S2: STAR Suite ATAC evidence parity and md5 gates.
+    docs:
+      - path: plans/2026-04-29-atac-evidence-binary-sidecar-runbook.md
+        description: Binary sidecar and evidence handoff runbook.
+    handoff_artifacts:
+      - ATAC evidence TSV is a STAR Suite handoff artifact.
 
   - id: chromap_lib_runner_parity
     title: libchromap parity runner

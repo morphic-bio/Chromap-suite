@@ -1095,6 +1095,15 @@ function launchpadApp() {
           this.httpError = "Selected recipe is not linked to an executable workflow.";
           return;
         }
+        const recipe = this.selectedRecipe();
+        const allowLong = recipe?.runtime_class === "long"
+          ? window.confirm("Run this long recipe on the server host?")
+          : false;
+        const allowBenchmark = recipe?.runtime_class === "benchmark"
+          ? window.confirm("Run this benchmark recipe serially on the server host?")
+          : false;
+        if (recipe?.runtime_class === "long" && !allowLong) return;
+        if (recipe?.runtime_class === "benchmark" && !allowBenchmark) return;
         const r = await fetch(
           `${api}/workflows/${encodeURIComponent(wfId)}/launch`,
           {
@@ -1103,6 +1112,8 @@ function launchpadApp() {
             body: JSON.stringify({
               params: this.collectParams(),
               check_paths: true,
+              allow_long: allowLong,
+              allow_benchmark: allowBenchmark,
             }),
           }
         );

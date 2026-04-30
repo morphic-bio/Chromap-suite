@@ -64,6 +64,18 @@ bash scripts/launchpad_server.sh down
 The Launchpad is a command builder and local runner for Chromap recipes. Keep
 generated Launchpad logs and pid files under `plans/artifacts/`.
 
+Execution safety model:
+
+- Launchpad execution must resolve through an enabled recipe id and linked
+  workflow id.
+- Commands must be argv arrays, never shell strings.
+- Server-side recipe preflight must pass immediately before execution.
+- Input and output paths must stay under trusted roots and must not smuggle
+  shell syntax through path parameters.
+- Long and benchmark recipes require explicit opt-in.
+- Local launches write stdout, stderr, and `run.json` under
+  `plans/artifacts/mcp_runs/` and are monitored with a timeout.
+
 ## Benchmarking Policy
 
 Benchmarks are serial by default. Do not run multiple benchmark or large smoke

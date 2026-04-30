@@ -15,6 +15,7 @@ PLANNED_RECIPES = {
     "chromap_sorted_bam",
     "chromap_y_noy_split",
     "chromap_macs3_frag_peaks",
+    "chromap_atac_evidence_from_peaks",
     "chromap_lib_runner_parity",
 }
 

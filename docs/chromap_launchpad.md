@@ -35,6 +35,13 @@ Metadata-only planned/long recipes are hidden by default. Launchpad can opt into
 displaying them, but they are not executable until the registry marks them
 `enabled: true`.
 
+Execution is intentionally narrow. Launchpad resolves a selected recipe to its
+allowlisted workflow, builds an argv array rather than a shell string, runs
+recipe preflight again on the server, rejects untrusted or shell-like path
+parameters, requires explicit confirmation for long or benchmark recipes, and
+monitors launched commands with a timeout. Stdout, stderr, and the run manifest
+are written together under `plans/artifacts/mcp_runs/`.
+
 Every local launch writes a run manifest before the process starts:
 
 ```text
