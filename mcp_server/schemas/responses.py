@@ -111,6 +111,27 @@ class PreflightResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class RecipePreflightCheck(BaseModel):
+    """Result of one recipe preflight rule."""
+
+    rule_id: str
+    status: str = Field(pattern="^(pass|warn|fail)$")
+    message: str
+    path: Optional[str] = None
+    suggested_fix: Optional[str] = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class RecipePreflightResponse(BaseModel):
+    """Recipe-driven preflight validation response."""
+
+    recipe_id: str
+    valid: bool
+    checks: list[RecipePreflightCheck]
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
 # --- run_script ---
 
 

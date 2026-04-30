@@ -53,6 +53,14 @@ recipe entries, expected outputs, preflight rule ids, smoke coverage, and docs:
 python3 -m pytest mcp_server/tests/test_recipe_registry.py -q
 ```
 
+Recipe-driven preflight tests cover missing references/indexes, mismatched
+paired FASTQ lanes, barcode lane mismatches, output collisions, untrusted output
+locations, and the Hi-C `.pairs` boundary:
+
+```bash
+python3 -m pytest mcp_server/tests/test_chromap_preflight.py -q
+```
+
 # Tests for Y-Chromosome Filtering Feature
 
 This directory contains tests for the three-stream SAM Y-filtering feature.

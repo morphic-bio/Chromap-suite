@@ -20,6 +20,7 @@ from .schemas.responses import (
     ListDatasetsResponse,
     ListTestSuitesResponse,
     PreflightResponse,
+    RecipePreflightResponse,
     ReloadConfigResponse,
     RunScriptResponse,
 )
@@ -35,7 +36,10 @@ from .tools.executor import (
     get_log_tail as _get_log_tail,
     run_script as _run_script,
 )
-from .tools.preflight import run_preflight as _run_preflight
+from .tools.preflight import (
+    preflight_recipe as _preflight_recipe,
+    run_preflight as _run_preflight,
+)
 from .tools.reload import reload_config as _reload_config
 from .tools.build import (
     build_target as _build_target,
@@ -351,6 +355,39 @@ def preflight(
     except Exception as e:
         return ErrorResponse(
             code="PREFLIGHT_FAILED",
+            message=str(e),
+        ).model_dump()
+
+
+@mcp.tool()
+def preflight_recipe(
+    recipe_id: str,
+    params: dict,
+    auth_token: Optional[str] = None,
+) -> dict:
+    """Run registry-driven Chromap recipe preflight checks.
+
+    This validates typed recipe requirements and the recipe's declared
+    preflight rule ids without executing a command.
+
+    Args:
+        recipe_id: Recipe identifier from mcp_server/recipes/registry.yaml.
+        params: Recipe parameter values.
+        auth_token: Authentication token (required if server has auth configured).
+
+    Returns:
+        RecipePreflightResponse with pass/warn/fail checks.
+    """
+    auth_error = check_auth(auth_token)
+    if auth_error:
+        return auth_error.model_dump()
+
+    try:
+        result: RecipePreflightResponse = _preflight_recipe(recipe_id, params)
+        return result.model_dump()
+    except Exception as e:
+        return ErrorResponse(
+            code="RECIPE_PREFLIGHT_FAILED",
             message=str(e),
         ).model_dump()
 

@@ -60,6 +60,7 @@ Important tools exposed by `mcp_server.app`:
 
 - `list_recipes`
 - `describe_recipe`
+- `preflight_recipe`
 - `list_workflows`
 - `describe_workflow`
 - `get_workflow_parameter_schema`
@@ -71,6 +72,10 @@ Important tools exposed by `mcp_server.app`:
 
 Build targets are `chromap`, `libchromap`, and `runner`. Build state is tracked
 in `.chromap_build_state.json`.
+
+`preflight_recipe` validates recipe parameters against the registry's preflight
+rule ids before command rendering or execution. It returns per-rule
+`pass`/`warn`/`fail` results with messages, paths, and suggested fixes.
 
 ## Verification
 
