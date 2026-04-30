@@ -2,6 +2,7 @@
 
 * [README][doc]: general documentation
 * [Manpage](chromap.html): explanation of command-line options
+* [Chromap Launchpad](chromap_launchpad.md): local MCP-backed command builder
 * [Preprint][biorxiv]: free of charge preprint that describes the method
 * [GitHub Issues page][issue]: report bugs, request features and ask questions
 

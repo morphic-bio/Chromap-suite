@@ -1,0 +1,95 @@
+# Chromap-suite MCP Server Configuration
+
+server:
+  host: "0.0.0.0"
+  port: 8765
+  auth_token: "${MCP_AUTH_TOKEN}"
+  transport: "http"
+  public_discovery: true
+
+paths:
+  repo_root: "/mnt/pikachu/Chromap-suite"
+  artifact_log_root: "/mnt/pikachu/Chromap-suite/plans/artifacts"
+  temp_root: "/tmp"
+
+trusted_roots:
+  - "/mnt/pikachu/Chromap-suite"
+  - "/mnt/pikachu/atac-seq"
+  - "/mnt/pikachu"
+  - "/storage"
+  - "/tmp"
+  - "/usr/bin"
+  - "/usr/local/bin"
+
+datasets:
+  - id: "pbmc_unsorted_3k_multiome"
+    path: "/mnt/pikachu/atac-seq/10xMultiome/pbmc_unsorted_3k"
+    description: "10x Multiome PBMC unsorted 3k benchmark workspace"
+
+execution:
+  default_timeout_seconds: 7200
+  max_concurrent_jobs: 1
+  queue_max_size: 10
+
+disk_space:
+  default_min_gb: 20
+  full_depth_min_gb: 100
+
+workflows:
+  - id: "chromap_index"
+    title: "Chromap index"
+    summary: "Build a Chromap index from a reference FASTA."
+    entry_script: "chromap"
+    kind: "chromap_cli"
+    schema_file: "mcp_server/workflows/chromap_index.yaml"
+    visibility: "public"
+
+  - id: "chromap_atac_bed"
+    title: "Chromap ATAC BED"
+    summary: "Map paired-end ATAC/scATAC reads and emit BED/BEDPE-style output."
+    entry_script: "chromap"
+    kind: "chromap_cli"
+    schema_file: "mcp_server/workflows/chromap_atac_bed.yaml"
+    visibility: "public"
+
+  - id: "chromap_atac_bam_fragments"
+    title: "Chromap ATAC BAM + fragments"
+    summary: "Map barcoded paired-end ATAC reads and emit BAM plus scATAC fragments."
+    entry_script: "chromap"
+    kind: "chromap_cli"
+    schema_file: "mcp_server/workflows/chromap_atac_bam_fragments.yaml"
+    visibility: "public"
+
+  - id: "chromap_hic_pairs"
+    title: "Chromap Hi-C pairs"
+    summary: "Map paired-end Hi-C reads and emit 4DN pairs output."
+    entry_script: "chromap"
+    kind: "chromap_cli"
+    schema_file: "mcp_server/workflows/chromap_hic_pairs.yaml"
+    visibility: "public"
+
+scripts:
+  - name: "chromap_make"
+    path: "make"
+    module: "build"
+    description: "Build Chromap-suite with make"
+    working_dir: "."
+
+test_suites:
+  - module: "smoke"
+    description: "Chromap smoke tests from the top-level Makefile"
+    scripts: ["chromap_make"]
+    disk_space_min_gb: 20
+
+required_binaries:
+  - name: "chromap"
+    paths:
+      - "/mnt/pikachu/Chromap-suite/chromap"
+      - "/usr/local/bin/chromap"
+  - name: "make"
+    paths:
+      - "/usr/bin/make"
+      - "/usr/local/bin/make"
+
+build:
+  state_file: ".chromap_build_state.json"

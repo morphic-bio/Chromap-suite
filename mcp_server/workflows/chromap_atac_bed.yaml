@@ -1,0 +1,134 @@
+id: chromap_atac_bed
+title: Chromap ATAC BED
+summary: Map paired-end ATAC/scATAC reads and emit BED/BEDPE-style output.
+kind: chromap_cli
+entry_script: chromap
+supported_modes: ["local", "dry-run-capable"]
+caveats:
+  - "Use comma-separated FASTQ paths for multi-lane input."
+default_output_layout: "The mapped BED output is written to --output."
+scripts:
+  - role: entry
+    path: chromap
+    description: Chromap binary
+    language: executable
+stages:
+  - name: map
+    title: Map ATAC reads
+    script: chromap
+    description: Map paired-end ATAC reads and write BED output.
+parameter_groups:
+  - name: inputs
+    title: Inputs
+    parameters: [reference, index, read1, read2, barcode, barcode_whitelist]
+  - name: output
+    title: Output
+    parameters: [output, summary]
+  - name: mapping
+    title: Mapping
+    parameters: [num_threads, mapq_threshold, max_insert_size, remove_pcr_duplicates, tn5_shift, low_mem, temp_dir]
+parameters:
+  - name: reference
+    cli_flag: --ref
+    type: file
+    required: true
+    path_must_exist: true
+    description: Reference FASTA.
+  - name: index
+    cli_flag: --index
+    type: file
+    required: true
+    path_must_exist: true
+    description: Chromap index.
+  - name: read1
+    cli_flag: --read1
+    type: string
+    required: true
+    description: Read 1 FASTQ path, or comma-separated paths for multiple lanes.
+  - name: read2
+    cli_flag: --read2
+    type: string
+    required: true
+    description: Read 2 FASTQ path, or comma-separated paths for multiple lanes.
+  - name: barcode
+    cli_flag: --barcode
+    type: string
+    description: Optional barcode FASTQ path, or comma-separated paths.
+  - name: barcode_whitelist
+    cli_flag: --barcode-whitelist
+    type: file
+    path_must_exist: true
+    description: Optional barcode whitelist.
+  - name: output
+    cli_flag: --output
+    type: file
+    required: true
+    is_output_root: true
+    description: Output BED/BEDPE path.
+  - name: summary
+    cli_flag: --summary
+    type: file
+    description: Optional mapping summary path.
+  - name: num_threads
+    cli_flag: --num-threads
+    type: int
+    default: 8
+    skip_when_default: true
+    description: Threads.
+    min_value: 1
+  - name: mapq_threshold
+    cli_flag: --MAPQ-threshold
+    type: int
+    default: 30
+    skip_when_default: true
+    description: Minimum MAPQ for output.
+    min_value: 0
+    max_value: 60
+  - name: max_insert_size
+    cli_flag: --max-insert-size
+    type: int
+    default: 1000
+    skip_when_default: true
+    description: Maximum insert size.
+    min_value: 1
+  - name: remove_pcr_duplicates
+    cli_flag: --remove-pcr-duplicates
+    type: bool
+    default: false
+    description: Remove PCR duplicates.
+  - name: tn5_shift
+    cli_flag: --Tn5-shift
+    type: bool
+    default: true
+    description: Apply Tn5 shift.
+  - name: low_mem
+    cli_flag: --low-mem
+    type: bool
+    default: false
+    description: Use low memory mode.
+  - name: temp_dir
+    cli_flag: --temp-dir
+    type: directory
+    description: Temporary directory.
+  - name: preset
+    cli_flag: --preset
+    type: enum
+    default: atac
+    choices: [atac]
+    description: Chromap preset.
+    widget_hint: hidden
+  - name: bed
+    cli_flag: --BED
+    type: bool
+    default: true
+    description: BED output mode.
+    widget_hint: hidden
+rendering:
+  flag_order: [preset, bed, reference, index, read1, read2, barcode, barcode_whitelist, output, summary, num_threads, mapq_threshold, max_insert_size, remove_pcr_duplicates, tn5_shift, low_mem, temp_dir]
+constraints:
+  - kind: positive
+    params: [num_threads, max_insert_size]
+    message: Thread and insert-size values must be positive.
+  - kind: non_negative
+    params: [mapq_threshold]
+    message: MAPQ threshold must be non-negative.

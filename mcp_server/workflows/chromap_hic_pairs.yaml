@@ -1,0 +1,120 @@
+id: chromap_hic_pairs
+title: Chromap Hi-C pairs
+summary: Map paired-end Hi-C reads and emit 4DN pairs output.
+kind: chromap_cli
+entry_script: chromap
+supported_modes: ["local", "dry-run-capable"]
+caveats:
+  - "Use comma-separated FASTQ paths for multi-lane input."
+default_output_layout: "Pairs output is written to --output."
+scripts:
+  - role: entry
+    path: chromap
+    description: Chromap binary
+    language: executable
+stages:
+  - name: map
+    title: Map Hi-C reads
+    script: chromap
+    description: Map paired-end Hi-C reads and write pairs output.
+parameter_groups:
+  - name: inputs
+    title: Inputs
+    parameters: [reference, index, read1, read2]
+  - name: output
+    title: Output
+    parameters: [output, summary, pairs_natural_chr_order]
+  - name: mapping
+    title: Mapping
+    parameters: [num_threads, mapq_threshold, max_insert_size, low_mem, temp_dir]
+parameters:
+  - name: reference
+    cli_flag: --ref
+    type: file
+    required: true
+    path_must_exist: true
+    description: Reference FASTA.
+  - name: index
+    cli_flag: --index
+    type: file
+    required: true
+    path_must_exist: true
+    description: Chromap index.
+  - name: read1
+    cli_flag: --read1
+    type: string
+    required: true
+    description: Read 1 FASTQ path, or comma-separated paths.
+  - name: read2
+    cli_flag: --read2
+    type: string
+    required: true
+    description: Read 2 FASTQ path, or comma-separated paths.
+  - name: output
+    cli_flag: --output
+    type: file
+    required: true
+    is_output_root: true
+    description: Output pairs path.
+  - name: summary
+    cli_flag: --summary
+    type: file
+    description: Optional mapping summary path.
+  - name: pairs_natural_chr_order
+    cli_flag: --pairs-natural-chr-order
+    type: file
+    path_must_exist: true
+    description: Optional chromosome order file for pair flipping.
+  - name: num_threads
+    cli_flag: --num-threads
+    type: int
+    default: 8
+    skip_when_default: true
+    description: Threads.
+    min_value: 1
+  - name: mapq_threshold
+    cli_flag: --MAPQ-threshold
+    type: int
+    default: 30
+    skip_when_default: true
+    description: Minimum MAPQ for output.
+    min_value: 0
+    max_value: 60
+  - name: max_insert_size
+    cli_flag: --max-insert-size
+    type: int
+    default: 1000
+    skip_when_default: true
+    description: Maximum insert size.
+    min_value: 1
+  - name: low_mem
+    cli_flag: --low-mem
+    type: bool
+    default: false
+    description: Use low memory mode.
+  - name: temp_dir
+    cli_flag: --temp-dir
+    type: directory
+    description: Temporary directory.
+  - name: preset
+    cli_flag: --preset
+    type: enum
+    default: hic
+    choices: [hic]
+    description: Chromap preset.
+    widget_hint: hidden
+  - name: pairs
+    cli_flag: --pairs
+    type: bool
+    default: true
+    description: Pairs output mode.
+    widget_hint: hidden
+rendering:
+  flag_order: [preset, pairs, reference, index, read1, read2, output, summary, pairs_natural_chr_order, num_threads, mapq_threshold, max_insert_size, low_mem, temp_dir]
+constraints:
+  - kind: positive
+    params: [num_threads, max_insert_size]
+    message: Thread and insert-size values must be positive.
+  - kind: non_negative
+    params: [mapq_threshold]
+    message: MAPQ threshold must be non-negative.

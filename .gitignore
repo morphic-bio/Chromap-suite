@@ -30,6 +30,7 @@ tests/test_y_filter
 tests/bamwriter/out/
 tests/out/
 out/
+plans/artifacts/
 
 # Logs and temp files
 *.log
