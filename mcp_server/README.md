@@ -34,10 +34,32 @@ Each workflow lives in `mcp_server/workflows/*.yaml` and renders a single
 Chromap command. Browser validation checks schema types by default; local
 Launchpad users can enable server-side path checks before launch.
 
+## Recipe Registry
+
+Recipe metadata lives in:
+
+```text
+mcp_server/recipes/registry.yaml
+```
+
+The registry is the shared contract for MCP, Launchpad, agents, tests, and
+future run manifests. Workflow YAML controls command rendering; recipe metadata
+adds operator intent, expected outputs, preflight rule ids, smoke coverage,
+runtime class, benchmark policy, docs, and STAR Suite/downstream handoff
+artifacts.
+
+Validate it with:
+
+```sh
+python3 -m pytest mcp_server/tests/test_recipe_registry.py -q
+```
+
 ## MCP Tools
 
 Important tools exposed by `mcp_server.app`:
 
+- `list_recipes`
+- `describe_recipe`
 - `list_workflows`
 - `describe_workflow`
 - `get_workflow_parameter_schema`

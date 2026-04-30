@@ -1,0 +1,389 @@
+registry_version: 1
+recipes:
+  - id: chromap_index
+    title: Chromap index
+    purpose: Build a Chromap minimizer index from a reference FASTA.
+    enabled: true
+    workflow_id: chromap_index
+    runtime_class: interactive
+    benchmark_policy: not_benchmark
+    command_template:
+      - chromap
+      - --build-index
+      - --ref
+      - "{reference}"
+      - --output
+      - "{index}"
+    inputs:
+      - name: reference
+        type: file
+        required: true
+        description: Reference FASTA.
+      - name: index
+        type: file
+        required: true
+        description: Output Chromap index path.
+    outputs:
+      - name: index
+        artifact_type: index
+        path_template: "{index}"
+        description: Chromap minimizer index.
+    preflight:
+      - reference_fasta_exists
+      - output_parent_trusted_or_creatable
+    smoke_coverage:
+      S0: C01_index_build in tests/run_libchromap_core_smoke.sh
+    docs:
+      - path: mcp_server/workflows/chromap_index.yaml
+        description: Workflow schema.
+      - path: plans/2026-04-30-chromap-core-libchromap-smoke-runbook.md
+        description: Smoke-test matrix.
+    handoff_artifacts:
+      - Chromap index consumed by mapping recipes.
+
+  - id: chromap_atac_bed
+    title: Chromap ATAC BED
+    purpose: Map paired-end ATAC or scATAC reads and emit BED/BEDPE-style output.
+    enabled: true
+    workflow_id: chromap_atac_bed
+    runtime_class: interactive
+    benchmark_policy: not_benchmark
+    command_template:
+      - chromap
+      - --preset
+      - atac
+      - --BED
+      - --ref
+      - "{reference}"
+      - --index
+      - "{index}"
+      - --read1
+      - "{read1}"
+      - --read2
+      - "{read2}"
+      - --output
+      - "{output}"
+    inputs:
+      - name: reference
+        type: file
+        required: true
+        description: Reference FASTA.
+      - name: index
+        type: file
+        required: true
+        description: Chromap index.
+      - name: read1
+        type: string
+        required: true
+        description: Read 1 FASTQ path or comma-separated lane list.
+      - name: read2
+        type: string
+        required: true
+        description: Read 2 FASTQ path or comma-separated lane list.
+      - name: output
+        type: file
+        required: true
+        description: Output BED/BEDPE path.
+    outputs:
+      - name: bed
+        artifact_type: bed
+        path_template: "{output}"
+        description: ATAC mapping output.
+    preflight:
+      - reference_fasta_exists
+      - chromap_index_exists
+      - read_pair_lists_match
+      - output_parent_trusted_or_creatable
+    smoke_coverage:
+      S0: C04_atac_bed in tests/run_libchromap_core_smoke.sh
+      S1: C04_atac_bed in tests/run_encode_downsample_smoke.sh
+    docs:
+      - path: mcp_server/workflows/chromap_atac_bed.yaml
+        description: Workflow schema.
+      - path: tests/README.md
+        description: Smoke-test instructions.
+    handoff_artifacts:
+      - BED/BEDPE mapping output.
+
+  - id: chromap_atac_bam_fragments
+    title: Chromap ATAC BAM + fragments
+    purpose: Map barcoded paired-end ATAC reads and emit BAM plus scATAC fragments.
+    enabled: true
+    workflow_id: chromap_atac_bam_fragments
+    runtime_class: interactive
+    benchmark_policy: not_benchmark
+    command_template:
+      - chromap
+      - --preset
+      - atac
+      - --BAM
+      - --ref
+      - "{reference}"
+      - --index
+      - "{index}"
+      - --read1
+      - "{read1}"
+      - --read2
+      - "{read2}"
+      - --barcode
+      - "{barcode}"
+      - --output
+      - "{output}"
+      - --atac-fragments
+      - "{atac_fragments}"
+    inputs:
+      - name: reference
+        type: file
+        required: true
+        description: Reference FASTA.
+      - name: index
+        type: file
+        required: true
+        description: Chromap index.
+      - name: read1
+        type: string
+        required: true
+        description: Read 1 FASTQ path or comma-separated lane list.
+      - name: read2
+        type: string
+        required: true
+        description: Read 2 FASTQ path or comma-separated lane list.
+      - name: barcode
+        type: string
+        required: true
+        description: Barcode FASTQ path or comma-separated lane list.
+      - name: output
+        type: file
+        required: true
+        description: Output BAM path.
+      - name: atac_fragments
+        type: file
+        required: true
+        description: Output fragments TSV/TSV.GZ path.
+    outputs:
+      - name: bam
+        artifact_type: bam
+        path_template: "{output}"
+        description: Primary BAM output.
+      - name: fragments
+        artifact_type: fragments
+        path_template: "{atac_fragments}"
+        description: scATAC fragments table.
+    preflight:
+      - reference_fasta_exists
+      - chromap_index_exists
+      - read_pair_lists_match
+      - barcode_list_matches_read1
+      - secondary_output_not_primary
+      - atac_fragments_requires_barcoded_paired_bam
+      - output_parent_trusted_or_creatable
+    smoke_coverage:
+      S0: C08_atac_bam_fragments in tests/run_libchromap_core_smoke.sh
+    docs:
+      - path: mcp_server/workflows/chromap_atac_bam_fragments.yaml
+        description: Workflow schema.
+      - path: plans/2026-04-30-chromap-core-libchromap-smoke-runbook.md
+        description: Matrix and artifact policy.
+    handoff_artifacts:
+      - BAM consumed by downstream alignment/QC tools.
+      - fragments TSV consumed by ATAC peak and evidence workflows.
+      - STAR Suite may consume fragments or derived evidence TSVs.
+
+  - id: chromap_hic_pairs
+    title: Chromap Hi-C pairs
+    purpose: Map paired-end Hi-C reads and emit 4DN pairs output.
+    enabled: true
+    workflow_id: chromap_hic_pairs
+    runtime_class: interactive
+    benchmark_policy: not_benchmark
+    command_template:
+      - chromap
+      - --preset
+      - hic
+      - --pairs
+      - --ref
+      - "{reference}"
+      - --index
+      - "{index}"
+      - --read1
+      - "{read1}"
+      - --read2
+      - "{read2}"
+      - --output
+      - "{output}"
+    inputs:
+      - name: reference
+        type: file
+        required: true
+        description: Reference FASTA.
+      - name: index
+        type: file
+        required: true
+        description: Chromap index.
+      - name: read1
+        type: string
+        required: true
+        description: Read 1 FASTQ path or comma-separated lane list.
+      - name: read2
+        type: string
+        required: true
+        description: Read 2 FASTQ path or comma-separated lane list.
+      - name: output
+        type: file
+        required: true
+        description: Output pairs path.
+    outputs:
+      - name: pairs
+        artifact_type: pairs
+        path_template: "{output}"
+        description: 4DN pairs handoff artifact.
+    preflight:
+      - reference_fasta_exists
+      - chromap_index_exists
+      - read_pair_lists_match
+      - hic_stops_at_pairs
+      - output_parent_trusted_or_creatable
+    smoke_coverage:
+      S0: C10_hic_pairs in tests/run_libchromap_core_smoke.sh
+      S1: C10_hic_pairs in tests/run_encode_downsample_smoke.sh
+    docs:
+      - path: mcp_server/workflows/chromap_hic_pairs.yaml
+        description: Workflow schema.
+      - path: plans/2026-04-30-chromap-core-libchromap-smoke-runbook.md
+        description: Hi-C smoke boundary.
+    handoff_artifacts:
+      - Pairs file; downstream .hic, .cool, and TAD callers are out of scope.
+
+  - id: chromap_chip_tagalign
+    title: Chromap ChIP TagAlign
+    purpose: Map ChIP-seq reads with the ChIP preset and emit TagAlign output.
+    enabled: false
+    runtime_class: interactive
+    benchmark_policy: not_benchmark
+    command_template:
+      - chromap
+      - --preset
+      - chip
+      - --TagAlign
+    inputs: []
+    outputs:
+      - name: tagalign
+        artifact_type: tagalign
+        path_template: "{output}"
+        description: TagAlign output.
+    preflight:
+      - reference_fasta_exists
+      - chromap_index_exists
+      - read_pair_lists_match
+    smoke_coverage:
+      S0: C03_chip_tagalign in tests/run_libchromap_core_smoke.sh
+      S1: C03_chip_tagalign in tests/run_encode_downsample_smoke.sh
+    docs:
+      - path: tests/README.md
+        description: ChIP real-data smoke.
+
+  - id: chromap_sorted_bam
+    title: Chromap sorted BAM
+    purpose: Map reads and emit coordinate-sorted BAM plus optional index.
+    enabled: false
+    runtime_class: interactive
+    benchmark_policy: not_benchmark
+    command_template:
+      - chromap
+      - --BAM
+      - --sort-bam
+    inputs: []
+    outputs:
+      - name: bam
+        artifact_type: bam
+        path_template: "{output}"
+        description: Coordinate-sorted BAM.
+    preflight:
+      - write_index_requires_sort_bam
+    smoke_coverage:
+      S0: C06_sorted_bam in tests/run_libchromap_core_smoke.sh
+    docs:
+      - path: tests/README.md
+        description: Core libchromap smoke.
+
+  - id: chromap_y_noy_split
+    title: Chromap Y/noY split
+    purpose: Emit all, Y-only, noY, and optional Y read-name outputs.
+    enabled: false
+    runtime_class: interactive
+    benchmark_policy: not_benchmark
+    command_template:
+      - chromap
+      - --SAM
+      - --emit-Y-bam
+      - --emit-noY-bam
+    inputs: []
+    outputs:
+      - name: y_stream
+        artifact_type: other
+        path_template: "{output}.Y.*"
+        description: Y-only output stream.
+      - name: noy_stream
+        artifact_type: other
+        path_template: "{output}.noY.*"
+        description: noY output stream.
+    preflight:
+      - y_noy_requires_sam_bam_cram
+      - secondary_output_not_primary
+    smoke_coverage:
+      S0: C11_y_noy_split in tests/run_libchromap_core_smoke.sh
+    docs:
+      - path: tests/README.md
+        description: Y/noY tests.
+
+  - id: chromap_macs3_frag_peaks
+    title: Chromap MACS3 FRAG peaks
+    purpose: Run integrated MACS3-compatible FRAG peak calling from Chromap fragments.
+    enabled: false
+    runtime_class: long
+    benchmark_policy: serial_required
+    command_template:
+      - chromap
+      - --call-macs3-frag-peaks
+    inputs: []
+    outputs:
+      - name: peaks
+        artifact_type: peaks
+        path_template: "{macs3_frag_peaks_output}"
+        description: narrowPeak output.
+      - name: summits
+        artifact_type: peaks
+        path_template: "{macs3_frag_summits_output}"
+        description: Summit BED output.
+    preflight:
+      - macs3_peaks_output_required
+      - macs3_summits_output_required
+      - macs3_pvalue_positive
+    smoke_coverage:
+      S2: test-peak-memory-source-100k and related 100K gates.
+    docs:
+      - path: plans/2026-04-24-macs3-frag-peaks-handoff.md
+        description: Integrated FRAG peaks handoff.
+
+  - id: chromap_lib_runner_parity
+    title: libchromap parity runner
+    purpose: Run Chromap through chromap_lib_runner for CLI/lib boundary regression.
+    enabled: false
+    runtime_class: smoke
+    benchmark_policy: parallel_safe
+    command_template:
+      - chromap_lib_runner
+    inputs: []
+    outputs:
+      - name: parity_output
+        artifact_type: directory
+        path_template: plans/artifacts/chromap_core_smoke/{run_id}
+        description: Synthetic smoke output directory.
+    preflight:
+      - chromap_binary_exists
+      - chromap_lib_runner_exists
+    smoke_coverage:
+      S0: make test-libchromap-core-smoke
+    docs:
+      - path: plans/2026-04-30-chromap-core-libchromap-smoke-runbook.md
+        description: CLI/libchromap regression matrix.

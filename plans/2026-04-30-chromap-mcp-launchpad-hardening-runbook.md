@@ -1,7 +1,7 @@
 # Runbook: Chromap MCP, Agents, and Launchpad Hardening
 
 Date: 2026-04-30
-Status: proposed staged implementation plan
+Status: Stage 0-1 implemented; Stage 2+ proposed
 Prerequisites:
 
 - MCP/Launchpad Stage 1 is present.
@@ -79,6 +79,21 @@ python3 -m pytest mcp_server/tests -q
 make test-libchromap-core-smoke
 ```
 
+### Implementation Note
+
+Stage 0 audit result:
+
+- Current public workflow YAMLs:
+  - `chromap_index`
+  - `chromap_atac_bed`
+  - `chromap_atac_bam_fragments`
+  - `chromap_hic_pairs`
+- Existing MCP/Launchpad tests live under `mcp_server/tests/`.
+- Current Launchpad behavior is workflow-YAML driven; recipe intent, output
+  handoff metadata, benchmark policy, and smoke coverage were not represented
+  in one shared metadata layer.
+- Stage 1 addresses that drift by adding `mcp_server/recipes/registry.yaml`.
+
 ## Stage 1: Recipe Registry
 
 Purpose: define a durable recipe registry that MCP, Launchpad, tests, and docs
@@ -140,6 +155,19 @@ Add metadata-only entries for future recipes:
 - Every public Launchpad workflow has a registry entry.
 - Every registry entry has expected outputs and smoke coverage metadata.
 - No generated artifacts are tracked.
+
+### Implementation Note
+
+Stage 1 added:
+
+- `mcp_server/recipes/registry.yaml`
+- `mcp_server/schemas/recipe.py`
+- `mcp_server/tools/recipes.py`
+- `mcp_server/tests/test_recipe_registry.py`
+
+The registry mirrors the current public workflows and adds metadata-only
+planned recipes for ChIP TagAlign, sorted BAM, Y/noY split, MACS3 FRAG peaks,
+and `chromap_lib_runner` parity.
 
 ### Gates
 
