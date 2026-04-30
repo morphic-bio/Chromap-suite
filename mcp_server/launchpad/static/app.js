@@ -20,29 +20,15 @@ function launchpadApiBase() {
   return "/launchpad/api";
 }
 
-/** Core Chromap CLI recipes first (order matches typical use: index to map modes). */
-const CHROMAP_WORKFLOW_ORDER = [
-  "chromap_index",
-  "chromap_atac_bed",
-  "chromap_atac_bam_fragments",
-  "chromap_hic_pairs",
-];
-
-function chromapWorkflowRank(id) {
-  const i = CHROMAP_WORKFLOW_ORDER.indexOf(id);
-  return i >= 0 ? i : 999;
-}
-
-function sortWorkflowsForLaunchpad(list) {
+function sortRecipesForLaunchpad(list) {
   return list.slice().sort((a, b) => {
-    const aChromap = String(a.id || "").startsWith("chromap_");
-    const bChromap = String(b.id || "").startsWith("chromap_");
-    if (aChromap !== bChromap) return aChromap ? -1 : 1;
-    if (aChromap && bChromap) {
-      const ra = chromapWorkflowRank(a.id);
-      const rb = chromapWorkflowRank(b.id);
-      if (ra !== rb) return ra - rb;
-    }
+    const aEnabled = a.enabled !== false;
+    const bEnabled = b.enabled !== false;
+    if (aEnabled !== bEnabled) return aEnabled ? -1 : 1;
+    const classes = { smoke: 0, interactive: 1, long: 2, benchmark: 3 };
+    const ca = classes[String(a.runtime_class || "")] ?? 9;
+    const cb = classes[String(b.runtime_class || "")] ?? 9;
+    if (ca !== cb) return ca - cb;
     return String(a.id || "").localeCompare(String(b.id || ""));
   });
 }
@@ -70,11 +56,14 @@ function scriptLaneDefaultScript() {
 function launchpadApp() {
   return {
     activeTab: "workflows",
-    /** Full list from API (sorted); `workflows` is filtered for the dropdown. */
+    /** Full list from recipe registry (sorted); `workflows` is the dropdown list. */
+    allRecipes: [],
+    recipes: [],
     allWorkflows: [],
     workflows: [],
-    /** When false, recipe list is only `chromap_*` CLI recipes. */
+    /** When false, recipe list includes only executable registry entries. */
     includeTestWorkflows: false,
+    /** Selected registry recipe id. Kept as workflowId for older UI helpers. */
     workflowId: "",
     schema: null,
     describe: null,
@@ -85,6 +74,7 @@ function launchpadApp() {
     validateResult: null,
     renderResult: null,
     launchResult: null,
+    manifestResult: null,
     launchSupported: false,
     serverPathCheckSupported: false,
     scriptLaneUtilsReady: false,
@@ -191,6 +181,14 @@ function launchpadApp() {
     paramByName(name) {
       if (!this.schema?.parameters) return null;
       return this.schema.parameters.find((p) => p.name === name) || null;
+    },
+
+    selectedRecipe() {
+      return (this.allRecipes || []).find((r) => r.id === this.workflowId) || null;
+    },
+
+    expectedOutputs() {
+      return this.schema?.outputs || this.selectedRecipe()?.outputs || [];
     },
 
     /** Native tooltip text (schema description + optional env / choices). */
@@ -503,7 +501,8 @@ function launchpadApp() {
         snapshot[p.name] = this.params[p.name];
       }
       const payload = {
-        workflow_id: this.workflowId,
+        recipe_id: this.workflowId,
+        workflow_id: this.describe?.workflow_id || null,
         exported_at: new Date().toISOString(),
         params: snapshot,
       };
@@ -770,25 +769,36 @@ function launchpadApp() {
 
     applyWorkflowFilter() {
       if (this.includeTestWorkflows) {
-        this.workflows = this.allWorkflows.slice();
+        this.workflows = this.allRecipes.slice();
       } else {
-        this.workflows = this.allWorkflows.filter((w) =>
-          String(w.id || "").startsWith("chromap_")
-        );
+        this.workflows = this.allRecipes.filter((w) => w.enabled !== false);
       }
+      this.recipes = this.workflows;
+    },
+
+    async loadRecipeList(api, includeDisabled = false) {
+      const qs = includeDisabled ? "?include_disabled=1" : "";
+      const r = await fetch(`${api}/recipes${qs}`);
+      if (!r.ok) {
+        this.httpError = await r.text();
+        return false;
+      }
+      const data = await r.json();
+      const raw = data.recipes || [];
+      this.allRecipes = sortRecipesForLaunchpad(raw);
+      this.allWorkflows = this.allRecipes;
+      this.applyWorkflowFilter();
+      return true;
     },
 
     /** After toggling test workflows, keep a valid selection. */
     async onIncludeTestWorkflowsChange() {
+      const api = launchpadApiBase();
+      await this.loadRecipeList(api, this.includeTestWorkflows && this.trustedLocal);
       this.applyWorkflowFilter();
       const ids = new Set((this.workflows || []).map((w) => w.id));
       if (ids.has(this.workflowId)) return;
-      const chromap = this.workflows.find((w) => w.id === "chromap_index");
-      this.workflowId = chromap
-        ? chromap.id
-        : this.workflows.length
-          ? this.workflows[0].id
-          : "";
+      this.workflowId = this.workflows.length ? this.workflows[0].id : "";
       if (this.workflowId) await this.loadWorkflow();
     },
 
@@ -901,7 +911,7 @@ function launchpadApp() {
       }
       const api = launchpadApiBase();
       const [wr, cap] = await Promise.all([
-        fetch(`${api}/workflows`),
+        fetch(`${api}/recipes`),
         fetch(`${api}/capabilities`),
       ]);
       if (cap.ok) {
@@ -938,12 +948,11 @@ function launchpadApp() {
         return;
       }
       const data = await wr.json();
-      const raw = data.workflows || [];
-      this.allWorkflows = sortWorkflowsForLaunchpad(raw);
+      this.allRecipes = sortRecipesForLaunchpad(data.recipes || []);
+      this.allWorkflows = this.allRecipes;
       this.applyWorkflowFilter();
       if (this.workflows.length) {
-        const chromapDefault = this.workflows.find((w) => w.id === "chromap_index");
-        this.workflowId = chromapDefault ? chromapDefault.id : this.workflows[0].id;
+        this.workflowId = this.workflows[0].id;
         await this.loadWorkflow();
       }
     },
@@ -955,11 +964,12 @@ function launchpadApp() {
       this.lastValidationCheckPaths = null;
       this.renderResult = null;
       this.launchResult = null;
+      this.manifestResult = null;
       try {
         const api = launchpadApiBase();
         const [s, d] = await Promise.all([
-          fetch(`${api}/workflows/${encodeURIComponent(this.workflowId)}/schema`),
-          fetch(`${api}/workflows/${encodeURIComponent(this.workflowId)}/describe`),
+          fetch(`${api}/recipes/${encodeURIComponent(this.workflowId)}/schema`),
+          fetch(`${api}/recipes/${encodeURIComponent(this.workflowId)}/describe`),
         ]);
         if (!s.ok) {
           this.httpError = (await s.json()).message || (await s.text());
@@ -987,7 +997,7 @@ function launchpadApp() {
       try {
         const api = launchpadApiBase();
         const r = await fetch(
-          `${api}/workflows/${encodeURIComponent(this.workflowId)}/validate`,
+          `${api}/recipes/${encodeURIComponent(this.workflowId)}/preflight`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1022,7 +1032,7 @@ function launchpadApp() {
       try {
         const api = launchpadApiBase();
         const r = await fetch(
-          `${api}/workflows/${encodeURIComponent(this.workflowId)}/render`,
+          `${api}/recipes/${encodeURIComponent(this.workflowId)}/render`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1036,6 +1046,36 @@ function launchpadApp() {
         }
         this.renderResult = data;
         this.launchResult = null;
+        this.manifestResult = null;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async doDryRunManifest() {
+      const valid = await this.doValidate({
+        checkPaths: this.serverPathCheckSupported && this.checkPaths,
+      });
+      if (!valid) return;
+      this.loading = true;
+      this.httpError = "";
+      this.manifestResult = null;
+      try {
+        const api = launchpadApiBase();
+        const r = await fetch(
+          `${api}/recipes/${encodeURIComponent(this.workflowId)}/manifest`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ params: this.collectParams() }),
+          }
+        );
+        const data = await r.json();
+        if (!r.ok) {
+          this.httpError = data.message || r.statusText;
+          return;
+        }
+        this.manifestResult = data;
       } finally {
         this.loading = false;
       }
@@ -1050,8 +1090,13 @@ function launchpadApp() {
       this.launchResult = null;
       try {
         const api = launchpadApiBase();
+        const wfId = this.describe?.workflow_id;
+        if (!wfId) {
+          this.httpError = "Selected recipe is not linked to an executable workflow.";
+          return;
+        }
         const r = await fetch(
-          `${api}/workflows/${encodeURIComponent(this.workflowId)}/launch`,
+          `${api}/workflows/${encodeURIComponent(wfId)}/launch`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },

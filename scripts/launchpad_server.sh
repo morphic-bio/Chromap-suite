@@ -101,7 +101,7 @@ print_urls() {
     h_show="127.0.0.1"
   fi
   echo "Launchpad: http://${h_show}:${p}/launchpad/"
-  echo "Launchpad API: http://${h_show}:${p}/launchpad/api/workflows"
+  echo "Launchpad API: http://${h_show}:${p}/launchpad/api/recipes"
 }
 
 case "$cmd" in
@@ -225,4 +225,3 @@ case "$cmd" in
     exit 2
     ;;
 esac
-

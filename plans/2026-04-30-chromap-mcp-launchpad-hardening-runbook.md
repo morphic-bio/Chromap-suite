@@ -1,7 +1,7 @@
 # Runbook: Chromap MCP, Agents, and Launchpad Hardening
 
 Date: 2026-04-30
-Status: Stage 0-3 implemented; Stage 4+ proposed
+Status: Stage 0-4 implemented; Stage 5+ proposed
 Prerequisites:
 
 - MCP/Launchpad Stage 1 is present.
@@ -368,8 +368,35 @@ Launchpad should:
 ```bash
 python3 -m pytest mcp_server/tests/test_launchpad_chromap.py -q
 bash scripts/launchpad_server.sh up
-curl -fsS http://127.0.0.1:8765/launchpad/api/workflows >/tmp/chromap_workflows.json
+curl -fsS http://127.0.0.1:8765/launchpad/api/recipes >/tmp/chromap_recipes.json
 bash scripts/launchpad_server.sh down
+```
+
+### Stage 4 Implementation Note
+
+Implemented recipe-native Launchpad endpoints in `mcp_server/launchpad/api.py`:
+
+- `GET /launchpad/api/recipes`
+- `GET /launchpad/api/recipes/{recipe_id}/schema`
+- `GET /launchpad/api/recipes/{recipe_id}/describe`
+- `POST /launchpad/api/recipes/{recipe_id}/preflight`
+- `POST /launchpad/api/recipes/{recipe_id}/render`
+- `POST /launchpad/api/recipes/{recipe_id}/manifest`
+
+The browser now populates its recipe selector from the registry, renders typed
+fields from `RecipeEntry.inputs`, shows runtime/benchmark metadata and expected
+outputs, runs registry preflight before command rendering/execution, and writes
+dry-run manifests from the recipe route. Metadata-only recipes can be listed
+through the explicit planned/long opt-in but their schema/render/preflight
+routes reject execution until `enabled: true`.
+
+Validation:
+
+```bash
+python3 -m pytest mcp_server/tests/test_launchpad_chromap.py -q
+python3 -m pytest mcp_server/tests -q
+python3 -m mcp_server.app --help
+git diff --check
 ```
 
 ## Stage 5: MCP Execution Hardening
@@ -487,7 +514,7 @@ tests/run_encode_downsample_smoke.sh
 ```bash
 bash scripts/launchpad_server.sh up
 curl -fsS http://127.0.0.1:8765/launchpad/ >/tmp/chromap_launchpad.html
-curl -fsS http://127.0.0.1:8765/launchpad/api/workflows >/tmp/chromap_workflows.json
+curl -fsS http://127.0.0.1:8765/launchpad/api/recipes >/tmp/chromap_recipes.json
 bash scripts/launchpad_server.sh down
 ```
 

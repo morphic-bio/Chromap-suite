@@ -68,6 +68,14 @@ serial benchmark policy recording, and Launchpad launch log/manifest plumbing:
 python3 -m pytest mcp_server/tests/test_run_manifest.py -q
 ```
 
+Launchpad tests cover registry-driven recipe listing, metadata-only gating,
+recipe form schema generation, registry preflight, render, and dry-run manifest
+creation:
+
+```bash
+python3 -m pytest mcp_server/tests/test_launchpad_chromap.py -q
+```
+
 # Tests for Y-Chromosome Filtering Feature
 
 This directory contains tests for the three-stream SAM Y-filtering feature.

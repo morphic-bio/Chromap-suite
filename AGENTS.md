@@ -19,9 +19,11 @@ The MCP recipe registry lives at `mcp_server/recipes/registry.yaml`. Recipe
 preflight rules are implemented in `mcp_server/tools/preflight.py` and exposed
 through `preflight_recipe`. Recipe run manifests are implemented in
 `mcp_server/tools/run_manifest.py`, exposed through `write_recipe_run_manifest`,
-and stored under `plans/artifacts/mcp_runs/`. When adding or changing a
-Launchpad workflow, update the workflow YAML, config entry, recipe registry
-metadata, preflight coverage, manifest expectations, and registry/preflight
+and stored under `plans/artifacts/mcp_runs/`. Launchpad recipe forms are served
+from registry metadata through `mcp_server/launchpad/api.py`; workflow YAML is
+still responsible for argv rendering. When adding or changing a Launchpad
+workflow, update the workflow YAML, config entry, recipe registry metadata,
+preflight coverage, manifest expectations, and registry/preflight/Launchpad
 tests together.
 
 When documenting a new workflow, add the durable reference to `docs/` or

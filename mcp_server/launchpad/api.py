@@ -52,6 +52,8 @@ from ..tools.run_manifest import (
     update_run_manifest,
     write_run_manifest,
 )
+from ..tools.preflight import preflight_recipe
+from ..tools.recipes import get_recipe, list_recipes, load_recipe_registry
 
 from .composition_bridge import (
     build_composition_artifacts,
@@ -101,6 +103,135 @@ def _json_error(code: str, message: str, status_code: int = 400) -> JSONResponse
         {"error": True, "code": code, "message": message},
         status_code=status_code,
     )
+
+
+def _recipe_summary(recipe) -> dict[str, Any]:
+    return {
+        "id": recipe.id,
+        "title": recipe.title,
+        "summary": recipe.purpose,
+        "purpose": recipe.purpose,
+        "enabled": recipe.enabled,
+        "workflow_id": recipe.workflow_id,
+        "runtime_class": recipe.runtime_class,
+        "benchmark_policy": recipe.benchmark_policy,
+        "outputs": [out.model_dump() for out in recipe.outputs],
+        "smoke_coverage": recipe.smoke_coverage,
+        "handoff_artifacts": list(recipe.handoff_artifacts or []),
+    }
+
+
+def _recipe_param_info(input_def, outputs) -> dict[str, Any]:
+    return {
+        "name": input_def.name,
+        "cli_flag": None,
+        "type": input_def.type,
+        "required": input_def.required,
+        "default": input_def.default,
+        "description": input_def.description,
+        "choices": input_def.choices,
+        "repeatable": input_def.type == "string_list",
+        "operand_group": None,
+        "path_must_exist": input_def.type in ("file", "directory") and input_def.required,
+        "must_be_executable": False,
+        "category": None,
+        "stage": None,
+        "source": "recipe_registry",
+        "env_var": None,
+        "skip_when_default": False,
+        "is_output_root": any(
+            ("{" + input_def.name + "}") in out.path_template
+            for out in (outputs or [])
+        ),
+        "ui_gated_by": None,
+        "label": input_def.name.replace("_", " "),
+        "help": input_def.description,
+        "example": None,
+        "widget_hint": None,
+        "aliases": [],
+        "advanced": False,
+        "display_order": None,
+        "min_value": None,
+        "max_value": None,
+    }
+
+
+def _recipe_schema_payload(recipe) -> dict[str, Any]:
+    outputs = recipe.outputs or []
+    parameters = []
+    for input_def in recipe.inputs:
+        parameters.append(_recipe_param_info(input_def, outputs))
+    return {
+        "recipe_id": recipe.id,
+        "workflow_id": recipe.workflow_id,
+        "parameters": parameters,
+        "parameter_groups": [
+            {
+                "name": "recipe_inputs",
+                "title": "Recipe inputs",
+                "description": recipe.purpose,
+                "parameters": [p["name"] for p in parameters],
+                "gated_by": None,
+            }
+        ],
+        "constraints": [],
+        "required_files": [
+            {
+                "name": p["name"],
+                "cli_flag": p["name"],
+                "type": p["type"],
+                "description": p["description"],
+            }
+            for p in parameters
+            if p["type"] in ("file", "directory") and p["required"]
+        ],
+        "outputs": [out.model_dump() for out in outputs],
+        "runtime_class": recipe.runtime_class,
+        "benchmark_policy": recipe.benchmark_policy,
+    }
+
+
+def _recipe_describe_payload(recipe) -> dict[str, Any]:
+    return {
+        "id": recipe.id,
+        "recipe_id": recipe.id,
+        "workflow_id": recipe.workflow_id,
+        "title": recipe.title,
+        "summary": recipe.purpose,
+        "purpose": recipe.purpose,
+        "kind": "chromap_recipe",
+        "entry_script": (recipe.command_template[0] if recipe.command_template else ""),
+        "runtime_class": recipe.runtime_class,
+        "benchmark_policy": recipe.benchmark_policy,
+        "outputs": [out.model_dump() for out in recipe.outputs],
+        "docs": [doc.model_dump() for doc in recipe.docs],
+        "handoff_artifacts": list(recipe.handoff_artifacts or []),
+        "caveats": list(recipe.notes or []),
+        "default_output_layout": "; ".join(
+            f"{out.name}: {out.path_template}" for out in recipe.outputs
+        ),
+        "stages": [],
+        "parameter_groups": _recipe_schema_payload(recipe)["parameter_groups"],
+    }
+
+
+def _get_enabled_recipe_or_404(recipe_id: str):
+    recipe = get_recipe(recipe_id)
+    if recipe is None:
+        return None, _json_error("NOT_FOUND", f"Unknown recipe: {recipe_id}", 404)
+    if not recipe.enabled:
+        return None, _json_error(
+            "NOT_EXECUTABLE",
+            f"Recipe {recipe_id!r} is metadata-only and is not executable",
+            400,
+        )
+    if not recipe.workflow_id:
+        return None, _json_error(
+            "NOT_EXECUTABLE",
+            f"Recipe {recipe_id!r} does not declare a workflow_id",
+            400,
+        )
+    return recipe, None
 
 
 # --- Filesystem browse / upload helpers --------------------------------------
@@ -621,6 +752,108 @@ async def lp_list_workflows(request: Request) -> JSONResponse:
         return _json_error("INTERNAL_ERROR", str(e), 500)
 
 
+async def lp_list_recipes(request: Request) -> JSONResponse:
+    try:
+        trusted = launchpad_request_trusted_local(request)
+        include_disabled = (
+            trusted
+            and request.query_params.get("include_disabled", "").lower()
+            in ("1", "true", "yes")
+        )
+        registry = load_recipe_registry()
+        recipes = [
+            recipe
+            for recipe in list_recipes(enabled_only=not include_disabled)
+            if recipe.enabled or include_disabled
+        ]
+        return JSONResponse(
+            {
+                "registry_version": registry.registry_version,
+                "recipes": [_recipe_summary(recipe) for recipe in recipes],
+            }
+        )
+    except Exception as e:
+        return _json_error("INTERNAL_ERROR", str(e), 500)
+
+
+async def lp_get_recipe_schema(request: Request) -> JSONResponse:
+    recipe_id = request.path_params["recipe_id"]
+    recipe, error = _get_enabled_recipe_or_404(recipe_id)
+    if error is not None:
+        return error
+    return JSONResponse(_recipe_schema_payload(recipe))
+
+
+async def lp_describe_recipe(request: Request) -> JSONResponse:
+    recipe_id = request.path_params["recipe_id"]
+    recipe, error = _get_enabled_recipe_or_404(recipe_id)
+    if error is not None:
+        return error
+    return JSONResponse(_recipe_describe_payload(recipe))
+
+
+async def lp_preflight_recipe(request: Request) -> JSONResponse:
+    recipe_id = request.path_params["recipe_id"]
+    recipe, error = _get_enabled_recipe_or_404(recipe_id)
+    if error is not None:
+        return error
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error("BAD_REQUEST", "Expected JSON body", 400)
+    params = body.get("params")
+    if params is None or not isinstance(params, dict):
+        return _json_error("BAD_REQUEST", "Body must contain an object 'params'", 400)
+    try:
+        result = preflight_recipe(recipe.id, params)
+        return JSONResponse(result.model_dump())
+    except ValueError as e:
+        return _json_error("BAD_REQUEST", str(e), 400)
+
+
+async def lp_render_recipe(request: Request) -> JSONResponse:
+    recipe_id = request.path_params["recipe_id"]
+    recipe, error = _get_enabled_recipe_or_404(recipe_id)
+    if error is not None:
+        return error
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error("BAD_REQUEST", "Expected JSON body", 400)
+    params = body.get("params")
+    if params is None or not isinstance(params, dict):
+        return _json_error("BAD_REQUEST", "Body must contain an object 'params'", 400)
+    try:
+        result = render_workflow_command(recipe.workflow_id, params)
+        payload = result.model_dump()
+        payload["recipe_id"] = recipe.id
+        payload["expected_outputs"] = [out.model_dump() for out in recipe.outputs]
+        payload["runtime_class"] = recipe.runtime_class
+        payload["benchmark_policy"] = recipe.benchmark_policy
+        return JSONResponse(payload)
+    except ValueError as e:
+        return _json_error("BAD_REQUEST", str(e), 400)
+
+
+async def lp_recipe_manifest(request: Request) -> JSONResponse:
+    recipe_id = request.path_params["recipe_id"]
+    recipe, error = _get_enabled_recipe_or_404(recipe_id)
+    if error is not None:
+        return error
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error("BAD_REQUEST", "Expected JSON body", 400)
+    params = body.get("params")
+    if params is None or not isinstance(params, dict):
+        return _json_error("BAD_REQUEST", "Body must contain an object 'params'", 400)
+    try:
+        result = write_run_manifest(recipe.id, params, execution_status="dry_run")
+        return JSONResponse(result)
+    except Exception as e:
+        return _json_error("MANIFEST_FAILED", str(e), 500)
+
+
 async def lp_get_schema(request: Request) -> JSONResponse:
     wf_id = request.path_params["workflow_id"]
     try:
@@ -1055,6 +1288,32 @@ def get_launchpad_routes() -> list:
             methods=["POST"],
         ),
         Route("/launchpad/api/workflows", endpoint=lp_list_workflows, methods=["GET"]),
+        Route("/launchpad/api/recipes", endpoint=lp_list_recipes, methods=["GET"]),
+        Route(
+            "/launchpad/api/recipes/{recipe_id}/schema",
+            endpoint=lp_get_recipe_schema,
+            methods=["GET"],
+        ),
+        Route(
+            "/launchpad/api/recipes/{recipe_id}/describe",
+            endpoint=lp_describe_recipe,
+            methods=["GET"],
+        ),
+        Route(
+            "/launchpad/api/recipes/{recipe_id}/preflight",
+            endpoint=lp_preflight_recipe,
+            methods=["POST"],
+        ),
+        Route(
+            "/launchpad/api/recipes/{recipe_id}/render",
+            endpoint=lp_render_recipe,
+            methods=["POST"],
+        ),
+        Route(
+            "/launchpad/api/recipes/{recipe_id}/manifest",
+            endpoint=lp_recipe_manifest,
+            methods=["POST"],
+        ),
         Route(
             "/launchpad/api/workflows/{workflow_id}/schema",
             endpoint=lp_get_schema,
