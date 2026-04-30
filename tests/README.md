@@ -76,6 +76,12 @@ creation:
 python3 -m pytest mcp_server/tests/test_launchpad_chromap.py -q
 ```
 
+S0 is the default local gate: MCP tests plus `make test-libchromap-core-smoke`.
+S1 ENCODE tests are opt-in because they may download real data and require a
+full reference/index; set `ENCODE_ALLOW_DOWNLOAD=1` only when you intend that.
+S2 covers longer integration and benchmark runs. Benchmark timings should be
+serial unless a runbook explicitly says otherwise.
+
 # Tests for Y-Chromosome Filtering Feature
 
 This directory contains tests for the three-stream SAM Y-filtering feature.

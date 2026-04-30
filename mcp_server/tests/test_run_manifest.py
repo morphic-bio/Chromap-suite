@@ -106,3 +106,36 @@ def test_launchpad_launch_writes_manifest_and_logs(
     assert manifest["pid"] == 4242
     assert Path(payload["stdout_log"]).exists()
     assert Path(payload["stderr_log"]).exists()
+
+
+def test_launchpad_launch_rejects_preflight_failure(loaded_default_config, temp_dir):
+    loaded_default_config.paths.artifact_log_root = temp_dir / "artifacts"
+    params = _params(temp_dir)
+    params["output"] = "/root/chromap/out.bed"
+
+    with TestClient(build_http_app()) as client:
+        response = client.post(
+            "/launchpad/api/workflows/chromap_atac_bed/launch",
+            json={"params": params},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "PREFLIGHT_FAILED"
+
+
+def test_launchpad_recipe_render_rejects_shell_metacharacter_paths(
+    loaded_default_config,
+    temp_dir,
+):
+    params = _params(temp_dir)
+    params["output"] = str(temp_dir / "out.bed;touch BAD")
+
+    with TestClient(build_http_app()) as client:
+        response = client.post(
+            "/launchpad/api/recipes/chromap_atac_bed/preflight",
+            json={"params": params},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is False
+    assert any("shell metacharacters" in e for e in response.json()["errors"])

@@ -286,6 +286,19 @@ The MCP server will automatically pick up workflow YAML changes on the next
 config load (or call `reload_config`). The recipe registry is loaded separately
 by `mcp_server.tools.recipes`.
 
+Execution safety rules for recipes:
+
+- `command_template` is an argv template, not a shell command line.
+- Enabled Launchpad execution requires a matching `workflow_id`.
+- Recipe preflight must cover required inputs, output parents, and any
+  mode-specific invariants before a workflow is marked executable.
+- Path-like inputs and outputs must remain under trusted roots.
+- Long or benchmark recipes must use `runtime_class: long` or
+  `runtime_class: benchmark`; Launchpad requires explicit opt-in before running
+  them.
+- Handoff points to STAR Suite or downstream tools belong in
+  `handoff_artifacts`, not in hidden UI text.
+
 ## Step 4: Verify
 
 ```python

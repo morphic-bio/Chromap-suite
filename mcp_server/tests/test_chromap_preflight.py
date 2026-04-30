@@ -28,6 +28,7 @@ def test_recipe_preflight_passes_for_atac_bed(loaded_default_config, temp_dir):
     statuses = {check.rule_id: check.status for check in result.checks}
     assert statuses["reference_fasta_exists"] == "pass"
     assert statuses["chromap_index_exists"] == "pass"
+    assert statuses["input_paths_trusted"] == "pass"
     assert statuses["read_pair_lists_match"] == "pass"
     assert statuses["output_parent_trusted_or_creatable"] == "pass"
 
@@ -96,6 +97,30 @@ def test_recipe_preflight_rejects_untrusted_output(loaded_default_config, temp_d
     output = [c for c in result.checks if c.rule_id == "output_parent_trusted_or_creatable"][0]
     assert output.status == "fail"
     assert "trusted roots" in output.message
+
+
+def test_recipe_preflight_rejects_untrusted_input(loaded_default_config, temp_dir):
+    params = _base_params(temp_dir)
+    params["read1"] = "/etc/passwd"
+
+    result = preflight_recipe("chromap_atac_bed", params)
+
+    assert not result.valid
+    input_paths = [c for c in result.checks if c.rule_id == "input_paths_trusted"][0]
+    assert input_paths.status == "fail"
+    assert "outside trusted roots" in input_paths.message
+
+
+def test_recipe_preflight_rejects_shell_metacharacters(loaded_default_config, temp_dir):
+    params = _base_params(temp_dir)
+    params["output"] = str(temp_dir / "out.bed;touch BAD")
+
+    result = preflight_recipe("chromap_atac_bed", params)
+
+    assert not result.valid
+    output = [c for c in result.checks if c.rule_id == "output_parent_trusted_or_creatable"][0]
+    assert output.status == "fail"
+    assert "shell metacharacters" in output.message
 
 
 def test_recipe_preflight_enforces_hic_pairs_suffix(loaded_default_config, temp_dir):

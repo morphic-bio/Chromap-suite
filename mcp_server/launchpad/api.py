@@ -31,6 +31,7 @@ import subprocess
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -232,6 +233,83 @@ def _get_enabled_recipe_or_404(recipe_id: str):
             400,
         )
     return recipe, None
+
+
+def _utc_iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _monitor_launch_process(
+    proc: subprocess.Popen,
+    *,
+    timeout_seconds: int,
+    manifest_path: str,
+) -> None:
+    """Wait for a Launchpad process and update its run manifest."""
+    if not hasattr(proc, "wait"):
+        return
+
+    def _worker() -> None:
+        try:
+            exit_code = proc.wait(timeout=max(1, int(timeout_seconds)))
+            status = "completed" if exit_code == 0 else "failed"
+            update_run_manifest(
+                manifest_path,
+                execution_status=status,
+                exit_code=exit_code,
+                ended_at=_utc_iso_now(),
+            )
+        except subprocess.TimeoutExpired:
+            try:
+                if os.name != "nt":
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                else:
+                    proc.terminate()
+            except Exception:
+                pass
+            try:
+                exit_code = proc.wait(timeout=5)
+            except Exception:
+                try:
+                    if os.name != "nt":
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except Exception:
+                    pass
+                exit_code = -1
+            update_run_manifest(
+                manifest_path,
+                execution_status="timeout",
+                exit_code=exit_code,
+                error=f"Timeout after {timeout_seconds} seconds",
+                ended_at=_utc_iso_now(),
+            )
+        except Exception as e:
+            update_run_manifest(
+                manifest_path,
+                execution_status="monitor_failed",
+                error=str(e),
+                ended_at=_utc_iso_now(),
+            )
+
+    threading.Thread(target=_worker, daemon=True, name="launchpad_run_monitor").start()
+
+
+def _recipe_execution_error(recipe, body: dict[str, Any]) -> JSONResponse | None:
+    if recipe.runtime_class == "benchmark" and body.get("allow_benchmark") is not True:
+        return _json_error(
+            "BENCHMARK_OPT_IN_REQUIRED",
+            "Benchmark recipes require explicit allow_benchmark=true.",
+            400,
+        )
+    if recipe.runtime_class == "long" and body.get("allow_long") is not True:
+        return _json_error(
+            "LONG_OPT_IN_REQUIRED",
+            "Long-running recipes require explicit allow_long=true.",
+            400,
+        )
+    return None
 
 
 # --- Filesystem browse / upload helpers --------------------------------------
@@ -942,8 +1020,22 @@ async def lp_launch(request: Request) -> JSONResponse:
     if params is None or not isinstance(params, dict):
         return _json_error("BAD_REQUEST", "Body must contain an object 'params'", 400)
 
+    recipe_id = recipe_id_for_workflow(wf_id)
+    if recipe_id is None:
+        return _json_error(
+            "INTERNAL_ERROR",
+            f"No recipe registry entry is linked to workflow {wf_id!r}",
+            500,
+        )
+    recipe, error = _get_enabled_recipe_or_404(recipe_id)
+    if error is not None:
+        return error
+    execution_error = _recipe_execution_error(recipe, body)
+    if execution_error is not None:
+        return execution_error
+
     try:
-        val = validate_workflow_parameters(wf_id, params, check_paths=True)
+        val = validate_workflow_parameters(recipe.workflow_id, params, check_paths=True)
     except ValueError as e:
         return _json_error("NOT_FOUND", str(e), 404)
 
@@ -958,7 +1050,30 @@ async def lp_launch(request: Request) -> JSONResponse:
         )
 
     try:
-        result = render_workflow_command(wf_id, params)
+        recipe_pf = preflight_recipe(recipe.id, params)
+    except ValueError as e:
+        return _json_error("PREFLIGHT_FAILED", str(e), 400)
+    if not recipe_pf.valid:
+        return JSONResponse(
+            {
+                "error": True,
+                "code": "PREFLIGHT_FAILED",
+                "preflight": recipe_pf.model_dump(),
+            },
+            status_code=400,
+        )
+    if recipe_pf.warnings and body.get("allow_warnings") is not True:
+        return JSONResponse(
+            {
+                "error": True,
+                "code": "PREFLIGHT_WARNINGS_REQUIRE_OVERRIDE",
+                "preflight": recipe_pf.model_dump(),
+            },
+            status_code=400,
+        )
+
+    try:
+        result = render_workflow_command(recipe.workflow_id, params)
     except ValueError as e:
         return _json_error("NOT_FOUND", str(e), 404)
 
@@ -966,17 +1081,9 @@ async def lp_launch(request: Request) -> JSONResponse:
     if not argv:
         return _json_error("INTERNAL_ERROR", "Empty argv after render", 500)
 
-    recipe_id = recipe_id_for_workflow(wf_id)
-    if recipe_id is None:
-        return _json_error(
-            "INTERNAL_ERROR",
-            f"No recipe registry entry is linked to workflow {wf_id!r}",
-            500,
-        )
-
     try:
         manifest_result = write_run_manifest(
-            recipe_id,
+            recipe.id,
             params,
             execution_status="starting",
             argv=argv,
@@ -994,6 +1101,14 @@ async def lp_launch(request: Request) -> JSONResponse:
     env = os.environ.copy()
     for k, v in (result.env_overrides or {}).items():
         env[str(k)] = str(v)
+    try:
+        timeout_seconds = int(
+            body.get("timeout_seconds") or get_config().execution.default_timeout_seconds
+        )
+    except (TypeError, ValueError):
+        return _json_error("BAD_REQUEST", "timeout_seconds must be an integer", 400)
+    if timeout_seconds <= 0:
+        return _json_error("BAD_REQUEST", "timeout_seconds must be positive", 400)
 
     stdout_fh = stdout_path.open("ab")
     stderr_fh = stderr_path.open("ab")
@@ -1015,7 +1130,7 @@ async def lp_launch(request: Request) -> JSONResponse:
             manifest_path,
             execution_status="failed_to_start",
             error=str(e),
-            ended_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            ended_at=_utc_iso_now(),
         )
         return _json_error("EXEC_FAILED", str(e), 500)
     finally:
@@ -1025,11 +1140,19 @@ async def lp_launch(request: Request) -> JSONResponse:
             stderr_fh.close()
 
     update_run_manifest(manifest_path, execution_status="running", pid=proc.pid)
+    _monitor_launch_process(
+        proc,
+        timeout_seconds=timeout_seconds,
+        manifest_path=manifest_path,
+    )
 
     return JSONResponse(
         {
             "ok": True,
             "pid": proc.pid,
+            "recipe_id": recipe.id,
+            "workflow_id": recipe.workflow_id,
+            "timeout_seconds": timeout_seconds,
             "manifest_path": manifest_path,
             "artifact_dir": manifest_result["artifact_dir"],
             "stdout_log": str(stdout_path),

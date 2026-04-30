@@ -55,6 +55,11 @@ adds operator intent, expected outputs, preflight rule ids, smoke coverage,
 runtime class, benchmark policy, docs, and STAR Suite/downstream handoff
 artifacts.
 
+Current handoff metadata covers Chromap-owned ATAC BAM, fragments TSV, optional
+fragments binary sidecar, integrated MACS3 peak outputs, ATAC evidence TSV, and
+Hi-C `.pairs`. STAR Suite lives at `/mnt/pikachu/STAR-suite` and may consume
+these artifacts, but STAR orchestration is not a Chromap Launchpad default.
+
 Launchpad recipe endpoints:
 
 - `GET /launchpad/api/recipes`
@@ -63,6 +68,18 @@ Launchpad recipe endpoints:
 - `POST /launchpad/api/recipes/{recipe_id}/preflight`
 - `POST /launchpad/api/recipes/{recipe_id}/render`
 - `POST /launchpad/api/recipes/{recipe_id}/manifest`
+
+Recipe execution safety model:
+
+- executable browser launches resolve through an enabled recipe id and linked
+  workflow id,
+- commands are constructed as argv arrays, never shell strings,
+- recipe preflight runs again on the server immediately before execution,
+- input/output paths must stay under configured trusted roots,
+- path-like recipe parameters containing shell metacharacters are rejected,
+- long and benchmark recipes require explicit opt-in,
+- local launches are monitored with a timeout,
+- stdout/stderr and `run.json` live in the same manifest artifact directory.
 
 Validate it with:
 
@@ -99,6 +116,15 @@ rule ids before command rendering or execution. It returns per-rule
 rendered argv, shell preview, git state, binary metadata, inputs, outputs,
 preflight results, log paths, host/user context, and benchmark policy before any
 real execution.
+
+## Test Tiers
+
+- S0: hermetic synthetic tests, including `python3 -m pytest mcp_server/tests -q`
+  and `make test-libchromap-core-smoke`.
+- S1: ENCODE downsample smoke tests. Downloads are opt-in only with
+  `ENCODE_ALLOW_DOWNLOAD=1`; generated caches stay under `plans/artifacts/`.
+- S2: longer integration or benchmark gates, including full-depth multiome and
+  MACS3 parity runs. Benchmarks are serial by policy.
 
 ## Verification
 
