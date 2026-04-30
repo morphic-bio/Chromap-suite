@@ -1,0 +1,79 @@
+id: chromap_index
+title: Chromap index
+summary: Build a Chromap index from a reference FASTA.
+kind: chromap_cli
+entry_script: chromap
+supported_modes: ["local", "dry-run-capable"]
+caveats:
+  - "Rendering only validates schema types by default; enable server path checks when launching locally."
+default_output_layout: "The index is written to the --output path."
+scripts:
+  - role: entry
+    path: chromap
+    description: Chromap binary
+    language: executable
+stages:
+  - name: index
+    title: Build index
+    script: chromap
+    description: Build the minimizer index.
+parameter_groups:
+  - name: required
+    title: Required
+    parameters: [reference, index]
+  - name: tuning
+    title: Tuning
+    parameters: [kmer, window, min_frag_length, num_threads]
+parameters:
+  - name: reference
+    cli_flag: --ref
+    type: file
+    required: true
+    path_must_exist: true
+    description: Reference FASTA.
+  - name: index
+    cli_flag: --output
+    type: file
+    required: true
+    is_output_root: true
+    description: Output index path.
+  - name: kmer
+    cli_flag: --kmer
+    type: int
+    default: 17
+    skip_when_default: true
+    description: K-mer length.
+    min_value: 1
+  - name: window
+    cli_flag: --window
+    type: int
+    default: 7
+    skip_when_default: true
+    description: Minimizer window size.
+    min_value: 1
+  - name: min_frag_length
+    cli_flag: --min-frag-length
+    type: int
+    default: 30
+    skip_when_default: true
+    description: Minimum fragment length for automatic k/w selection.
+    min_value: 1
+  - name: num_threads
+    cli_flag: --num-threads
+    type: int
+    default: 8
+    skip_when_default: true
+    description: Threads.
+    min_value: 1
+  - name: build_index
+    cli_flag: --build-index
+    type: bool
+    default: true
+    description: Build index mode.
+    widget_hint: hidden
+rendering:
+  flag_order: [build_index, reference, index, kmer, window, min_frag_length, num_threads]
+constraints:
+  - kind: positive
+    params: [kmer, window, min_frag_length, num_threads]
+    message: Numeric tuning values must be positive.

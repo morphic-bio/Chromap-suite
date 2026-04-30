@@ -1,0 +1,183 @@
+id: chromap_atac_bam_fragments
+title: Chromap ATAC BAM + fragments
+summary: Map barcoded paired-end ATAC reads and emit BAM plus scATAC fragments.
+kind: chromap_cli
+entry_script: chromap
+supported_modes: ["local", "dry-run-capable"]
+caveats:
+  - "--atac-fragments is incompatible with --low-mem in Chromap."
+default_output_layout: "BAM/CRAM is written to --output; fragment rows are written to --atac-fragments."
+scripts:
+  - role: entry
+    path: chromap
+    description: Chromap binary
+    language: executable
+stages:
+  - name: map
+    title: Map ATAC reads
+    script: chromap
+    description: Map paired-end barcoded ATAC reads and retain fragments.
+parameter_groups:
+  - name: inputs
+    title: Inputs
+    parameters: [reference, index, read1, read2, barcode, barcode_whitelist]
+  - name: output
+    title: Output
+    parameters: [output, atac_fragments, summary, sort_bam, write_index]
+  - name: mapping
+    title: Mapping
+    parameters: [num_threads, hts_threads, mapq_threshold, max_insert_size, remove_pcr_duplicates, tn5_shift, temp_dir]
+  - name: peaks
+    title: MACS3 FRAG peaks
+    parameters: [call_macs3_frag_peaks, macs3_frag_peaks_output, macs3_frag_summits_output, macs3_frag_peaks_source, macs3_frag_low_mem]
+parameters:
+  - name: reference
+    cli_flag: --ref
+    type: file
+    required: true
+    path_must_exist: true
+    description: Reference FASTA.
+  - name: index
+    cli_flag: --index
+    type: file
+    required: true
+    path_must_exist: true
+    description: Chromap index.
+  - name: read1
+    cli_flag: --read1
+    type: string
+    required: true
+    description: Read 1 FASTQ path, or comma-separated paths for multiple lanes.
+  - name: read2
+    cli_flag: --read2
+    type: string
+    required: true
+    description: Read 2 FASTQ path, or comma-separated paths for multiple lanes.
+  - name: barcode
+    cli_flag: --barcode
+    type: string
+    required: true
+    description: Barcode FASTQ path, or comma-separated paths.
+  - name: barcode_whitelist
+    cli_flag: --barcode-whitelist
+    type: file
+    path_must_exist: true
+    description: Optional barcode whitelist.
+  - name: output
+    cli_flag: --output
+    type: file
+    required: true
+    is_output_root: true
+    description: Output BAM path.
+  - name: atac_fragments
+    cli_flag: --atac-fragments
+    type: file
+    required: true
+    description: Output scATAC fragments TSV/TSV.GZ path.
+  - name: summary
+    cli_flag: --summary
+    type: file
+    description: Optional mapping summary path.
+  - name: num_threads
+    cli_flag: --num-threads
+    type: int
+    default: 8
+    skip_when_default: true
+    description: Mapping threads.
+    min_value: 1
+  - name: hts_threads
+    cli_flag: --hts-threads
+    type: int
+    default: 4
+    skip_when_default: true
+    description: BAM compression threads.
+    min_value: 1
+  - name: mapq_threshold
+    cli_flag: --MAPQ-threshold
+    type: int
+    default: 30
+    skip_when_default: true
+    description: Minimum MAPQ for output.
+    min_value: 0
+    max_value: 60
+  - name: max_insert_size
+    cli_flag: --max-insert-size
+    type: int
+    default: 1000
+    skip_when_default: true
+    description: Maximum insert size.
+    min_value: 1
+  - name: remove_pcr_duplicates
+    cli_flag: --remove-pcr-duplicates
+    type: bool
+    default: true
+    description: Remove PCR duplicates.
+  - name: tn5_shift
+    cli_flag: --Tn5-shift
+    type: bool
+    default: true
+    description: Apply Tn5 shift.
+  - name: sort_bam
+    cli_flag: --sort-bam
+    type: bool
+    default: true
+    description: Coordinate-sort BAM.
+  - name: write_index
+    cli_flag: --write-index
+    type: bool
+    default: false
+    description: Write BAM index.
+  - name: temp_dir
+    cli_flag: --temp-dir
+    type: directory
+    description: Temporary directory.
+  - name: call_macs3_frag_peaks
+    cli_flag: --call-macs3-frag-peaks
+    type: bool
+    default: false
+    description: Run integrated MACS3-compatible FRAG peak calling.
+  - name: macs3_frag_peaks_output
+    cli_flag: --macs3-frag-peaks-output
+    type: file
+    description: Output narrowPeak path.
+  - name: macs3_frag_summits_output
+    cli_flag: --macs3-frag-summits-output
+    type: file
+    description: Output summits BED path.
+  - name: macs3_frag_peaks_source
+    cli_flag: --macs3-frag-peaks-source
+    type: enum
+    default: file
+    skip_when_default: true
+    choices: [file, memory]
+    description: FRAG peak input source.
+  - name: macs3_frag_low_mem
+    cli_flag: --macs3-frag-low-mem
+    type: bool
+    default: false
+    description: Use low-memory FRAG peak caller workspace.
+  - name: preset
+    cli_flag: --preset
+    type: enum
+    default: atac
+    choices: [atac]
+    description: Chromap preset.
+    widget_hint: hidden
+  - name: bam
+    cli_flag: --BAM
+    type: bool
+    default: true
+    description: BAM output mode.
+    widget_hint: hidden
+rendering:
+  flag_order: [preset, bam, reference, index, read1, read2, barcode, barcode_whitelist, output, atac_fragments, summary, num_threads, hts_threads, mapq_threshold, max_insert_size, remove_pcr_duplicates, tn5_shift, sort_bam, write_index, temp_dir, call_macs3_frag_peaks, macs3_frag_peaks_output, macs3_frag_summits_output, macs3_frag_peaks_source, macs3_frag_low_mem]
+constraints:
+  - kind: positive
+    params: [num_threads, hts_threads, max_insert_size]
+    message: Thread and insert-size values must be positive.
+  - kind: dependency
+    params: [macs3_frag_peaks_output, call_macs3_frag_peaks]
+    message: Peaks output is used only when peak calling is enabled.
+  - kind: dependency
+    params: [macs3_frag_summits_output, call_macs3_frag_peaks]
+    message: Summits output is used only when peak calling is enabled.

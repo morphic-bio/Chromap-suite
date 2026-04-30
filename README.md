@@ -50,6 +50,21 @@ cd chromap && make
 # Use custom temp directory (useful for Docker/containers)
 ./chromap --preset atac -x index -r ref.fa -1 read1.fq -2 read2.fq -o aln.bed --temp-dir /custom/temp
 ```
+
+### Chromap Launchpad
+
+This fork includes a Stage 1 MCP-backed browser Launchpad for rendering common
+Chromap commands from typed workflow schemas:
+
+```sh
+bash scripts/launchpad_server.sh up
+```
+
+Open `http://127.0.0.1:8765/launchpad/`. The initial public recipes are
+`chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_fragments`, and
+`chromap_hic_pairs`. See [docs/chromap_launchpad.md](docs/chromap_launchpad.md)
+and [mcp_server/README.md](mcp_server/README.md).
+
 ## Table of Contents
 
 - [Getting Started](#started)
