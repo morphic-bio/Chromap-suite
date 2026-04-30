@@ -1,7 +1,7 @@
 # Runbook: Chromap MCP, Agents, and Launchpad Hardening
 
 Date: 2026-04-30
-Status: Stage 0-1 implemented; Stage 2+ proposed
+Status: Stage 0-2 implemented; Stage 3+ proposed
 Prerequisites:
 
 - MCP/Launchpad Stage 1 is present.
@@ -225,6 +225,21 @@ Return structured results:
 - Launchpad can display pass/warn/fail before command rendering.
 - Tests cover invalid paths, missing index, mismatched read lists, output
   collisions, and trusted-root rejection.
+
+### Implementation Note
+
+Stage 2 added:
+
+- `preflight_recipe(recipe_id, params)` in `mcp_server/tools/preflight.py`
+- MCP tool `preflight_recipe`
+- structured `RecipePreflightCheck` and `RecipePreflightResponse` models
+- `mcp_server/tests/test_chromap_preflight.py`
+
+Implemented rule ids include reference/index existence, output parent trust and
+writability, read-pair lane count matching, barcode lane count matching,
+primary/secondary output collision checks, ATAC fragments requirements, Hi-C
+`.pairs` boundary validation, Y/noY format validation, MACS3 peak option
+validation, and binary presence checks for planned runner parity recipes.
 
 ### Gates
 

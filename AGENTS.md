@@ -15,9 +15,11 @@ Start with these local docs before making broad changes:
 - `plans/2026-04-30-chromap-core-libchromap-smoke-runbook.md`: core smoke and libchromap regression plan.
 - `tests/README.md`: existing Y/noY test documentation.
 
-The MCP recipe registry lives at `mcp_server/recipes/registry.yaml`. When adding
-or changing a Launchpad workflow, update the workflow YAML, config entry, recipe
-registry metadata, and registry tests together.
+The MCP recipe registry lives at `mcp_server/recipes/registry.yaml`. Recipe
+preflight rules are implemented in `mcp_server/tools/preflight.py` and exposed
+through `preflight_recipe`. When adding or changing a Launchpad workflow, update
+the workflow YAML, config entry, recipe registry metadata, preflight coverage,
+and registry/preflight tests together.
 
 When documenting a new workflow, add the durable reference to `docs/` or
 `mcp_server/README.md`, and keep long experimental notes under `plans/`.

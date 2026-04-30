@@ -1,18 +1,403 @@
 """Preflight validation for MCP server."""
 
+import re
 from pathlib import Path
 from typing import Any, Optional
 
 from ..config import get_config
+from ..schemas.recipe import RecipeEntry
 from ..schemas.config import ScriptConfig
-from ..schemas.responses import PreflightCheck, PreflightResponse
+from ..schemas.responses import (
+    PreflightCheck,
+    PreflightResponse,
+    RecipePreflightCheck,
+    RecipePreflightResponse,
+)
 from ..schemas.run_config import RunConfig
+from .recipes import get_recipe
 from .utils import (
     find_binary,
     get_disk_space_gb,
     is_path_allowed,
     validate_path,
 )
+
+
+def _csv_items(value: Any) -> list[str]:
+    """Return comma-separated path-ish values as a list."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _check(
+    rule_id: str,
+    status: str,
+    message: str,
+    path: Optional[str] = None,
+    suggested_fix: Optional[str] = None,
+    **details: Any,
+) -> RecipePreflightCheck:
+    return RecipePreflightCheck(
+        rule_id=rule_id,
+        status=status,
+        message=message,
+        path=path,
+        suggested_fix=suggested_fix,
+        details={k: v for k, v in details.items() if v is not None},
+    )
+
+
+def _validate_existing_file(rule_id: str, params: dict[str, Any], key: str) -> RecipePreflightCheck:
+    value = params.get(key)
+    if not value:
+        return _check(
+            rule_id,
+            "fail",
+            f"Missing required path parameter: {key}",
+            suggested_fix=f"Provide {key}.",
+        )
+    valid, error = validate_path(value, must_exist=True, must_be_file=True, must_be_readable=True)
+    if not valid:
+        return _check(
+            rule_id,
+            "fail",
+            error or f"Invalid file path for {key}: {value}",
+            path=str(value),
+            suggested_fix=f"Provide an existing readable file for {key} under a trusted root.",
+        )
+    return _check(rule_id, "pass", f"{key} exists and is readable", path=str(value))
+
+
+def _render_template(template: str, params: dict[str, Any]) -> Optional[str]:
+    names = set(re.findall(r"{([a-zA-Z_][a-zA-Z0-9_]*)}", template))
+    rendered = template
+    for name in names:
+        value = params.get(name)
+        if value in (None, ""):
+            return None
+        rendered = rendered.replace("{" + name + "}", str(value))
+    return rendered
+
+
+def _output_paths(recipe: RecipeEntry, params: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for output in recipe.outputs:
+        rendered = _render_template(output.path_template, params)
+        if rendered:
+            paths.append(rendered)
+    return paths
+
+
+def _check_output_parent(recipe: RecipeEntry, params: dict[str, Any]) -> RecipePreflightCheck:
+    paths = _output_paths(recipe, params)
+    if not paths:
+        return _check(
+            "output_parent_trusted_or_creatable",
+            "fail",
+            "No concrete output paths could be derived from recipe parameters",
+            suggested_fix="Provide the recipe output path parameters.",
+        )
+
+    checked: list[str] = []
+    for output_path in paths:
+        parent = Path(output_path).parent
+        valid, error = validate_path(parent, must_be_writable=True)
+        if not valid:
+            return _check(
+                "output_parent_trusted_or_creatable",
+                "fail",
+                error or f"Output parent is not writable: {parent}",
+                path=str(parent),
+                suggested_fix="Use an output path under a trusted writable artifact directory.",
+                outputs=paths,
+            )
+        checked.append(str(parent))
+
+    return _check(
+        "output_parent_trusted_or_creatable",
+        "pass",
+        "Output parent directories are trusted and writable or creatable",
+        details_checked=checked,
+        outputs=paths,
+    )
+
+
+def _check_read_pair_lists_match(params: dict[str, Any]) -> RecipePreflightCheck:
+    read1 = _csv_items(params.get("read1"))
+    read2 = _csv_items(params.get("read2"))
+    if not read1 or not read2:
+        return _check(
+            "read_pair_lists_match",
+            "fail",
+            "read1 and read2 are both required for paired-end recipes",
+            suggested_fix="Provide read1 and read2 FASTQ path lists.",
+        )
+    if len(read1) != len(read2):
+        return _check(
+            "read_pair_lists_match",
+            "fail",
+            f"read1/read2 lane counts differ: {len(read1)} vs {len(read2)}",
+            suggested_fix="Provide the same number of comma-separated read1 and read2 FASTQs.",
+            read1=read1,
+            read2=read2,
+        )
+    return _check(
+        "read_pair_lists_match",
+        "pass",
+        f"read1/read2 lane counts match ({len(read1)})",
+        read1_count=len(read1),
+        read2_count=len(read2),
+    )
+
+
+def _check_barcode_list_matches_read1(params: dict[str, Any]) -> RecipePreflightCheck:
+    read1 = _csv_items(params.get("read1"))
+    barcode = _csv_items(params.get("barcode"))
+    if not barcode:
+        return _check(
+            "barcode_list_matches_read1",
+            "fail",
+            "barcode FASTQ list is required for this recipe",
+            suggested_fix="Provide barcode FASTQ path(s).",
+        )
+    if len(read1) != len(barcode):
+        return _check(
+            "barcode_list_matches_read1",
+            "fail",
+            f"read1/barcode lane counts differ: {len(read1)} vs {len(barcode)}",
+            suggested_fix="Provide one barcode FASTQ for each read1 FASTQ.",
+            read1_count=len(read1),
+            barcode_count=len(barcode),
+        )
+    return _check(
+        "barcode_list_matches_read1",
+        "pass",
+        f"read1/barcode lane counts match ({len(read1)})",
+        read1_count=len(read1),
+        barcode_count=len(barcode),
+    )
+
+
+def _check_secondary_output_not_primary(params: dict[str, Any]) -> RecipePreflightCheck:
+    primary = params.get("output")
+    secondary_candidates = [
+        params.get("atac_fragments"),
+        params.get("noY_output"),
+        params.get("Y_output"),
+        params.get("y_read_names_output"),
+    ]
+    for secondary in secondary_candidates:
+        if primary and secondary and Path(str(primary)) == Path(str(secondary)):
+            return _check(
+                "secondary_output_not_primary",
+                "fail",
+                "Primary and secondary output paths must differ",
+                path=str(primary),
+                suggested_fix="Choose distinct output paths.",
+            )
+    return _check("secondary_output_not_primary", "pass", "Primary and secondary outputs differ")
+
+
+def _check_atac_fragments_requires_barcoded_paired_bam(params: dict[str, Any]) -> RecipePreflightCheck:
+    missing = [
+        key
+        for key in ("read1", "read2", "barcode", "output", "atac_fragments")
+        if not params.get(key)
+    ]
+    if missing:
+        return _check(
+            "atac_fragments_requires_barcoded_paired_bam",
+            "fail",
+            f"Missing ATAC fragments requirements: {', '.join(missing)}",
+            suggested_fix="Provide paired reads, barcode reads, BAM/CRAM output, and fragments path.",
+            missing=missing,
+        )
+    output = str(params["output"]).lower()
+    if not (output.endswith(".bam") or output.endswith(".cram")):
+        return _check(
+            "atac_fragments_requires_barcoded_paired_bam",
+            "fail",
+            "--atac-fragments requires BAM or CRAM primary output",
+            path=str(params["output"]),
+            suggested_fix="Use an output path ending in .bam or .cram.",
+        )
+    return _check(
+        "atac_fragments_requires_barcoded_paired_bam",
+        "pass",
+        "ATAC fragments recipe has paired reads, barcode reads, and BAM/CRAM output",
+    )
+
+
+def _check_hic_stops_at_pairs(params: dict[str, Any]) -> RecipePreflightCheck:
+    output = str(params.get("output", ""))
+    if output and not (output.endswith(".pairs") or output.endswith(".pairs.gz")):
+        return _check(
+            "hic_stops_at_pairs",
+            "fail",
+            "Hi-C Chromap recipe should emit .pairs or .pairs.gz only",
+            path=output,
+            suggested_fix="Use an output path ending in .pairs or .pairs.gz.",
+        )
+    return _check("hic_stops_at_pairs", "pass", "Hi-C recipe stops at pairs output")
+
+
+def _check_write_index_requires_sort_bam(params: dict[str, Any]) -> RecipePreflightCheck:
+    if _truthy(params.get("write_index")) and not _truthy(params.get("sort_bam")):
+        return _check(
+            "write_index_requires_sort_bam",
+            "fail",
+            "--write-index requires --sort-bam",
+            suggested_fix="Enable sort_bam or disable write_index.",
+        )
+    return _check("write_index_requires_sort_bam", "pass", "write_index/sort_bam settings are compatible")
+
+
+def _check_macs3_required_path(rule_id: str, params: dict[str, Any], key: str) -> RecipePreflightCheck:
+    if not params.get(key):
+        return _check(
+            rule_id,
+            "fail",
+            f"Missing required MACS3 output parameter: {key}",
+            suggested_fix=f"Provide {key}.",
+        )
+    return _check(rule_id, "pass", f"{key} is set", path=str(params[key]))
+
+
+def _check_macs3_pvalue_positive(params: dict[str, Any]) -> RecipePreflightCheck:
+    raw = params.get("macs3_frag_pvalue", params.get("pvalue", 0.01))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _check(
+            "macs3_pvalue_positive",
+            "fail",
+            f"MACS3 p-value is not numeric: {raw}",
+            suggested_fix="Use a positive numeric p-value.",
+        )
+    if value <= 0:
+        return _check(
+            "macs3_pvalue_positive",
+            "fail",
+            "MACS3 p-value must be positive",
+            suggested_fix="Use a p-value greater than 0.",
+            value=value,
+        )
+    return _check("macs3_pvalue_positive", "pass", "MACS3 p-value is positive", value=value)
+
+
+def _check_y_noy_requires_sam_bam_cram(params: dict[str, Any]) -> RecipePreflightCheck:
+    output = str(params.get("output", "")).lower()
+    if output and not (
+        output.endswith(".sam")
+        or output.endswith(".sam.gz")
+        or output.endswith(".bam")
+        or output.endswith(".cram")
+    ):
+        return _check(
+            "y_noy_requires_sam_bam_cram",
+            "fail",
+            "Y/noY split requires SAM, BAM, or CRAM output",
+            path=output,
+            suggested_fix="Use .sam, .sam.gz, .bam, or .cram output.",
+        )
+    return _check("y_noy_requires_sam_bam_cram", "pass", "Y/noY output format is compatible")
+
+
+def _check_binary_exists(rule_id: str, binary_name: str) -> RecipePreflightCheck:
+    path = find_binary(binary_name)
+    if path is None:
+        return _check(
+            rule_id,
+            "fail",
+            f"Required binary not found under trusted roots: {binary_name}",
+            suggested_fix=f"Build or install {binary_name} under a trusted root.",
+        )
+    return _check(rule_id, "pass", f"{binary_name} found", path=str(path))
+
+
+def _run_recipe_rule(recipe: RecipeEntry, params: dict[str, Any], rule_id: str) -> RecipePreflightCheck:
+    if rule_id == "reference_fasta_exists":
+        return _validate_existing_file(rule_id, params, "reference")
+    if rule_id == "chromap_index_exists":
+        return _validate_existing_file(rule_id, params, "index")
+    if rule_id == "output_parent_trusted_or_creatable":
+        return _check_output_parent(recipe, params)
+    if rule_id == "read_pair_lists_match":
+        return _check_read_pair_lists_match(params)
+    if rule_id == "barcode_list_matches_read1":
+        return _check_barcode_list_matches_read1(params)
+    if rule_id == "secondary_output_not_primary":
+        return _check_secondary_output_not_primary(params)
+    if rule_id == "atac_fragments_requires_barcoded_paired_bam":
+        return _check_atac_fragments_requires_barcoded_paired_bam(params)
+    if rule_id == "hic_stops_at_pairs":
+        return _check_hic_stops_at_pairs(params)
+    if rule_id == "write_index_requires_sort_bam":
+        return _check_write_index_requires_sort_bam(params)
+    if rule_id == "macs3_peaks_output_required":
+        return _check_macs3_required_path(rule_id, params, "macs3_frag_peaks_output")
+    if rule_id == "macs3_summits_output_required":
+        return _check_macs3_required_path(rule_id, params, "macs3_frag_summits_output")
+    if rule_id == "macs3_pvalue_positive":
+        return _check_macs3_pvalue_positive(params)
+    if rule_id == "y_noy_requires_sam_bam_cram":
+        return _check_y_noy_requires_sam_bam_cram(params)
+    if rule_id == "chromap_binary_exists":
+        return _check_binary_exists(rule_id, "chromap")
+    if rule_id == "chromap_lib_runner_exists":
+        return _check_binary_exists(rule_id, "chromap_lib_runner")
+
+    return _check(
+        rule_id,
+        "fail",
+        f"Unknown recipe preflight rule: {rule_id}",
+        suggested_fix="Implement this rule before enabling recipe execution.",
+    )
+
+
+def preflight_recipe(recipe_id: str, params: dict[str, Any]) -> RecipePreflightResponse:
+    """Run recipe-driven preflight checks without executing Chromap."""
+    recipe = get_recipe(recipe_id)
+    if recipe is None:
+        raise ValueError(f"Unknown recipe: {recipe_id}")
+
+    checks: list[RecipePreflightCheck] = []
+    supplied = dict(params or {})
+
+    for input_def in recipe.inputs:
+        if input_def.required and supplied.get(input_def.name) in (None, ""):
+            checks.append(
+                _check(
+                    f"required_input:{input_def.name}",
+                    "fail",
+                    f"Missing required input: {input_def.name}",
+                    suggested_fix=f"Provide {input_def.name}.",
+                )
+            )
+
+    for rule_id in recipe.preflight:
+        checks.append(_run_recipe_rule(recipe, supplied, rule_id))
+
+    warnings = [check.message for check in checks if check.status == "warn"]
+    errors = [check.message for check in checks if check.status == "fail"]
+    return RecipePreflightResponse(
+        recipe_id=recipe.id,
+        valid=not errors,
+        checks=checks,
+        warnings=warnings,
+        errors=errors,
+    )
 
 
 def check_script_allowed(run_config: RunConfig) -> PreflightCheck:
