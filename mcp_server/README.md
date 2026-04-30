@@ -13,6 +13,7 @@ bash scripts/launchpad_server.sh up
 Open:
 
 - Launchpad: `http://127.0.0.1:8765/launchpad/`
+- Recipe API: `http://127.0.0.1:8765/launchpad/api/recipes`
 - Workflow API: `http://127.0.0.1:8765/launchpad/api/workflows`
 
 Stop it with:
@@ -21,18 +22,24 @@ Stop it with:
 bash scripts/launchpad_server.sh down
 ```
 
-## Stage 1 Workflows
+## Launchpad Recipes
 
-The default public workflow list is intentionally Chromap-only:
+The default public recipe list is registry-driven and intentionally Chromap-only:
 
 - `chromap_index`
 - `chromap_atac_bed`
 - `chromap_atac_bam_fragments`
 - `chromap_hic_pairs`
 
-Each workflow lives in `mcp_server/workflows/*.yaml` and renders a single
-Chromap command. Browser validation checks schema types by default; local
-Launchpad users can enable server-side path checks before launch.
+Each enabled recipe links to a workflow in `mcp_server/workflows/*.yaml` for
+argv rendering. Launchpad forms are generated from
+`mcp_server/recipes/registry.yaml`, so the browser shows recipe runtime class,
+benchmark policy, typed inputs, expected outputs, registry preflight checks,
+rendered argv, and dry-run or launch manifests from one metadata source.
+
+Metadata-only recipes are hidden by default. The browser can opt into showing
+planned/long recipes, but schema/render/preflight routes reject them until the
+registry marks them `enabled: true`.
 
 ## Recipe Registry
 
@@ -47,6 +54,15 @@ future run manifests. Workflow YAML controls command rendering; recipe metadata
 adds operator intent, expected outputs, preflight rule ids, smoke coverage,
 runtime class, benchmark policy, docs, and STAR Suite/downstream handoff
 artifacts.
+
+Launchpad recipe endpoints:
+
+- `GET /launchpad/api/recipes`
+- `GET /launchpad/api/recipes/{recipe_id}/schema`
+- `GET /launchpad/api/recipes/{recipe_id}/describe`
+- `POST /launchpad/api/recipes/{recipe_id}/preflight`
+- `POST /launchpad/api/recipes/{recipe_id}/render`
+- `POST /launchpad/api/recipes/{recipe_id}/manifest`
 
 Validate it with:
 
@@ -92,4 +108,5 @@ python -m mcp_server.app --help
 ```
 
 The copied Launchpad still includes generic Script Lane/editor bridge plumbing
-for later stages. Stage 1 does not port project-specific production recipes.
+for later stages. Chromap recipe execution remains routed through allowlisted
+registry/workflow entries.

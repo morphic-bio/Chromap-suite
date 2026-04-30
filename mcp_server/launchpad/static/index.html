@@ -93,8 +93,16 @@
           x-model="includeTestWorkflows"
           @change="onIncludeTestWorkflowsChange()"
         />
-        <span title="Show UCSF, E2E test workflows, and other non–chromap_* recipes (loopback sees private entries)">Include test &amp; other recipes</span>
+        <span title="Show metadata-only long/benchmark recipes. These remain non-executable until enabled in the registry.">Include planned &amp; long recipes</span>
       </label>
+    </div>
+
+    <div class="recipe-meta-bar" x-show="selectedRecipe()">
+      <span><strong x-text="selectedRecipe()?.title"></strong></span>
+      <span>runtime <code x-text="selectedRecipe()?.runtime_class"></code></span>
+      <span>benchmark <code x-text="selectedRecipe()?.benchmark_policy"></code></span>
+      <span x-show="selectedRecipe()?.enabled === false" class="warn">metadata-only</span>
+      <span x-show="describe?.workflow_id">workflow <code x-text="describe?.workflow_id"></code></span>
     </div>
 
     <div class="toolbar param-io-bar" x-show="schema">
@@ -217,6 +225,7 @@
         <div class="actions">
           <button type="button" class="btn secondary" @click="doValidate()" :disabled="loading">Validate</button>
           <button type="button" class="btn primary" @click="doRender()" :disabled="loading">Generate command</button>
+          <button type="button" class="btn secondary" @click="doDryRunManifest()" :disabled="loading">Write dry-run manifest</button>
         </div>
       </section>
 
@@ -302,6 +311,18 @@
             </template>
           </ul>
         </div>
+        <div class="help-section" x-show="expectedOutputs().length">
+          <h3>Expected outputs</h3>
+          <ul>
+            <template x-for="o in expectedOutputs()" :key="o.name">
+              <li>
+                <code x-text="o.artifact_type"></code>
+                <span x-text="' ' + o.name + ': '"></span>
+                <code x-text="o.path_template"></code>
+              </li>
+            </template>
+          </ul>
+        </div>
         <div class="help-section" x-show="visibleStages().length">
           <h3>Stages</h3>
           <p class="help-hint" x-show="(describe?.stages || []).length > visibleStages().length">
@@ -325,7 +346,7 @@
       <p class="ok" x-show="notice" x-text="notice"></p>
 
       <div x-show="validateResult">
-        <h3>Validation</h3>
+        <h3>Preflight</h3>
         <p :class="validateResult?.valid ? 'ok' : 'err'" x-text="validateResult?.valid ? 'Valid' : 'Invalid'"></p>
         <p class="validation-mode" :class="lastValidationCheckPaths ? 'ok' : 'warn'" x-show="validationModeMessage()" x-text="validationModeMessage()"></p>
         <ul class="messages" x-show="validateResult?.field_errors?.length">
@@ -351,6 +372,15 @@
           <summary>Normalized parameters</summary>
           <pre class="json-block" x-text="normalizedParamsText()"></pre>
         </details>
+        <ul class="messages" x-show="validateResult?.checks?.length">
+          <template x-for="c in (validateResult?.checks || [])" :key="c.rule_id + ':' + c.status">
+            <li :class="c.status === 'pass' ? 'ok' : (c.status === 'warn' ? 'warn' : 'err')">
+              <code x-text="c.rule_id"></code>
+              <span> — </span>
+              <span x-text="c.message"></span>
+            </li>
+          </template>
+        </ul>
       </div>
 
       <div x-show="renderResult">
@@ -372,7 +402,16 @@
         <div class="launch-result ok" x-show="launchResult?.ok">
           <p x-text="launchResult?.message || ''"></p>
           <p x-show="launchResult?.pid != null"><code>pid</code> <span x-text="launchResult?.pid"></span></p>
+          <p x-show="launchResult?.manifest_path"><code>manifest</code> <span x-text="launchResult?.manifest_path"></span></p>
+          <p x-show="launchResult?.stdout_log"><code>stdout</code> <span x-text="launchResult?.stdout_log"></span></p>
+          <p x-show="launchResult?.stderr_log"><code>stderr</code> <span x-text="launchResult?.stderr_log"></span></p>
         </div>
+      </div>
+
+      <div class="launch-result ok" x-show="manifestResult?.manifest_path">
+        <h3>Dry-run manifest</h3>
+        <p><code>manifest</code> <span x-text="manifestResult?.manifest_path"></span></p>
+        <p><code>artifact dir</code> <span x-text="manifestResult?.artifact_dir"></span></p>
       </div>
 
       <div class="bridge-panel" x-show="bridgeEditors.length && bridgeUiEnabled()" x-cloak>
