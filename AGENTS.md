@@ -10,6 +10,8 @@ Start with these local docs before making broad changes:
 - `docs/chromap_launchpad.md`: MCP-backed Launchpad usage.
 - `mcp_server/README.md`: Chromap MCP server and Launchpad implementation notes.
 - `plans/2026-04-30-chromap-mcp-launchpad-port-runbook.md`: MCP/Launchpad port plan.
+- `plans/2026-04-30-chromap-mcp-launchpad-hardening-runbook.md`: staged MCP,
+  Launchpad, recipe registry, and agent-doc hardening plan.
 - `plans/2026-04-30-chromap-core-libchromap-smoke-runbook.md`: core smoke and libchromap regression plan.
 - `tests/README.md`: existing Y/noY test documentation.
 
