@@ -1,6 +1,6 @@
 # Chromap Suite
 
-Chromap Suite extends Chromap with native BAM output and coordinate sorting, an in-process C++ narrow peak caller (`libMACS3`) that is byte-identical to MACS3 v3.0.3, an embeddable callable-library API (`libchromap`), and an MCP server with a browser Launchpad — delivering a complete C++ chromatin-accessibility pipeline that produces the MACS3 narrow peaks the field already uses, and that composes with [STAR Suite](https://github.com/morphic-bio/STAR-suite) for an end-to-end multiomic (RNA + ATAC) single-binary pipeline. Bulk ATAC, scATAC, ChIP-seq, and Hi-C continue to work through the same binary; multiomic processing is delivered through libchromap embedded in STAR Suite as a worker thread.
+Chromap Suite is an open-source C++ chromatin-accessibility platform: ATAC-seq alignment with native BAM output and coordinate sorting, an in-process narrow peak caller (`libMACS3`) byte-identical to MACS3 v3.0.3, an embeddable callable-library API (`libchromap`), and an MCP server with a browser Launchpad. Chromap Suite produces the MACS3 narrow peaks the field already uses and composes with [STAR Suite](https://github.com/morphic-bio/STAR-suite) for an end-to-end multiomic (RNA + ATAC) single-binary pipeline. Bulk ATAC, scATAC, ChIP-seq, and Hi-C all run through the same binary; multiomic processing is delivered through `libchromap` embedded in STAR Suite as a worker thread.
 
 On the public 3K PBMC Multiome at 32 threads, the integrated multiomic pipeline (STAR Suite + libchromap + libMACS3) completes in **18:17 / 64.8 GB peak RSS** vs **40:04 / 79.1 GB** for Cell Ranger ARC v2.2.0 (**2.19× faster, ~18% lower memory**), producing **50,274 narrowPeak peaks byte-identical** to MACS3 v3.0.3 (md5 `34f9f991…`). Standalone `libMACS3` runs **7.8× / 10.3× / 11.3× faster** than Cython MACS3 v3.0.3 at 1 / 4 / 24 threads.
 
@@ -8,27 +8,27 @@ Agent quickstart: see [`AGENTS.md`](AGENTS.md) for repo-specific guardrails, tes
 
 Chromap Suite was spun off from [Chromap](https://github.com/haowenz/chromap) in 2026 and no longer tracks upstream; see [HISTORY.md](HISTORY.md) for lineage.
 
-## Core Additions over Chromap
+## Chromap Suite capabilities
 
-The full set of additions is organised by scope, mirroring Table 2 of the [Chromap Suite preprint](https://github.com/morphic-bio/chromap_suite_paper):
+The full set of capabilities is organised by scope, mirroring Table 2 of the [Chromap Suite preprint](https://github.com/morphic-bio/chromap_suite_paper):
 
-### Core additions
+### Core capabilities
 
 - **Native BAM output + coordinate sort** (`--BAM --sort-bam --write-index`). Replaces the conventional `chromap | samtools sort | samtools index` chain via htslib + a *k*-way disk-merge spillover. Produces `@HD VN:1.6 SO:coordinate` headers and `.bam.bai` indexes in one process. Sort key: `(tid, pos, flag, mtid, mpos, isize)` with `read_id` tie-break (note: differs from `samtools sort` QNAME tie-break). See [`docs/sort_spec.md`](docs/sort_spec.md). Compatible with `--low-mem`.
 - **In-process libMACS3 narrow peak calling** (`--call-macs3-frag-peaks`). Fragments are handed to `libMACS3` through the `FragmentIterator` API without an intermediate `fragments.tsv.gz` write, so a single chromap invocation produces sorted-and-indexed BAM, fragments, and MACS3-equivalent narrowPeak and summit outputs. Bulk ATAC supported via `--macs3-frag-peaks-source memory` (no barcode required); scATAC/multiomic via barcoded fragments. Output is byte-identical to standalone MACS3 v3.0.3 (50,274 peaks, md5 `34f9f991…` on the 3K PBMC ATAC channel).
 - **Y-chromosome filtering** (`--emit-Y-bam`, `--emit-noY-bam`, `--emit-Y-noY-fastq`, `--emit-Y-read-names`). Three-stream output (all / Y-only / noY) for sex-aware analyses. Works with `--sort-bam`. Detection is case-insensitive and matches `Y`, `chrY`, `CHR_Y`, `chr_y`; decoy/random/alt contigs (`chrY_random`, etc.) are intentionally excluded. See the [Y-chromosome filtering](#y-chromosome-filtering) section below.
-- **`libchromap.a` callable library**. The full Chromap pipeline is exposed through the `libchromap_contract` API (`RunAtacMapping()`, `ChromapAtacConfig`, `ChromapPermitHooks`). The same library backs the `chromap` CLI binary unchanged and is the integration point used by STAR Suite for multiomic processing. See [`include/libchromap_contract.h`](include/libchromap_contract.h) and [`src/libchromap.cc`](src/libchromap.cc).
+- **`libchromap.a` callable library**. The full Chromap Suite ATAC pipeline is exposed through the `libchromap_contract` API (`RunAtacMapping()`, `ChromapAtacConfig`, `ChromapPermitHooks`). The same library backs the `chromap` CLI binary and is the integration point used by STAR Suite for multiomic processing. See [`include/libchromap_contract.h`](include/libchromap_contract.h) and [`src/libchromap.cc`](src/libchromap.cc).
 - **`--Tn5-shift-mode {classical|symmetric}`** picks the Tn5 cut-site offset convention on BED/BEDPE/PAF. `classical` (`+4 / -5`; Buenrostro 2013 / Cell Ranger ARC) is the default; `symmetric` (`+4 / -4`; ChromBPNet) is the alternative. Implies `--Tn5-shift`. Active offsets are echoed at startup. SAM/BAM output remains intentionally unshifted (shifting would require coordinated edits to `POS`, `MPOS`, `TLEN`, `CIGAR`, `NM`, `MD`).
 - **`--temp-dir DIR`** for custom temporary directory (helpful in Docker/container environments).
 
-### Reliability and tooling additions
+### Reliability and tooling
 
 - **Low-memory spillover (rewritten architecture)**. Per-thread overflow writers feeding a *k*-way merge on read-back **replace** the prior shared-buffer + atomic-write design. Supports the full cross-product of `--low-mem` with `--atac-fragments`, BAM output, `--macs3-frag-low-mem`, and Y-filtering modes; production-scale runs (≳10⁹ reads) handled cleanly. A pre-existing race condition in the legacy spillover that produced silent read drops at ~1/10⁴ on typical datasets and intermittent hangs at production scale is resolved as a side effect of the rewrite. The legacy temp-file system is available via `LEGACY_OVERFLOW=1` at compile time (single-threaded only). See [`HISTORY.md`](HISTORY.md) for file references and validation history.
 - **Concurrency coordination across new collaborators**. Worker threads coordinate with the native BAM writer, STAR Suite's permit allocator (when embedded), and libMACS3 peak-call paths under the existing OpenMP scheduler. The smoke matrix exercises all combinations of low-mem / BAM / peak-call / Y-filter modes.
-- **Regression suite (C01–C11)**. An 11-area parity matrix covering the main user-visible surfaces: index build, paired BED output, ChIP and ATAC presets, scATAC barcode handling, sorted BAM and index, low-memory BED parity, ATAC BAM + fragments, libMACS3 narrow peak calling, Hi-C pairs, and Y/noY split. Three tiers: **S0** hermetic synthetic for pre-commit smoke; **S1** ENCODE downsample for real-assay confidence (paired ENCODE accessions and downsample manifests committed; FASTQs cached out-of-tree); **S2** the existing 100K and paper-fixture tier reserved for heavier gates. Upstream Chromap had no comparable regression suite. The S0 tier is mandatory for pre-commit checks; S1 and S2 are opt-in.
+- **Regression suite (C01–C11)**. An 11-area parity matrix covering the main user-visible surfaces: index build, paired BED output, ChIP and ATAC presets, scATAC barcode handling, sorted BAM and index, low-memory BED parity, ATAC BAM + fragments, libMACS3 narrow peak calling, Hi-C pairs, and Y/noY split. Three tiers: **S0** hermetic synthetic for pre-commit smoke; **S1** ENCODE downsample for real-assay confidence (paired ENCODE accessions and downsample manifests committed; FASTQs cached out-of-tree); **S2** the 100K and paper-fixture tier reserved for heavier gates. The S0 tier is mandatory for pre-commit checks; S1 and S2 are opt-in.
 - **MCP server + Launchpad** (`mcp_server/`). Schema-driven workflow renderer for agents plus a browser recipe UI for humans. Both surfaces consume the same parameterised YAML recipe registry (`mcp_server/recipes/registry.yaml`). The MCP face exposes recipes to agents as schema-validated tool calls; the Launchpad face renders the same recipes as web forms. See the [Chromap Launchpad](#chromap-launchpad-recipe-builder) section below.
 
-### ATAC-multiomic additions
+### ATAC-multiomic
 
 - **ATAC fragment sidecar** (AEV1 format). Compact binary file emitted alongside the BAM and fragments TSV: a 32-byte header followed by 24-byte fragment records keyed by 16-byte barcode, with a `(size − 32) / 24 == record-count` parity check. Lets STAR Suite's `libscrna` empty-cells function call cells without re-parsing the gzipped fragments TSV. On the 3K PBMC headline run the sidecar contains 53,969,811 records (md5 `a4251bbc…`). See [`include/atac_fragment_sidecar.h`](include/atac_fragment_sidecar.h).
 - **Multiomic integration with STAR Suite**. `libchromap.a` runs as a STAR Suite worker thread for concurrent ATAC + GEX processing in a single `STAR` invocation. STAR Suite's permit allocator partitions a shared thread budget across GEX mapping, feature processing, and ATAC mapping by observing per-domain drain rates and rebalancing toward simultaneous completion. End-to-end on 3K PBMC: 18:17 / 64.8 GB / 2.19× faster than Cell Ranger ARC v2.2.0. See [STAR Suite](https://github.com/morphic-bio/STAR-suite) for the integration entry point.
@@ -36,7 +36,7 @@ The full set of additions is organised by scope, mirroring Table 2 of the [Chrom
 ## Folder Structure
 
 ```
-src/                  # Chromap and libchromap C++ sources
+src/                  # Chromap Suite C++ sources (chromap CLI + libchromap)
 include/              # Public headers (libchromap_contract.h, atac_fragment_sidecar.h)
 lib/                  # Built static libraries (libchromap.a)
 bin/                  # CLI binaries (chromap, chromap_callpeaks)
@@ -55,8 +55,8 @@ scripts/              # Helper scripts (validators, launchpad runner, ...)
 
 ## Modules
 
-- **chromap** (`src/`, `bin/chromap`) — the CLI binary covering bulk ATAC, scATAC, ChIP-seq, and Hi-C. Inherits all of upstream Chromap's flags; adds the BAM, sort, peak-call, sidecar, and Y-filtering surfaces above. Build: `make`.
-- **libchromap** (`lib/libchromap.a`, `include/libchromap_contract.h`) — the same code retargeted as a callable C++ library. The `RunAtacMapping()` entry point + `ChromapAtacConfig` + `ChromapPermitHooks` structs let a host process embed Chromap directly with shared thread coordination. Build: produced as a side effect of `make`.
+- **chromap** (`src/`, `bin/chromap`) — the CLI binary covering bulk ATAC, scATAC, ChIP-seq, and Hi-C. Supports the standard ATAC, ChIP, scATAC, and Hi-C flag surfaces, plus the Chromap Suite additions above (BAM, sort, peak-call, sidecar, Y-filtering). Build: `make`.
+- **libchromap** (`lib/libchromap.a`, `include/libchromap_contract.h`) — the same code as a callable C++ library. The `RunAtacMapping()` entry point + `ChromapAtacConfig` + `ChromapPermitHooks` structs let a host process embed Chromap Suite's ATAC pipeline directly with shared thread coordination. Build: produced as a side effect of `make`.
 - **libMACS3** (`third_party/libMACS3/lib/libmacs3.a`) — vendored submodule providing a portable C++ implementation of MACS3's narrow peak-calling capability. Standalone CLI `macs3frag` reads a fragments TSV and produces byte-identical narrowPeak. Build: `make libmacs3` (or transitively via `make`). See [the libMACS3 repo](https://github.com/morphic-bio/libMACS3).
 - **chromap_callpeaks** (`bin/chromap_callpeaks`) — alias for libMACS3's `macs3frag` binary, kept for harness compatibility. Reads standard fragments files and produces narrowPeak; **7.8× faster** than Cython MACS3 single-threaded, **10.3× faster at 4 threads**.
 - **MCP server + Launchpad** (`mcp_server/`) — agent automation service plus browser recipe UI. Initial recipes: `chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_fragments`, `chromap_hic_pairs`. See [`mcp_server/README.md`](mcp_server/README.md).
@@ -306,13 +306,13 @@ Initial public recipes: `chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_f
 
 ## Citing
 
-If you use Chromap Suite, please cite the preprint above plus the upstream tools:
+If you use Chromap Suite, please cite the preprint above plus the Chromap and MACS3 papers it builds on:
 
 > Zhang, H., Song, L., Wang, X., Cheng, H., Wang, C., Meyer, C. A., …, Liu, X. S., Li, H. (2021). Fast alignment and preprocessing of chromatin profiles with Chromap. *Nature Communications*, 12(1), 1-6. https://doi.org/10.1038/s41467-021-26865-w
 
 > Zhang, Y., Liu, T., Meyer, C. A., Eeckhoute, J., Johnson, D. S., Bernstein, B. E., Nusbaum, C., Myers, R. M., Brown, M., Li, W., Liu, X. S. (2008). Model-based Analysis of ChIP-Seq (MACS). *Genome Biology*, 9, R137. https://doi.org/10.1186/gb-2008-9-9-r137
 
-The original Chromap QC summary file format is described in:
+The Chromap QC summary file format (carried forward unchanged in Chromap Suite) is described in:
 
 > Ahmed, O., Zhang, H., Langmead, B., Song, L. (2025). Quality control of single-cell ATAC-seq data without peak calling using Chromap. *bioRxiv*. https://doi.org/10.1101/2025.07.15.664951
 
@@ -322,6 +322,6 @@ Chromap Suite extensions copyright Ling-Hong Hung. Preprint co-authors: Ling-Hon
 
 ## Licence
 
-- `libchromap` (and the `chromap` CLI): MIT, inherited from upstream Chromap.
-- `libMACS3`: BSD-3, inherited from MACS3 (a single source-inspected adaptation for summit edge cases necessitates BSD-3 distribution; see [the libMACS3 repo](https://github.com/morphic-bio/libMACS3) for the methodology).
+- `libchromap` and the `chromap` CLI: MIT (see [LICENSE](LICENSE)).
+- `libMACS3`: BSD-3 — a single source-inspected adaptation for summit edge cases necessitates BSD-3 distribution; see [the libMACS3 repo](https://github.com/morphic-bio/libMACS3) for the methodology.
 - MCP server + Launchpad (`mcp_server/`): MIT.
