@@ -4,7 +4,8 @@
 
 Start with these local docs before making broad changes:
 
-- `README.md`: user-facing Chromap usage, fork notes, and common commands.
+- `README.md`: user-facing Chromap Suite usage, project history, and common commands.
+- `HISTORY.md`: project lineage (spinoff from `haowenz/chromap` in 2026) and pre-spinoff fork notes.
 - `docs/index.md`: documentation entry point.
 - `docs/chromap.html`: generated/manpage-style CLI option reference.
 - `docs/chromap_launchpad.md`: MCP-backed Launchpad usage.
