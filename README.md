@@ -63,7 +63,11 @@ scripts/              # Helper scripts (validators, launchpad runner, ...)
 
 ## Benchmarks
 
-All benchmarks below run on a 32-thread host (i9-13900KF, 126 GB RAM) on the public 10x 3K PBMC Multiome dataset.
+Benchmarks below use public 10x PBMC 3K Multiome data unless noted. The STAR
+Suite headline run uses a 32-thread host (i9-13900KF, 126 GB RAM). The Chromap
+CLI parity benchmark uses 16 Chromap threads and 16 samtools threads, records
+`/usr/bin/time -v` for every step, and is intended to isolate the integrated
+Chromap Suite command from the established Chromap + samtools + MACS3 workflow.
 
 | Workflow | Surface | Baseline | Result | Note |
 |---|---|---|---|---|
@@ -73,6 +77,53 @@ All benchmarks below run on a 32-thread host (i9-13900KF, 126 GB RAM) on the pub
 | ATAC fragment sidecar | AEV1 binary, 32-byte header + 24-byte records | gzipped fragments TSV re-parse | 53,969,811 records, 1,295,275,496 B (md5 `a4251bbc…`) | Consumed by `libscrna::atac::RunAtacEvidenceFromBinary` for ATAC cell calling; integration guard fires when `atacAcquire=0` after `--chromapAtacEnable 1 --dynamicThreadInterface 1`. |
 
 The end-to-end multiomic comparison anchors on a fully public dataset for direct reproducibility.
+
+### Chromap CLI + libMACS3 parity benchmark
+
+This benchmark compares the integrated Chromap Suite command against the
+established command-chain baseline:
+
+```sh
+# Baseline BAM path
+chromap ... --SAM -o /dev/stdout | samtools view -b - | samtools sort -o possorted.bam -
+samtools index possorted.bam
+
+# Baseline peak path
+chromap ... --BED -o fragments.tsv
+macs3 callpeak -t fragments.tsv -f FRAG -g hs -p 1e-5 --min-length 200 --max-gap 30
+
+# Integrated path
+chromap ... --BAM --sort-bam --write-index \
+  --atac-fragments fragments.tsv.gz \
+  --call-macs3-frag-peaks \
+  -o possorted.bam
+```
+
+The baseline uses unfixed upstream Chromap `0.3.3-r519` and standalone MACS3
+v3.0.3. The integrated path uses Chromap Suite `0.3.3-r519`. Both normal and
+`--low-mem` modes were run on the full 3K PBMC ATAC fixture with 16 threads.
+
+| Mode | Integrated wall / RSS | Full baseline wall / peak RSS | Integrated speedup | Fragment parity | Peak parity |
+|---|---:|---:|---:|---|---|
+| normal | **7:34.23 / 101.1 GB** | 23:05.60 / 127.0 GB | **3.05x faster; 67.2% less wall time** | **53,969,811 vs 53,969,811; exact sorted 5-col MD5 match** | **50,274 vs 50,274 peaks; BED3 Jaccard 1.0; all summit distances 0 bp** |
+| `--low-mem` | **8:49.98 / 42.6 GB** | 22:39.71 / 24.2 GB | **2.57x faster; 61.0% less wall time** | **53,969,811 vs 53,969,811; exact sorted 5-col MD5 match** | **50,274 vs 50,274 peaks; BED3 Jaccard 1.0; all summit distances 0 bp** |
+
+The full baseline wall time includes Chromap SAM to sorted BAM, BAM indexing,
+Chromap FRAG output, and standalone MACS3 FRAG peak calling.
+
+BAM record counts differ between the standalone SAM/samtools path and the
+integrated dual-fragment BAM path (`108,066,582` baseline records vs
+`107,939,622` integrated records). This is reported as variation in
+non-biological read-level fields, especially read names and tie-selected
+duplicate representatives. Fragment coordinates, barcode, duplicate count, peak
+geometry, and summit positions are the parity gates, and they match exactly.
+
+Reusable scripts and recorded outputs:
+
+- Full benchmark runner: [`scripts/benchmarks/run_full_publication_benchmark.sh`](scripts/benchmarks/run_full_publication_benchmark.sh)
+- 100K smoke runner: [`scripts/benchmarks/run_100k_publication_smoke.sh`](scripts/benchmarks/run_100k_publication_smoke.sh)
+- Benchmark panel and run note: [`plans/2026-05-06-libmacs3-chromap-atac-benchmark-panel.md`](plans/2026-05-06-libmacs3-chromap-atac-benchmark-panel.md)
+- Full-run summary table: `plans/artifacts/libmacs3_chromap_atac_panel/20260506T_full_pbmc3k_16t/full_pbmc3k/full_summary.tsv`
 
 ## Building & Installing
 
