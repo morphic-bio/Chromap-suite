@@ -104,7 +104,7 @@ make LEGACY_OVERFLOW=1
 # Hermetic S0 smoke matrix (regression cases C01–C11, synthetic fixtures)
 make test-smoke
 
-# Single-component validators (legacy fork-era checks; still useful)
+# Single-component validators (pre-spinoff correctness checks; still useful)
 ./scripts/validate_sam_fix.sh
 ./scripts/validate_low_mem_fix.sh
 ./scripts/test_overflow_basic.sh
