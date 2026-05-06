@@ -1,344 +1,321 @@
-[![GitHub build](https://github.com/haowenz/chromap/actions/workflows/ci.yml/badge.svg)](https://github.com/haowenz/chromap/actions/workflows/ci.yml) [![GitHub license](https://img.shields.io/github/license/haowenz/chromap)](https://github.com/haowenz/chromap/blob/master/LICENSE) [![Conda version](https://img.shields.io/conda/v/bioconda/chromap)](https://anaconda.org/bioconda/chromap) [![Conda platform](https://img.shields.io/conda/pn/bioconda/chromap)](https://anaconda.org/bioconda/chromap) [![Conda download](https://img.shields.io/conda/dn/bioconda/chromap)](https://anaconda.org/bioconda/chromap)
+# Chromap Suite
 
-## <a name="fork"></a>About this fork
+Chromap Suite extends Chromap with native BAM output and coordinate sorting, an in-process C++ narrow peak caller (`libMACS3`) that is byte-identical to MACS3 v3.0.3, an embeddable callable-library API (`libchromap`), and an MCP server with a browser Launchpad — delivering a complete C++ chromatin-accessibility pipeline that produces the MACS3 narrow peaks the field already uses, and that composes with [STAR Suite](https://github.com/morphic-bio/STAR-suite) for an end-to-end multiomic (RNA + ATAC) single-binary pipeline. Bulk ATAC, scATAC, ChIP-seq, and Hi-C continue to work through the same binary; multiomic processing is delivered through libchromap embedded in STAR Suite as a worker thread.
 
-This fork focuses on correctness and robustness improvements, particularly around SAM output and low-memory spill/merge. Highlights:
+On the public 3K PBMC Multiome at 32 threads, the integrated multiomic pipeline (STAR Suite + libchromap + libMACS3) completes in **18:17 / 64.8 GB peak RSS** vs **40:04 / 79.1 GB** for Cell Ranger ARC v2.2.0 (**2.19× faster, ~18% lower memory**), producing **50,274 narrowPeak peaks byte-identical** to MACS3 v3.0.3 (md5 `34f9f991…`). Standalone `libMACS3` runs **7.8× / 10.3× / 11.3× faster** than Cython MACS3 v3.0.3 at 1 / 4 / 24 threads.
 
-- Fixed rare SAM line corruption by emitting each record atomically and using length-safe writes.
-- **New default overflow system**: Thread-local overflow writers with k-way merge for correct, sorted output. The legacy temp file system is available via `LEGACY_OVERFLOW=1` compile flag (single-threaded only).
-- Added `--temp-dir` flag for custom temporary directory location (useful for Docker environments).
-- Added `--Tn5-shift-mode {classical|symmetric}` to pick the Tn5 cut-site offset convention on BED/BEDPE/PAF output. `classical` (`+4 / -5`; Buenrostro 2013 / Cell Ranger ARC) is the default when only `--Tn5-shift` is passed; `symmetric` (`+4 / -4`; ChromBPNet) is the alternative. SAM/BAM output remains intentionally unshifted.
+Agent quickstart: see [`AGENTS.md`](AGENTS.md) for repo-specific guardrails, tests, and recent changes.
 
-Quick links:
-- Detailed fork notes: see [FORK.md](FORK.md)
-- Changes by release: see [CHANGELOG.md](CHANGELOG.md)
+## Core Additions over Chromap
 
-Validation scripts:
-- SAM writer check: `./scripts/validate_sam_fix.sh`
-- Low-memory path check: `./scripts/validate_low_mem_fix.sh`
-- Overflow system check: `./scripts/test_overflow_basic.sh`
+The full set of additions is organised by scope, mirroring Table 2 of the [Chromap Suite preprint](https://github.com/morphic-bio/chromap_suite_paper):
 
-Notes for users (bioinformatics level):
-- New optional flag: `--Tn5-shift-mode {classical|symmetric}` — pick the Tn5 cut-site offset convention when shifting fragments.
-  - `classical` = `+4 / -5` (Buenrostro 2013; Cell Ranger ARC / Cell Ranger ATAC default). Equivalent to the legacy `--Tn5-shift` flag.
-  - `symmetric` = `+4 / -4` (ChromBPNet convention). On paired-end BED output every fragment end shifts by exactly `+1` vs classical.
-  - Implies `--Tn5-shift`. The active offsets are now echoed at startup, e.g. `Perform Tn5 shift (offsets: +4 / -5).`
-  - Only affects BED/BEDPE/PAF output; SAM/BAM path is intentionally unshifted (same as before) because shifting would require coordinated edits to `POS`, `MPOS/PNEXT`, `TLEN`, `CIGAR`, `NM`, `MD`.
-- New optional flag: `--temp-dir DIR` to specify custom temporary directory (helpful for Docker/container environments).
-- The new overflow system with k-way merge is now the **default**. No compile flags needed.
-- To use the legacy temp file system: compile with `LEGACY_OVERFLOW=1` and use `-t 1` (single thread only, as legacy path is not thread-safe).
-- All existing commands and presets continue to work unchanged.
-- Recommended integrity checks for SAM output:
-  - `awk 'BEGIN{FS="\t"} !/^@/ && NF<11{bad++} END{exit bad!=0}' output.sam`
-  - `samtools view -S output.sam > /dev/null`
+### Core additions
 
+- **Native BAM output + coordinate sort** (`--BAM --sort-bam --write-index`). Replaces the conventional `chromap | samtools sort | samtools index` chain via htslib + a *k*-way disk-merge spillover. Produces `@HD VN:1.6 SO:coordinate` headers and `.bam.bai` indexes in one process. Sort key: `(tid, pos, flag, mtid, mpos, isize)` with `read_id` tie-break (note: differs from `samtools sort` QNAME tie-break). See [`docs/sort_spec.md`](docs/sort_spec.md). Compatible with `--low-mem`.
+- **In-process libMACS3 narrow peak calling** (`--call-macs3-frag-peaks`). Fragments are handed to `libMACS3` through the `FragmentIterator` API without an intermediate `fragments.tsv.gz` write, so a single chromap invocation produces sorted-and-indexed BAM, fragments, and MACS3-equivalent narrowPeak and summit outputs. Bulk ATAC supported via `--macs3-frag-peaks-source memory` (no barcode required); scATAC/multiomic via barcoded fragments. Output is byte-identical to standalone MACS3 v3.0.3 (50,274 peaks, md5 `34f9f991…` on the 3K PBMC ATAC channel).
+- **Y-chromosome filtering** (`--emit-Y-bam`, `--emit-noY-bam`, `--emit-Y-noY-fastq`, `--emit-Y-read-names`). Three-stream output (all / Y-only / noY) for sex-aware analyses. Works with `--sort-bam`. Detection is case-insensitive and matches `Y`, `chrY`, `CHR_Y`, `chr_y`; decoy/random/alt contigs (`chrY_random`, etc.) are intentionally excluded. See the [Y-chromosome filtering](#y-chromosome-filtering) section below.
+- **`libchromap.a` callable library**. The full Chromap pipeline is exposed through the `libchromap_contract` API (`RunAtacMapping()`, `ChromapAtacConfig`, `ChromapPermitHooks`). The same library backs the `chromap` CLI binary unchanged and is the integration point used by STAR Suite for multiomic processing. See [`include/libchromap_contract.h`](include/libchromap_contract.h) and [`src/libchromap.cc`](src/libchromap.cc).
+- **`--Tn5-shift-mode {classical|symmetric}`** picks the Tn5 cut-site offset convention on BED/BEDPE/PAF. `classical` (`+4 / -5`; Buenrostro 2013 / Cell Ranger ARC) is the default; `symmetric` (`+4 / -4`; ChromBPNet) is the alternative. Implies `--Tn5-shift`. Active offsets are echoed at startup. SAM/BAM output remains intentionally unshifted (shifting would require coordinated edits to `POS`, `MPOS`, `TLEN`, `CIGAR`, `NM`, `MD`).
+- **`--temp-dir DIR`** for custom temporary directory (helpful in Docker/container environments).
 
-## <a name="started"></a>Getting Started
-```sh
-git clone https://github.com/haowenz/chromap.git
-cd chromap && make
-# create an index first and then map
-./chromap -i -r test/ref.fa -o ref.index
-./chromap -x ref.index -r test/ref.fa -1 test/read1.fq -2 test/read2.fq -o test.bed
-# use presets (no test data)
-./chromap --preset atac -x index -r ref.fa -1 read1.fq -2 read2.fq -o aln.bed       # ATAC-seq reads
-./chromap --preset atac -x index -r ref.fa -1 read1.fq -2 read2.fq -o aln.bed \
- -b barcode.fq.gz --barcode-whitelist whitelist.txt                                       # scATAC-seq reads
-./chromap --preset chip -x index -r ref.fa -1 read1.fq -2 read2.fq -o aln.bed       # ChIP-seq reads
-./chromap --preset hic -x index -r ref.fa -1 read1.fq -2 read2.fq -o aln.pairs      # Hi-C reads and pairs output
-./chromap --preset hic -x index -r ref.fa -1 read1.fq -2 read2.fq --SAM -o aln.sam  # Hi-C reads and SAM output
-# Use custom temp directory (useful for Docker/containers)
-./chromap --preset atac -x index -r ref.fa -1 read1.fq -2 read2.fq -o aln.bed --temp-dir /custom/temp
+### Reliability and tooling additions
+
+- **Low-memory spillover (rewritten architecture)**. Per-thread overflow writers feeding a *k*-way merge on read-back **replace** the prior shared-buffer + atomic-write design. Supports the full cross-product of `--low-mem` with `--atac-fragments`, BAM output, `--macs3-frag-low-mem`, and Y-filtering modes; production-scale runs (≳10⁹ reads) handled cleanly. A pre-existing race condition in the legacy spillover that produced silent read drops at ~1/10⁴ on typical datasets and intermittent hangs at production scale is resolved as a side effect of the rewrite. The legacy temp-file system is available via `LEGACY_OVERFLOW=1` at compile time (single-threaded only). See [`FORK.md`](FORK.md) for file references and validation history.
+- **Concurrency coordination across new collaborators**. Worker threads coordinate with the native BAM writer, STAR Suite's permit allocator (when embedded), and libMACS3 peak-call paths under the existing OpenMP scheduler. The smoke matrix exercises all combinations of low-mem / BAM / peak-call / Y-filter modes.
+- **Regression suite (C01–C11)**. An 11-area parity matrix covering the main user-visible surfaces: index build, paired BED output, ChIP and ATAC presets, scATAC barcode handling, sorted BAM and index, low-memory BED parity, ATAC BAM + fragments, libMACS3 narrow peak calling, Hi-C pairs, and Y/noY split. Three tiers: **S0** hermetic synthetic for pre-commit smoke; **S1** ENCODE downsample for real-assay confidence (paired ENCODE accessions and downsample manifests committed; FASTQs cached out-of-tree); **S2** the existing 100K and paper-fixture tier reserved for heavier gates. Upstream Chromap had no comparable regression suite. The S0 tier is mandatory for pre-commit checks; S1 and S2 are opt-in.
+- **MCP server + Launchpad** (`mcp_server/`). Schema-driven workflow renderer for agents plus a browser recipe UI for humans. Both surfaces consume the same parameterised YAML recipe registry (`mcp_server/recipes/registry.yaml`). The MCP face exposes recipes to agents as schema-validated tool calls; the Launchpad face renders the same recipes as web forms. See the [Chromap Launchpad](#chromap-launchpad-recipe-builder) section below.
+
+### ATAC-multiomic additions
+
+- **ATAC fragment sidecar** (AEV1 format). Compact binary file emitted alongside the BAM and fragments TSV: a 32-byte header followed by 24-byte fragment records keyed by 16-byte barcode, with a `(size − 32) / 24 == record-count` parity check. Lets STAR Suite's `libscrna` empty-cells function call cells without re-parsing the gzipped fragments TSV. On the 3K PBMC headline run the sidecar contains 53,969,811 records (md5 `a4251bbc…`). See [`include/atac_fragment_sidecar.h`](include/atac_fragment_sidecar.h).
+- **Multiomic integration with STAR Suite**. `libchromap.a` runs as a STAR Suite worker thread for concurrent ATAC + GEX processing in a single `STAR` invocation. STAR Suite's permit allocator partitions a shared thread budget across GEX mapping, feature processing, and ATAC mapping by observing per-domain drain rates and rebalancing toward simultaneous completion. End-to-end on 3K PBMC: 18:17 / 64.8 GB / 2.19× faster than Cell Ranger ARC v2.2.0. See [STAR Suite](https://github.com/morphic-bio/STAR-suite) for the integration entry point.
+
+## Folder Structure
+
+```
+src/                  # Chromap and libchromap C++ sources
+include/              # Public headers (libchromap_contract.h, atac_fragment_sidecar.h)
+lib/                  # Built static libraries (libchromap.a)
+bin/                  # CLI binaries (chromap, chromap_callpeaks)
+third_party/
+  htslib/             # Vendored htslib (BAM read/write/sort/index)
+  libMACS3/           # Vendored libMACS3 submodule (narrow peak caller)
+mcp_server/           # MCP server + Launchpad UI
+  recipes/            # YAML recipe registry consumed by both MCP and Launchpad
+  workflows/          # Workflow schemas
+  launchpad/          # Browser UI (api.py + static assets)
+tests/                # Regression matrix C01–C11, smoke harnesses
+plans/                # Design notes and runbooks
+docs/                 # User-facing docs (sort_spec, chromap_launchpad, ...)
+scripts/              # Helper scripts (validators, launchpad runner, ...)
 ```
 
-### Chromap Launchpad
+## Modules
 
-This fork includes a Stage 1 MCP-backed browser Launchpad for rendering common
-Chromap commands from typed workflow schemas:
+- **chromap** (`src/`, `bin/chromap`) — the CLI binary covering bulk ATAC, scATAC, ChIP-seq, and Hi-C. Inherits all of upstream Chromap's flags; adds the BAM, sort, peak-call, sidecar, and Y-filtering surfaces above. Build: `make`.
+- **libchromap** (`lib/libchromap.a`, `include/libchromap_contract.h`) — the same code retargeted as a callable C++ library. The `RunAtacMapping()` entry point + `ChromapAtacConfig` + `ChromapPermitHooks` structs let a host process embed Chromap directly with shared thread coordination. Build: produced as a side effect of `make`.
+- **libMACS3** (`third_party/libMACS3/lib/libmacs3.a`) — vendored submodule providing a portable C++ implementation of MACS3's narrow peak-calling capability. Standalone CLI `macs3frag` reads a fragments TSV and produces byte-identical narrowPeak. Build: `make libmacs3` (or transitively via `make`). See [the libMACS3 repo](https://github.com/morphic-bio/libMACS3).
+- **chromap_callpeaks** (`bin/chromap_callpeaks`) — alias for libMACS3's `macs3frag` binary, kept for harness compatibility. Reads standard fragments files and produces narrowPeak; **7.8× faster** than Cython MACS3 single-threaded, **10.3× faster at 4 threads**.
+- **MCP server + Launchpad** (`mcp_server/`) — agent automation service plus browser recipe UI. Initial recipes: `chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_fragments`, `chromap_hic_pairs`. See [`mcp_server/README.md`](mcp_server/README.md).
+
+## Benchmarks
+
+All benchmarks below run on a 32-thread host (i9-13900KF, 126 GB RAM) on the public 10x 3K PBMC Multiome dataset.
+
+| Workflow | Surface | Baseline | Result | Note |
+|---|---|---|---|---|
+| Multiome (RNA + ATAC) | Single `STAR` invocation: alignment + Solo + GEX `EmptyDrops_CR` + concurrent libchromap + libMACS3 narrow peaks + ATAC `evidence-from-peaks` (T=32, lease=256, pool=48) | Cell Ranger ARC v2.2.0 (`cellranger-arc count --create-bam=true --nosecondary --disable-cell-annotation --localcores=32`); **40:04 / 79.07 GB peak RSS** | **18:17.52 / 64.80 GB; 2.19× faster, ~18% lower memory** | Apples-to-apples scope: alignment + GEX UMI counting + GEX `EmptyDrops_CR` + ATAC mapping + narrow peak calling + ATAC per-barcode cell call. ARC RSS read from cellranger's own `_perf` JSON (ARC forks 252 child processes at peak, so parent-process `/usr/bin/time -v` is misleading). |
+| Narrow peaks vs MACS3 | Same multiomic pipeline output | MACS3 v3.0.3 standalone on the same input | **50,274 peaks, byte-identical** (md5 `34f9f991…`); summits also byte-identical (md5 `b54a556…`) | The pipeline delivers the MACS3 narrow peaks downstream ATAC analyses already use; ARC produces 81,157 peaks via its own custom wide caller, which is not a parameterisation of MACS. |
+| libMACS3 standalone | Fragments TSV in → narrowPeak out | MACS3 v3.0.3 single-threaded (721 s, 2.50 GB) | **92 s / 2.77 GB at 1 thread (7.8×)**; **70 s at 4 threads (10.3×)**; 64 s at 24 threads (11.3×) | All thread counts produce byte-identical narrowPeak. Memory parity at the practical 4-thread budget; sublinear scaling beyond 4 threads because the per-chromosome serial sweep dominates the remaining wall time. |
+| ATAC fragment sidecar | AEV1 binary, 32-byte header + 24-byte records | gzipped fragments TSV re-parse | 53,969,811 records, 1,295,275,496 B (md5 `a4251bbc…`) | Consumed by `libscrna::atac::RunAtacEvidenceFromBinary` for ATAC cell calling; integration guard fires when `atacAcquire=0` after `--chromapAtacEnable 1 --dynamicThreadInterface 1`. |
+
+The end-to-end multiomic comparison anchors on a fully public dataset for direct reproducibility.
+
+## Building & Installing
+
+### From source
 
 ```sh
-bash scripts/launchpad_server.sh up
+# Initialise submodules (htslib + libMACS3)
+git submodule update --init --recursive
+
+# Build chromap CLI + libchromap.a + chromap_callpeaks (libMACS3 standalone)
+make
 ```
 
-Open `http://127.0.0.1:8765/launchpad/`. The initial public recipes are
-`chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_fragments`, and
-`chromap_hic_pairs`. See [docs/chromap_launchpad.md](docs/chromap_launchpad.md)
-and [mcp_server/README.md](mcp_server/README.md).
+Requirements: GCC ≥ 7.3.0, GNU make, OpenMP, zlib, htslib build dependencies (libcurl, libcrypto, libbz2, liblzma, libdeflate). The vendored htslib submodule is built from source as part of `make` so no system htslib is required.
 
-## Table of Contents
+Compile-time switches:
 
-- [Getting Started](#started)
-- [User Guide](#uguide)
-  - [Installation](#install)
-  - [General usage](#general)
-  - [Use cases](#cases)
-    - [Map ChIP-seq short reads](#map-chip)
-    - [Map ATAC-seq/scATAC-seq short reads](#map-atac)
-    - [Map Hi-C short reads](#map-hic)
-  - [Summarizing mapping statistics/quality control](#atacseq-qc)
-    - [Summary File](#summaryfile)
-    - [Estimating FRiP](#estfrip)
-    - [Features to assist in doublet detection](#doublet)
-  - [Getting help](#help)
-  - [Citing Chromap](#cite)
-
-## <a name="uguide"></a>User Guide
-
-Chromap is an ultrafast method for aligning and preprocessing high throughput chromatin profiles. Typical use cases include: (1) trimming sequencing adapters, mapping bulk ATAC-seq or ChIP-seq genomic reads to the human genome and removing duplicates; (2) trimming sequencing adapters, mapping single cell ATAC-seq genomic reads to the human genome, correcting barcodes, removing duplicates and performing Tn5 shift; (3) split alignment of Hi-C reads against a reference genome. In all these three cases, Chromap is 10-20 times faster while being accurate.
-
-### <a name="install"></a>Installation
-
-To compile from the source, you need to have the GCC compiler with version>=7.3.0, GNU make and zlib development files installed. Then type `make` in the source code directory to compile. 
-
-Chromap is also available on [bioconda][bioconda]. Thus you can easily install Chromap with Conda
 ```sh
-conda install -c bioconda -c conda-forge chromap
+# Address sanitizer
+make asan=1
+
+# Use the legacy single-threaded overflow path instead of the k-way merge default
+make LEGACY_OVERFLOW=1
 ```
 
-### <a name="general"></a>General usage
-Before mapping, an index of the reference needs to be created and saved on the disk:
-```sh
-chromap -i -r ref.fa -o index
-```
-The users can input the min fragment length expected in their sequencing experiments, e.g. read length, by **--min-frag-length**. Then Chromap will choose proper k-mer length and window size to build the index. For human genome, it only takes a few minutes to build the index. Without any preset parameters, Chromap takes a reference database and a query sequence file as input and produce approximate mapping, without base-level alignment in the [BED format][bed]:
+### Validation
 
 ```sh
-chromap -x index -r ref.fa -1 query.fq -o approx-mapping.bed
-```
-You may ask Chromap to output alignments in the [SAM format][sam]:
+# Hermetic S0 smoke matrix (regression cases C01–C11, synthetic fixtures)
+make test-smoke
 
-```sh
-chromap -x index -r ref.fa -1 query.fq --SAM -o alignment.sam
-```
-But note that the the processing of SAM files is not fully optimized and can be slow. Thus generating the output in SAM format is not preferred and should be avoided when possible.
-
-#### Coordinate Sorting
-
-Chromap supports coordinate sorting for BAM/CRAM output using the `--sort-bam` flag:
-
-```sh
-# Generate coordinate-sorted BAM with index
-chromap --BAM --sort-bam --write-index -x index -r ref.fa -1 reads.fq -o output.bam
-
-# Limit sorting memory to 512MB
-chromap --BAM --sort-bam --sort-bam-ram 512M -x index -r ref.fa -1 reads.fq -o output.bam
+# Single-component validators (legacy fork-era checks; still useful)
+./scripts/validate_sam_fix.sh
+./scripts/validate_low_mem_fix.sh
+./scripts/test_overflow_basic.sh
 ```
 
-When `--sort-bam` is enabled:
-- Output header includes `@HD VN:1.6 SO:coordinate`
-- Sort key: `(tid, pos, flag, mtid, mpos, isize)` with `read_id` tie-break
-- **Note**: Ordering differs from `samtools sort` (which uses QNAME tie-break)
-- Compatible with `--low-mem` mode
+## Sample Commands
 
-**Important**: `--write-index` requires `--sort-bam`. Index generation only works with coordinate-sorted output. Without `--sort-bam`, htslib's on-the-fly indexing produces invalid/empty index files because records are written in non-deterministic order from multithreaded mapping. Index files are created as `.bam.bai` (BAI format) for BAM and `.cram.crai` for CRAM.
-
-For deterministic output across runs, use `--hts-threads 1`:
+### Index build
 
 ```sh
-chromap --BAM --sort-bam -t 1 --hts-threads 1 -x index -r ref.fa -1 reads.fq -o output.bam
+chromap -i -r ref.fa -o ref.index
 ```
 
-See [docs/sort_spec.md](docs/sort_spec.md) for detailed sorting specification.
-
-#### Y-Chromosome Filtering
-
-Chromap can split output into Y-chromosome and non-Y-chromosome streams, useful for sex-aware analysis or removing Y chromosome bias:
+### Bulk ATAC (BED + inline narrow peaks, no barcode)
 
 ```sh
-# Generate main BAM plus Y-only and noY BAMs (all coordinate-sorted with indexes)
+chromap --preset atac \
+  -x ref.index -r ref.fa \
+  -1 read1.fq.gz -2 read2.fq.gz \
+  -o aln.bed \
+  --call-macs3-frag-peaks \
+  --macs3-frag-peaks-source memory
+```
+
+`--macs3-frag-peaks-source memory` is required for the bulk path because the file-source loader expects a 5-col fragments TSV (duplicate count in column 5), but bulk BED output puts MAPQ in column 5.
+
+### scATAC (BED + inline narrow peaks, barcoded)
+
+```sh
+chromap --preset atac \
+  -x ref.index -r ref.fa \
+  -1 read1.fq.gz -2 read2.fq.gz \
+  -b barcode.fq.gz --barcode-whitelist whitelist.txt \
+  -o aln.bed \
+  --call-macs3-frag-peaks
+```
+
+### scATAC (BAM dual + fragments TSV + sidecar + inline peaks)
+
+```sh
+chromap --preset atac \
+  -x ref.index -r ref.fa \
+  -1 read1.fq.gz -2 read2.fq.gz \
+  -b barcode.fq.gz --barcode-whitelist whitelist.txt \
+  --BAM --sort-bam --write-index \
+  --atac-fragments fragments.tsv.gz \
+  --call-macs3-frag-peaks \
+  -o aln.bam
+```
+
+### ChIP-seq
+
+```sh
+chromap --preset chip \
+  -x ref.index -r ref.fa \
+  -1 read1.fq.gz -2 read2.fq.gz \
+  -o aln.bed
+```
+
+### Hi-C (pairs format)
+
+```sh
+chromap --preset hic \
+  -x ref.index -r ref.fa \
+  -1 read1.fa -2 read2.fa \
+  -o aln.pairs
+```
+
+### Multiomic (RNA + ATAC) via STAR Suite
+
+The multiomic integration is invoked through STAR Suite (libchromap is embedded as a worker thread). See the [STAR Suite README — Multiome ATAC row](https://github.com/morphic-bio/STAR-suite#benchmarks) for the full command.
+
+### Coordinate-sorted BAM standalone
+
+```sh
+chromap --BAM --sort-bam --write-index \
+  -x ref.index -r ref.fa \
+  -1 reads.fq -o output.bam
+
+# Cap sort RAM
+chromap --BAM --sort-bam --sort-bam-ram 512M \
+  -x ref.index -r ref.fa -1 reads.fq -o output.bam
+
+# Deterministic single-thread output across runs
+chromap --BAM --sort-bam -t 1 --hts-threads 1 \
+  -x ref.index -r ref.fa -1 reads.fq -o output.bam
+```
+
+`--write-index` requires `--sort-bam`. Without coordinate sorting, htslib on-the-fly indexing produces invalid/empty index files because records are written in non-deterministic order from multithreaded mapping. See [`docs/sort_spec.md`](docs/sort_spec.md).
+
+### Y-chromosome filtering
+
+```sh
 chromap --BAM --sort-bam --write-index \
   --emit-Y-bam --emit-noY-bam \
-  -x index -r ref.fa -1 reads_R1.fq -2 reads_R2.fq -o output.bam
+  -x ref.index -r ref.fa -1 reads_R1.fq -2 reads_R2.fq -o output.bam
 ```
 
-This produces:
+Produces:
+
 | File | Contents |
-|------|----------|
+|---|---|
 | `output.bam` | All reads, coordinate-sorted |
 | `output.bam.bai` | Index for main BAM |
 | `output.noY.bam` | Non-Y reads only, coordinate-sorted |
 | `output.Y.bam` | Y-chromosome reads only, coordinate-sorted |
 
-Y-chromosome detection is case-insensitive and matches: `Y`, `chrY`, `CHR_Y`, `chr_y`. Decoy/random/alt contigs (e.g., `chrY_random`) are intentionally excluded.
+Y-chromosome detection is case-insensitive and matches: `Y`, `chrY`, `CHR_Y`, `chr_y`. Decoy/random/alt contigs (`chrY_random`, `Y_alt`, `chrY_hap1`) are intentionally excluded.
 
-**Note**: `--emit-Y-bam` and `--emit-noY-bam` work with `--sort-bam` as of the latest version. Earlier versions had a bug where Y/noY streams were empty when sorting was enabled.
-
-#### Y Read Names + Y/noY FASTQ Emission
-
-Chromap can emit a normalized list of read names that align to Y, and can split input FASTQ/FASTA reads into Y and noY streams during mapping:
+To emit a normalised list of read names that hit Y, plus split FASTQ output:
 
 ```sh
-# Emit Y read names and Y/noY FASTQ (uncompressed)
 chromap --SAM --emit-Y-read-names --emit-Y-noY-fastq \
   --emit-Y-noY-fastq-compression none \
-  -x index -r ref.fa -1 reads_R1.fq -2 reads_R2.fq -o output.sam
+  -x ref.index -r ref.fa -1 reads_R1.fq -2 reads_R2.fq -o output.sam
 ```
 
-Read-name list:
-- Default path: `<output>.Y.names.txt` (e.g., `output.Y.names.txt`)
-- Normalization: strip leading `@`, stop at first whitespace, strip trailing `/1` or `/2`
-- No ordering guarantees
+Read-name list: `<output>.Y.names.txt` by default, normalised (strip leading `@`, stop at first whitespace, strip trailing `/1` or `/2`); no ordering guarantees.
 
-FASTQ/FASTA split:
-- Files are emitted alongside the `-o` output by default
-- If `-o` is stdout, you must provide `--Y-read-names-output` and FASTQ prefixes
-- Naming inserts `_Y` / `_noY` before the last `_R[0-9]+` token if present
-  (e.g., `sample_R1.fastq.gz` → `sample_Y_R1.fastq.gz`)
-- If no `_R[0-9]+` token is present, falls back to
-  `Y_reads.mateN.<ext>(.gz)` / `noY_reads.mateN.<ext>(.gz)`
-- Base extension is preserved from input (`.fastq`/`.fq`/`.fasta`/`.fa`/`.fna`)
-- Compression: `gz` (default) or `none`
-- Paired-end routing: if either mate hits Y, both mates go to Y outputs
-- Multiple input files: `.fN` suffix is appended to avoid collisions
+FASTQ split naming:
+- Inserts `_Y` / `_noY` before the last `_R[0-9]+` token if present (e.g., `sample_R1.fastq.gz` → `sample_Y_R1.fastq.gz`).
+- Falls back to `Y_reads.mateN.<ext>(.gz)` / `noY_reads.mateN.<ext>(.gz)` otherwise.
+- Compression: `gz` (default) or `none`.
+- Paired-end routing: if either mate hits Y, both mates go to Y outputs.
 
-Related flags:
-- `--emit-Y-read-names`
-- `--Y-read-names-output <path>`
-- `--emit-Y-noY-fastq`
-- `--emit-Y-noY-fastq-compression {gz|none}`
-- `--Y-fastq-output-prefix <prefix>`
-- `--noY-fastq-output-prefix <prefix>`
+Related flags: `--emit-Y-read-names`, `--Y-read-names-output`, `--emit-Y-noY-fastq`, `--emit-Y-noY-fastq-compression {gz|none}`, `--Y-fastq-output-prefix`, `--noY-fastq-output-prefix`.
 
-Chromap can take multiple input read files:
+## Chromap Launchpad (Recipe Builder)
+
+Browser-based recipe builder served from the Chromap Suite MCP server. Pick a workflow, fill in parameters through a guided form, and get a validated, copy-pasteable shell command. The same recipes are exposed as MCP tool calls for agents.
+
+### Quick start
 
 ```sh
-chromap -x index -r ref.fa -1 query1.fq,query2.fq,query3.fq --SAM -o alignment.sam
+# Install dependencies (once)
+pip install -r mcp_server/requirements.txt
+
+# Start Launchpad + MCP on one port
+bash scripts/launchpad_server.sh up
+
+# Open in your browser
+# http://127.0.0.1:8765/launchpad/
 ```
-Chromap also supports wildcards in the read file names and will find all matched read files. To use this function, the read file names ***must*** be put in quotation marks:
+
+### MCP endpoints
+
+When the server is running on port `8765`:
+
+- `http://127.0.0.1:8765/launchpad/` — Launchpad UI
+- `http://127.0.0.1:8765/` — MCP streamable-HTTP endpoint
+- `http://127.0.0.1:8765/sse` — MCP SSE endpoint
+
+### MCP client setup
+
+#### VS Code / GitHub Copilot
+
+`.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "chromapSuite": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/"
+    }
+  }
+}
+```
+
+#### Cursor
+
+```json
+{
+  "mcpServers": {
+    "chromap-suite": {
+      "url": "http://127.0.0.1:8765/sse"
+    }
+  }
+}
+```
+
+#### Claude
 
 ```sh
-chromap -x index -r ref.fa -1 "query*.fq" --SAM -o alignment.sam
-```
-Chromap works with gzip'd FASTA and FASTQ formats as input. You don't need to convert between FASTA and FASTQ or decompress gzip'd files first. 
-
-***Importantly***, it should be noted that once you build the index, indexing parameters such as **-k**, **-w** and **--min-frag-length** can't be changed during mapping. If you are running Chromap for different data types, you will probably need to keep multiple indexes generated with different parameters.
-This makes Chromap different from BWA which always uses the same index regardless of query data types. Chromap can build the human genome index file in a few minutes.
-
-Detailed explanations for the options can be found at the [manpage][manpage].
-
-### <a name="cases"></a>Use cases
-
-To support different data types (e.g. ChIP-seq, Hi-C, ATAC-seq), Chromap needs to be tuned for optimal performance and accuracy. It is usually recommended to choose a preset with option **--preset**, which sets multiple parameters at the same time.
-
-#### <a name="map-chip"></a>Map ChIP-seq short reads
-
-```sh
-chromap --preset chip -x index -r ref.fa -1 read1.fq.gz -2 read2.fq.gz -o aln.bed      # ChIP-seq reads
-```
-This set of parameters is tuned for mapping ChIP-seq reads. Chromap will map the paired-end reads with max insert size up to 2000 (**-l 2000**) and then remove duplicates (**--remove-pcr-duplicates**) using the low memory mode (**--low-mem**). The output is in BED format (**--BED**). In the output BED file, each row is a mapping of a fragment (i.e., a read pair) and the columns are
-
-    chrom chrom_start chrom_end N mapq strand
-The strand here is the strand of the first read in a read pair (specified by **-1**). If the mapping start and end locations of each read in a read pair are desired, **--TagAlign** should be used to overide **--BED** in the preset parameters as following
-```sh
-chromap --preset chip -x index -r ref.fa -1 read1.fq.gz -2 read2.fq.gz --TagAlign -o aln.tagAlign      # ChIP-seq reads
-```
-For each read pair, there will be two rows in the output file, one for each read in the pair respectively. The meaning of the columns remains the same.
-
-#### <a name="map-atac"></a>Map ATAC-seq/scATAC-seq short reads
-
-```sh
-chromap --preset atac -x index -r ref.fa -1 read1.fq.gz -2 read2.fq.gz -o aln.bed      # ATAC-seq reads
-chromap --preset atac -x index -r ref.fa -1 read1.fq.gz -2 read2.fq.gz -o aln.bed\
- -b barcode.fq.gz --barcode-whitelist whitelist.txt                                    # scATAC-seq reads
-```
-This set of parameters is tuned for mapping ATAC-seq/scATAC-seq reads. Chromap will trim the adapters on 3' end (**--trim-adapters**), map the paired-end reads with max insert size up to 2000 (**-l 2000**) and then remove duplicates at cell level (**--remove-pcr-duplicates-at-cell-level**). Tn5 shift will also be applied to the fragments (**--Tn5-shift**). The forward mapping start positions are increased by 4bp and the reverse mapping end positions are decreased by 5bp. The processing is run in the low memory mode (**--low-mem**).
-
-If no barcode whitelist file is given, Chromap will skip barcode correction. When barcodes and a whitelist are given as input, by default Chromap will estimate barcode abundance and use this information to perform barcode correction with up to 1 Hamming distance from a whitelist barcode. By setting **--bc-error-threshold** to 2, Chromap is able to correct barcodes with up to 2 Hamming distance from a whitelist barcode. User can also increase the probability threshold to make a correction by setting **--bc-probability-threshold** (set to 0.9 by default) to a large value (e.g., 0.975) to only make reliable corrections. For scATAC-seq data with multiple read and barcode files, you can use "," to concatenate multiple input files as the example [above](#general). 
-
-Chromap also supports user-defined barcode format, including mixed barcode and genomic data case. User can specify the sequence structure through option **--read-format**. The value is a comma-separated string, each field in the string is also a semi-comma-splitted string
-
-    [r1|r2|bc]:start:end:strand
-The start and end are inclusive and -1 means the end of the read. User may use multiple fields to specify non-consecutive segments, e.g. bc:0:15,bc:32:-1. The strand is presented by '+' and '-' symbol, if '-' the barcode will be reverse-complemented after extraction. The strand symbol can be omitted if it is '+' and is ignored on r1 and r2. For example, when the barcode is in the first 16bp of read1, one can use the option `-1 read1.fq.gz -2 read2.fq.gz --barcode read1.fq.gz --read-format bc:0:15,r1:16:-1`.
-
-The output file formats for bulk and single-cell data are different except for the first three columns. For bulk data, the columns are
-
-    chrom chrom_start chrom_end N mapq strand duplicate_count
-For single-cell data, the columns are 
-    
-    chrom chrom_start chrom_end barcode duplicate_count
-the same as the definition of the fragment file in [CellRanger][cellranger]. Note that chrom_end is open-end. This output fragment file can be used as input of downstream analysis tools such as [MAESTRO][MAESTRO], [ArchR][ArchR], [signac][signac] and etc.
-
-Besides, Chromap can translate input cell barcodes to another set of barcodes. Users can specify the translation file through the option **--barcode-translate**. The translation file is a two-column tsv/csv file with the translated barcode on the first column and the original barcode on the second column. This is useful for 10x Multiome data, where scATAC-seq and scRNA-seq data use different sets of barcodes. This option also supports combinatorial barcoding, such as SHARE-seq. Chromap can translate each barcode segment provided in the second column to the ID in the first column and add "-" to concatenate the IDs in the output.
-
-#### <a name="map-hic"></a>Map Hi-C short reads
-
-```sh
-chromap --preset hic -x index -r ref.fa -1 read1.fa -2 read2.fa -o aln.pairs           # Hi-C reads and pairs output
-```
-Chromap will perform split alignment (**--split-alignment**) on Hi-C reads and output mappings in [pairs][pairs] format (**--pairs**), which is used in [4DN Hi-C data processing pipeline][4DN]. Some Hi-C data analysis pipelines may require the reads are sorted in specific chromosome order other than the one in the index. Therefore, Chromap provides the option **--chr-order** to specify the alignment order, and **--pairs-natural-chr-order** for flipping the pair in the pairs format. 
-
-### <a name="atacseq-qc"></a>Summarizing mapping statistics/quality control
-
-Chromap allows you to summarize the dataset's mapping statistics as well as quality metrics at either a *bulk* or *single cell* level. To enable this feature, users can specify a file path using this option, **--summary [FILE]**, where a csv file will be saved.
-
-This summary file will output a series of metrics for each barcode (or the overall dataset if it is bulk). Here are the different columns contained within the summary file:
-
-```sh
-barcode,total,duplicate,unmapped,lowmapq,cachehit,fric,estfrip,numcacheslots
+claude mcp add --transport http chromap-suite http://127.0.0.1:8765/
 ```
 
-- `barcode` - Barcode label for cell
-- `total` - Total number of fragments
-- `duplicate` - Number of duplicate fragments
-- `unmapped` - Number of unmapped fragments 
-- `lowmapq` - Number of fragments with a low MAPQ
-- `cachehit` - Number of fragments that were found in the chromap cache during alignment
-- `fric` - Fraction of fragments in the chromap cache
-- `estfrip` - Estimated FRiP value based on a linear model ([See below for more details](#estfrip))
-- `numcacheslots` - Number of unique associated cache slots for this barcode (Relevant feature for doublet detection, [see below for more](#doublet))
+Initial public recipes: `chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_fragments`, `chromap_hic_pairs`. See [`docs/chromap_launchpad.md`](docs/chromap_launchpad.md) and [`mcp_server/README.md`](mcp_server/README.md).
 
-The summary contains metrics relevant to the mappability of fragments from each barcode. 
-However, it also contains metrics (`estfrip` and `numcacheslots`) relevant to quality control for chromatin profiling assays like scATAC-seq. These cache-related metrics require overall deep sequencing depth, so it is more useful for single-cell data. 
-The next two sections briefly describe these two metrics and how they can be useful for users.
+## More Detail
 
-#### <a name="estfrip"></a>Estimating FRiP
+- Detailed fork-era notes (file-level): [FORK.md](FORK.md)
+- Changes by release: [CHANGELOG.md](CHANGELOG.md)
+- BAM sort specification: [docs/sort_spec.md](docs/sort_spec.md)
+- Launchpad design: [docs/chromap_launchpad.md](docs/chromap_launchpad.md)
+- libMACS3 repository: https://github.com/morphic-bio/libMACS3
+- STAR Suite (multiomic integration entry point): https://github.com/morphic-bio/STAR-suite
+- Chromap Suite preprint: https://github.com/morphic-bio/chromap_suite_paper
 
-The `estfrip` column in Chromap's summary file represents an estimate of the FRiP score (Fraction of Reads in Peak Regions) computed by Chromap.
-Chromap uses a simple multi-variate linear model to estimate the FRiP for each barcode and the features used in this model are `fric`, `duplicate`, `unmapped` and `lowmapq`.
+## Citing
 
-Typically, the FRiP score is used to assess the quality of chromatin profiles, where typically the higher the FRiP score the better. 
+If you use Chromap Suite, please cite the preprint above plus the upstream tools:
 
-For users, this `estfrip` can be used to quickly gauge the quality of the data by plotting all the values in a histogram and looking to see if you a multi-modal distribution.
-In addition, when combining Chromap with downstream analysis tools such as [SnapATAC2](https://github.com/kaizhang/SnapATAC2) that perform clustering, the `estfrip` can be used to quickly identify any specific clusters that are lower quality than the rest.
+> Zhang, H., Song, L., Wang, X., Cheng, H., Wang, C., Meyer, C. A., …, Liu, X. S., Li, H. (2021). Fast alignment and preprocessing of chromatin profiles with Chromap. *Nature Communications*, 12(1), 1-6. https://doi.org/10.1038/s41467-021-26865-w
 
-**An important note to users**, the `estfrip` values for every barcode should not be taken by themselves and used as the true FRiP score.
-These estimates are mainly intended to be used for quality control at a dataset level where we compare different `estfrip` values to each other.
+> Zhang, Y., Liu, T., Meyer, C. A., Eeckhoute, J., Johnson, D. S., Bernstein, B. E., Nusbaum, C., Myers, R. M., Brown, M., Li, W., Liu, X. S. (2008). Model-based Analysis of ChIP-Seq (MACS). *Genome Biology*, 9, R137. https://doi.org/10.1186/gb-2008-9-9-r137
 
-#### <a name="doublet"></a>Features to assist in doublet detection
+The original Chromap QC summary file format is described in:
 
-The `numcacheslots` column in Chromap's summary file estimates the number of unique cache slots queried for each barcode during the alignment. This feature can be useful in assisting users for doublet detection/filtering.
+> Ahmed, O., Zhang, H., Langmead, B., Song, L. (2025). Quality control of single-cell ATAC-seq data without peak calling using Chromap. *bioRxiv*. https://doi.org/10.1101/2025.07.15.664951
 
-Typically for doublet detection in single-cell datasets, a simple and naive metric used to identify potential doublets is the number of fragments in cells (i.e. more reads, more likely a doublet). 
+## Licence
 
-Chromap uses the simple intuition that barcodes with higher number of peaks than usual, could be doublets. The number of unique cache slots that are queried can be seen as a proxy for the number of peaks. In our experiments, using `numcacheslots` yields a larger AUC compared using `total` for binary classification of doublets. Therefore, users can potentially use this metric as an additional check/feature along with other doublet-detection specific methods.
-
-
-### <a name="help"></a>Getting help
-
-Detailed description of Chromap command line options and optional tags can be displayed by running Chromap with **-h** or be found at the [manpage][manpage]. If you encounter bugs or have further questions or requests, you can raise an issue at the [issue page][issue].
-
-### <a name="cite"></a>Citing Chromap
-
-If you use Chromap, please cite:
-
-> Zhang, H., Song, L., Wang, X., Cheng, H., Wang, C., Meyer, C. A., ..., Liu, X. S., Li, H. (2021). Fast alignment and preprocessing of chromatin profiles with Chromap. Nature communications, 12(1), 1-6.
-> https://doi.org/10.1038/s41467-021-26865-w
-
-The summary file for QC is described in the manuscript:
-> Ahmed, O., Zhang, H., Langmead, B., Song, L. (2025). Quality control of single-cell ATAC-seq data without peak calling using Chromap. Biorxiv.
-> https://doi.org/10.1101/2025.07.15.664951
-
-[bed]: https://genome.ucsc.edu/FAQ/FAQformat.html#format1
-[paf]: https://github.com/lh3/miniasm/blob/master/PAF.md
-[sam]: https://samtools.github.io/hts-specs/SAMv1.pdf
-[pairs]: https://github.com/4dn-dcic/pairix/blob/master/pairs_format_specification.md
-[4DN]: https://data.4dnucleome.org/resources/data-analysis/hi_c-processing-pipeline
-[minimap]: https://github.com/lh3/minimap
-[release]: https://github.com/haowenz/chromap/releases
-[issue]: https://github.com/haowenz/chromap/issues
-[cellranger]: https://support.10xgenomics.com/single-cell-atac/software/pipelines/latest/output/fragments
-[manpage]: https://haowenz.github.io/chromap/chromap.html
-[bioconda]: https://anaconda.org/bioconda/chromap
-[ArchR]: https://www.archrproject.com/index.html
-[MAESTRO]: https://github.com/liulab-dfci/MAESTRO
-[signac]: https://satijalab.org/signac/articles/pbmc_vignette.html
+- `libchromap` (and the `chromap` CLI): MIT, inherited from upstream Chromap.
+- `libMACS3`: BSD-3, inherited from MACS3 (a single source-inspected adaptation for summit edge cases necessitates BSD-3 distribution; see [the libMACS3 repo](https://github.com/morphic-bio/libMACS3) for the methodology).
+- MCP server + Launchpad (`mcp_server/`): MIT.
