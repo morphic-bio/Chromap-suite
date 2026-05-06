@@ -316,6 +316,10 @@ The original Chromap QC summary file format is described in:
 
 > Ahmed, O., Zhang, H., Langmead, B., Song, L. (2025). Quality control of single-cell ATAC-seq data without peak calling using Chromap. *bioRxiv*. https://doi.org/10.1101/2025.07.15.664951
 
+## Authors
+
+Chromap Suite extensions copyright Ling-Hong Hung. Preprint co-authors: Ling-Hong Hung, Ka Yee Yeung. The GitHub Contributors graph reflects inherited git history from the pre-spinoff fork; see [AUTHORS.md](AUTHORS.md) for current authorship and acknowledgments, and [HISTORY.md](HISTORY.md) for project lineage.
+
 ## Licence
 
 - `libchromap` (and the `chromap` CLI): MIT, inherited from upstream Chromap.
