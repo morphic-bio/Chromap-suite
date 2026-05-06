@@ -1,8 +1,12 @@
-# Fork Notes: Chromap
+# Chromap Suite history
 
-This document records detailed changes in this fork, the rationale behind them, and notes for future work.
+Chromap Suite was spun off from Chromap (`haowenz/chromap`) in 2026 as a standalone chromatin-accessibility platform. We no longer track upstream — bug reports and feature work go to [`morphic-bio/Chromap-suite` issues](https://github.com/morphic-bio/Chromap-suite/issues), and the original Chromap citation and MIT licence are preserved.
 
-## Why this fork
+**Lineage:** the last sync from upstream was `73ec0c2` (2021-10-30). Maintenance fixes (the SAM writer and low-memory spill/merge sections below) were developed shortly after. Heavy divergent feature work — `libchromap` extraction, in-process `libMACS3` peak calling, native BAM output and coordinate sorting, the AEV1 fragment sidecar, the MCP server and Launchpad, and the multiomic integration with STAR Suite — was added through 2024–2026 and is described in the [Chromap Suite preprint](https://github.com/morphic-bio/chromap_suite_paper) and the project [README](README.md).
+
+The remainder of this document is the original `FORK.md`, kept for historical reference of the early correctness fixes.
+
+## Why this work was originally a fork
 
 - Address rare but impactful output corruption in SAM mode under high concurrency.
 - Stabilize and harden the low-memory spill/merge path used for large datasets.

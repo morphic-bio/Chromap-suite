@@ -6,6 +6,8 @@ On the public 3K PBMC Multiome at 32 threads, the integrated multiomic pipeline 
 
 Agent quickstart: see [`AGENTS.md`](AGENTS.md) for repo-specific guardrails, tests, and recent changes.
 
+Chromap Suite was spun off from [Chromap](https://github.com/haowenz/chromap) in 2026 and no longer tracks upstream; see [HISTORY.md](HISTORY.md) for lineage.
+
 ## Core Additions over Chromap
 
 The full set of additions is organised by scope, mirroring Table 2 of the [Chromap Suite preprint](https://github.com/morphic-bio/chromap_suite_paper):
@@ -21,7 +23,7 @@ The full set of additions is organised by scope, mirroring Table 2 of the [Chrom
 
 ### Reliability and tooling additions
 
-- **Low-memory spillover (rewritten architecture)**. Per-thread overflow writers feeding a *k*-way merge on read-back **replace** the prior shared-buffer + atomic-write design. Supports the full cross-product of `--low-mem` with `--atac-fragments`, BAM output, `--macs3-frag-low-mem`, and Y-filtering modes; production-scale runs (≳10⁹ reads) handled cleanly. A pre-existing race condition in the legacy spillover that produced silent read drops at ~1/10⁴ on typical datasets and intermittent hangs at production scale is resolved as a side effect of the rewrite. The legacy temp-file system is available via `LEGACY_OVERFLOW=1` at compile time (single-threaded only). See [`FORK.md`](FORK.md) for file references and validation history.
+- **Low-memory spillover (rewritten architecture)**. Per-thread overflow writers feeding a *k*-way merge on read-back **replace** the prior shared-buffer + atomic-write design. Supports the full cross-product of `--low-mem` with `--atac-fragments`, BAM output, `--macs3-frag-low-mem`, and Y-filtering modes; production-scale runs (≳10⁹ reads) handled cleanly. A pre-existing race condition in the legacy spillover that produced silent read drops at ~1/10⁴ on typical datasets and intermittent hangs at production scale is resolved as a side effect of the rewrite. The legacy temp-file system is available via `LEGACY_OVERFLOW=1` at compile time (single-threaded only). See [`HISTORY.md`](HISTORY.md) for file references and validation history.
 - **Concurrency coordination across new collaborators**. Worker threads coordinate with the native BAM writer, STAR Suite's permit allocator (when embedded), and libMACS3 peak-call paths under the existing OpenMP scheduler. The smoke matrix exercises all combinations of low-mem / BAM / peak-call / Y-filter modes.
 - **Regression suite (C01–C11)**. An 11-area parity matrix covering the main user-visible surfaces: index build, paired BED output, ChIP and ATAC presets, scATAC barcode handling, sorted BAM and index, low-memory BED parity, ATAC BAM + fragments, libMACS3 narrow peak calling, Hi-C pairs, and Y/noY split. Three tiers: **S0** hermetic synthetic for pre-commit smoke; **S1** ENCODE downsample for real-assay confidence (paired ENCODE accessions and downsample manifests committed; FASTQs cached out-of-tree); **S2** the existing 100K and paper-fixture tier reserved for heavier gates. Upstream Chromap had no comparable regression suite. The S0 tier is mandatory for pre-commit checks; S1 and S2 are opt-in.
 - **MCP server + Launchpad** (`mcp_server/`). Schema-driven workflow renderer for agents plus a browser recipe UI for humans. Both surfaces consume the same parameterised YAML recipe registry (`mcp_server/recipes/registry.yaml`). The MCP face exposes recipes to agents as schema-validated tool calls; the Launchpad face renders the same recipes as web forms. See the [Chromap Launchpad](#chromap-launchpad-recipe-builder) section below.
@@ -294,7 +296,7 @@ Initial public recipes: `chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_f
 
 ## More Detail
 
-- Detailed fork-era notes (file-level): [FORK.md](FORK.md)
+- Project lineage and pre-spinoff fork notes: [HISTORY.md](HISTORY.md)
 - Changes by release: [CHANGELOG.md](CHANGELOG.md)
 - BAM sort specification: [docs/sort_spec.md](docs/sort_spec.md)
 - Launchpad design: [docs/chromap_launchpad.md](docs/chromap_launchpad.md)
