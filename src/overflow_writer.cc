@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "atac_spill_record.h"
+
 namespace {
 // Helper function to determine optimal temp directory for containers and regular systems
 std::string GetOptimalTempDir(const std::string& user_specified = "") {
@@ -46,6 +48,24 @@ OverflowWriter::OverflowWriter(const std::string& base_dir, const std::string& p
     }
 }
 
+void OverflowWriter::EnableAtacSpillFileHeader(uint16_t schema_mask) {
+    atac_spill_header_enabled_ = true;
+    atac_spill_schema_mask_ = schema_mask;
+}
+
+bool OverflowWriter::WriteAtacSpillFileHeaderIfNeeded(FILE* fp) {
+    if (!atac_spill_header_enabled_ || !fp) {
+        return true;
+    }
+    chromap::AtacSpillFileHeader hdr = {};
+    hdr.magic = chromap::kAtacSpillFileMagic;
+    hdr.format_version = 1;
+    hdr.schema_mask = atac_spill_schema_mask_;
+    hdr.record_codec_version = chromap::kAtacSpillRecordCodecVersion;
+    hdr.reserved0 = 0;
+    return fwrite(&hdr, sizeof(hdr), 1, fp) == 1;
+}
+
 OverflowWriter::~OverflowWriter() {
     // Close any remaining thread-local files
     for (auto it = tls_files_.begin(); it != tls_files_.end(); ++it) {
@@ -71,6 +91,10 @@ FILE* OverflowWriter::GetFileForRid(uint32_t rid) {
     std::string filename = GenerateFilename(rid);
     FILE* file = fopen(filename.c_str(), "wb");
     if (!file) {
+        return nullptr;
+    }
+    if (!WriteAtacSpillFileHeaderIfNeeded(file)) {
+        fclose(file);
         return nullptr;
     }
     

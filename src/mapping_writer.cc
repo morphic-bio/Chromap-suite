@@ -2,6 +2,7 @@
 
 #include <queue>
 #include <algorithm>
+#include <atomic>
 #include <unordered_set>
 #include <unordered_map>
 #include <unistd.h>
@@ -13,6 +14,23 @@
 #include "libmacs3/fragments.h"
 
 namespace chromap {
+
+#ifndef LEGACY_OVERFLOW
+static std::atomic<uint32_t> g_low_mem_mid_batch_overflow_flushes{0};
+
+void RecordLowMemMidBatchOverflowFlush() {
+  g_low_mem_mid_batch_overflow_flushes.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ResetLowMemMidBatchOverflowFlushCount() {
+  g_low_mem_mid_batch_overflow_flushes.store(0, std::memory_order_relaxed);
+}
+
+uint32_t LowMemMidBatchOverflowFlushCount() {
+  return g_low_mem_mid_batch_overflow_flushes.load(std::memory_order_relaxed);
+}
+#endif
+
 namespace {
 
 std::string DeriveReadGroupFromFilenameImpl(const std::string &filename) {
@@ -227,7 +245,22 @@ void MappingWriter<MappingWithoutBarcode>::AppendMapping(
 // Specialization for BEDPE format.
 template <>
 void MappingWriter<PairedEndMappingWithoutBarcode>::OutputHeader(
-    uint32_t num_reference_sequences, const SequenceBatch &reference) {}
+    uint32_t num_reference_sequences, const SequenceBatch &reference) {
+  if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BED) {
+    if (mapping_parameters_.macs3_frag_chrom_names) {
+      auto& names = *mapping_parameters_.macs3_frag_chrom_names;
+      names.clear();
+      names.reserve(num_reference_sequences);
+      for (uint32_t i = 0; i < num_reference_sequences; ++i) {
+        names.emplace_back(reference.GetSequenceNameAt(i));
+      }
+    }
+    if (mapping_parameters_.macs3_frag_buffer) {
+      mapping_parameters_.macs3_frag_buffer->assign(
+          num_reference_sequences, std::vector<macs3::FragmentRecord>());
+    }
+  }
+}
 
 template <>
 void MappingWriter<PairedEndMappingWithoutBarcode>::AppendMapping(
@@ -242,6 +275,21 @@ void MappingWriter<PairedEndMappingWithoutBarcode>::AppendMapping(
                               "\t" + std::to_string(mapping_end_position) +
                               "\tN\t" + std::to_string(mapping.mapq_) + "\t" +
                               strand + "\t" + std::to_string(mapping.num_dups_) + "\n");
+    if (mapping_parameters_.macs3_frag_buffer) {
+      macs3::FragmentRecord rec;
+      rec.chrom_id = static_cast<int32_t>(rid);
+      rec.start = static_cast<int32_t>(mapping.GetStartPosition());
+      rec.end = static_cast<int32_t>(mapping_end_position);
+      // Bulk inline FRAG peaks: count each dedup survivor once (see 2026-05-05 runbook).
+      rec.count = 1u;
+      if (rec.end > rec.start) {
+        auto& buckets = *mapping_parameters_.macs3_frag_buffer;
+        if (rid >= buckets.size()) {
+          buckets.resize(rid + 1);
+        }
+        buckets[rid].push_back(rec);
+      }
+    }
   } else {
     bool positive_strand = mapping.IsPositiveStrand();
     uint32_t positive_read_end =
@@ -805,6 +853,61 @@ void MappingWriter<MappingRecord>::OutputTempMappingsToOverflow(
   }
 }
 
+template <>
+void MappingWriter<AtacSpillRecord>::OutputTempMappingsToOverflow(
+    uint32_t num_reference_sequences,
+    std::vector<std::vector<AtacSpillRecord>> &mappings_on_diff_ref_seqs) {
+  if (!tls_overflow_writer_) {
+    std::string base_dir = mapping_parameters_.temp_directory_path;
+    tls_overflow_writer_ =
+        std::unique_ptr<OverflowWriter>(new OverflowWriter(base_dir, "chromap"));
+  }
+  const uint16_t sm = AtacSpillSchemaMaskForParameters(
+      mapping_parameters_.AtacDualFragmentAndBam(),
+      mapping_parameters_.is_bulk_data);
+  tls_overflow_writer_->EnableAtacSpillFileHeader(sm);
+  for (uint32_t rid = 0; rid < num_reference_sequences; ++rid) {
+    for (const auto &mapping : mappings_on_diff_ref_seqs[rid]) {
+      tls_overflow_writer_->Write(rid, mapping);
+    }
+    mappings_on_diff_ref_seqs[rid].clear();
+  }
+}
+
+namespace {
+
+template <typename MappingRecord>
+void LoadMappingFromOverflowPayload(MappingRecord *out, FILE *fp,
+                                    uint16_t atac_spill_file_schema_mask) {
+  (void)atac_spill_file_schema_mask;
+  out->LoadFromFile(fp);
+}
+
+template <>
+void LoadMappingFromOverflowPayload<AtacSpillRecord>(
+    AtacSpillRecord *out, FILE *fp, uint16_t atac_spill_file_schema_mask) {
+  out->LoadFromFile(fp, atac_spill_file_schema_mask);
+}
+
+template <typename MappingRecord>
+uint16_t OverflowSpillSchemaMaskFromReader(OverflowReader *r) {
+  (void)r;
+  return 0;
+}
+
+template <>
+uint16_t OverflowSpillSchemaMaskFromReader<AtacSpillRecord>(
+    OverflowReader *r) {
+  if (!r->FileHasAtacSpillHeader()) {
+    ExitWithMessage(
+        "ATAC spill overflow file is missing AtacSpillFileHeader; merge "
+        "refused");
+  }
+  return r->AtacSpillSchemaFromFileHeader();
+}
+
+}  // namespace
+
 template <typename MappingRecord>
 void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
     uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
@@ -819,6 +922,8 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
   }
   
   std::cerr << "Processing " << shared_overflow_file_paths_.size() << " overflow files for k-way merge\n";
+  std::cerr << "Low-memory overflow: mid-batch flush count: "
+            << LowMemMidBatchOverflowFlushCount() << "\n";
 
   double sort_and_dedupe_start_time = GetRealTime();
 
@@ -897,6 +1002,9 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
   std::vector<uint32_t> rids(all_rids.begin(), all_rids.end());
   std::sort(rids.begin(), rids.end());
 
+  uint16_t merge_spill_schema_agreed = 0;
+  bool merge_spill_schema_agreed_set = false;
+
   // For each rid, k-way merge all files containing that rid
   for (uint32_t current_rid : rids) {
     const auto& file_indices = rid_to_files[current_rid];
@@ -917,12 +1025,25 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
       if (readers[fi]->ReadNext(rid, payload)) {
         // Verify rid matches (should always be true, but check for safety)
         if (rid == current_rid) {
-          FILE* mem_file = fmemopen(const_cast<char*>(payload.data()), payload.size(), "rb");
+          FILE *mem_file =
+              fmemopen(const_cast<char *>(payload.data()), payload.size(), "rb");
           if (mem_file) {
+            const uint16_t spill_mask =
+                OverflowSpillSchemaMaskFromReader<MappingRecord>(
+                    readers[fi].get());
+            if (!merge_spill_schema_agreed_set) {
+              merge_spill_schema_agreed = spill_mask;
+              merge_spill_schema_agreed_set = true;
+            } else if (spill_mask != merge_spill_schema_agreed) {
+              fclose(mem_file);
+              ExitWithMessage(
+                  "Mismatched ATAC spill schema_mask between overflow temp "
+                  "files (merge refused)");
+            }
             MappingRecord mapping;
-            mapping.LoadFromFile(mem_file);
+            LoadMappingFromOverflowPayload(&mapping, mem_file, spill_mask);
             fclose(mem_file);
-            
+
             FileRecord rec;
             rec.rid = rid;
             rec.mapping = mapping;
@@ -1029,12 +1150,22 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
         if (readers[min_rec.file_index]->ReadNext(rid, payload)) {
           // Should always be current_rid, but verify for safety
           if (rid == current_rid) {
-            FILE* mem_file = fmemopen(const_cast<char*>(payload.data()), payload.size(), "rb");
+            FILE *mem_file =
+                fmemopen(const_cast<char *>(payload.data()), payload.size(), "rb");
             if (mem_file) {
+              const uint16_t spill_mask =
+                  OverflowSpillSchemaMaskFromReader<MappingRecord>(
+                      readers[min_rec.file_index].get());
+              if (spill_mask != merge_spill_schema_agreed) {
+                fclose(mem_file);
+                ExitWithMessage(
+                    "Mismatched ATAC spill schema_mask within overflow merge "
+                    "(merge refused)");
+              }
               MappingRecord mapping;
-              mapping.LoadFromFile(mem_file);
+              LoadMappingFromOverflowPayload(&mapping, mem_file, spill_mask);
               fclose(mem_file);
-              
+
               FileRecord rec;
               rec.rid = rid;
               rec.mapping = mapping;
@@ -1122,9 +1253,9 @@ template void MappingWriter<PAFMapping>::OutputTempMappingsToOverflow(
 template void MappingWriter<PAFMapping>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
     uint32_t, uint32_t, const SequenceBatch&, const khash_t(k64_seq)*);
 
-template void MappingWriter<PairedEndAtacDualMapping>::OutputTempMappingsToOverflow(
-    uint32_t, std::vector<std::vector<PairedEndAtacDualMapping>>&);
-template void MappingWriter<PairedEndAtacDualMapping>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
+template void MappingWriter<AtacSpillRecord>::OutputTempMappingsToOverflow(
+    uint32_t, std::vector<std::vector<AtacSpillRecord>>&);
+template void MappingWriter<AtacSpillRecord>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
     uint32_t, uint32_t, const SequenceBatch&, const khash_t(k64_seq)*);
 
 // BED writers (single/paired × with/without barcode). Serialization
@@ -1216,7 +1347,7 @@ template void MappingWriter<MappingWithBarcode>::CloseThreadOverflowWriter();
 template void MappingWriter<MappingWithoutBarcode>::CloseThreadOverflowWriter();
 template void MappingWriter<PairedEndMappingWithBarcode>::CloseThreadOverflowWriter();
 template void MappingWriter<PairedEndMappingWithoutBarcode>::CloseThreadOverflowWriter();
-template void MappingWriter<PairedEndAtacDualMapping>::CloseThreadOverflowWriter();
+template void MappingWriter<AtacSpillRecord>::CloseThreadOverflowWriter();
 
 // Add explicit instantiation for RotateThreadOverflowWriter
 template void MappingWriter<SAMMapping>::RotateThreadOverflowWriter();
@@ -1227,9 +1358,9 @@ template void MappingWriter<MappingWithBarcode>::RotateThreadOverflowWriter();
 template void MappingWriter<MappingWithoutBarcode>::RotateThreadOverflowWriter();
 template void MappingWriter<PairedEndMappingWithBarcode>::RotateThreadOverflowWriter();
 template void MappingWriter<PairedEndMappingWithoutBarcode>::RotateThreadOverflowWriter();
-template void MappingWriter<PairedEndAtacDualMapping>::RotateThreadOverflowWriter();
+template void MappingWriter<AtacSpillRecord>::RotateThreadOverflowWriter();
 
-// PairedEndAtacDualMapping has WriteToFile / LoadFromFile / SerializedSize
+// AtacSpillRecord has WriteToFile / LoadFromFile / SerializedSize
 // (see atac_dual_mapping.h) and operator< / operator==, so the generic
 // MappingWriter<MappingRecord> overflow templates apply directly. Use
 // explicit instantiations below in place of the empty stubs that
@@ -1616,8 +1747,25 @@ bam1_t* MappingWriter<SAMMapping>::ConvertToHtsBam(uint32_t rid,
 }
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::OutputHeader(
+void MappingWriter<AtacSpillRecord>::OutputHeader(
     uint32_t num_reference_sequences, const SequenceBatch &reference) {
+  if (!mapping_parameters_.AtacDualFragmentAndBam()) {
+    if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BED) {
+      if (mapping_parameters_.macs3_frag_chrom_names) {
+        auto& names = *mapping_parameters_.macs3_frag_chrom_names;
+        names.clear();
+        names.reserve(num_reference_sequences);
+        for (uint32_t i = 0; i < num_reference_sequences; ++i) {
+          names.emplace_back(reference.GetSequenceNameAt(i));
+        }
+      }
+      if (mapping_parameters_.macs3_frag_buffer) {
+        mapping_parameters_.macs3_frag_buffer->assign(
+            num_reference_sequences, std::vector<macs3::FragmentRecord>());
+      }
+    }
+    return;
+  }
   if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM ||
       mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM) {
     if (!hts_out_) {
@@ -1696,31 +1844,110 @@ void MappingWriter<PairedEndAtacDualMapping>::OutputHeader(
 }
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::AppendMapping(
+void MappingWriter<AtacSpillRecord>::AppendMapping(
     uint32_t rid, const SequenceBatch &reference,
-    const PairedEndAtacDualMapping &mapping) {
+    const AtacSpillRecord &mapping) {
+  if (!mapping_parameters_.AtacDualFragmentAndBam()) {
+    const PairedEndMappingWithBarcode &mwb = mapping;
+    if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BED) {
+      std::string strand = mwb.IsPositiveStrand() ? "+" : "-";
+      const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
+      uint32_t mapping_end_position = mwb.GetEndPosition();
+      const std::string translated_barcode = barcode_translator_.Translate(
+          mwb.cell_barcode_, cell_barcode_length_);
+      this->AppendMappingOutput(std::string(reference_sequence_name) + "\t" +
+                                std::to_string(mwb.GetStartPosition()) + "\t" +
+                                std::to_string(mapping_end_position) + "\t" +
+                                translated_barcode + "\t" +
+                                std::to_string(mwb.num_dups_) + "\n");
+      if (mapping_parameters_.macs3_frag_buffer) {
+        macs3::FragmentRecord rec;
+        rec.chrom_id = static_cast<int32_t>(rid);
+        rec.start = static_cast<int32_t>(mwb.GetStartPosition());
+        rec.end = static_cast<int32_t>(mapping_end_position);
+        rec.count = static_cast<uint32_t>(mwb.num_dups_);
+        if (rec.end > rec.start && rec.count > 0) {
+          auto& buckets = *mapping_parameters_.macs3_frag_buffer;
+          if (rid >= buckets.size()) {
+            buckets.resize(rid + 1);
+          }
+          buckets[rid].push_back(rec);
+        }
+      }
+    } else {
+      bool positive_strand = mwb.IsPositiveStrand();
+      uint32_t positive_read_end =
+          mwb.fragment_start_position_ + mwb.positive_alignment_length_;
+      uint32_t negative_read_end =
+          mwb.fragment_start_position_ + mwb.fragment_length_;
+      uint32_t negative_read_start =
+          negative_read_end - mwb.negative_alignment_length_;
+      const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
+      if (positive_strand) {
+        this->AppendMappingOutput(
+            std::string(reference_sequence_name) + "\t" +
+            std::to_string(mwb.fragment_start_position_) + "\t" +
+            std::to_string(positive_read_end) + "\tN\t" +
+            std::to_string(mwb.mapq_) + "\t+\n" +
+            std::string(reference_sequence_name) + "\t" +
+            std::to_string(negative_read_start) + "\t" +
+            std::to_string(negative_read_end) + "\tN\t" +
+            std::to_string(mwb.mapq_) + "\t-\n");
+      } else {
+        this->AppendMappingOutput(
+            std::string(reference_sequence_name) + "\t" +
+            std::to_string(negative_read_start) + "\t" +
+            std::to_string(negative_read_end) + "\tN\t" +
+            std::to_string(mwb.mapq_) + "\t-\n" +
+            std::string(reference_sequence_name) + "\t" +
+            std::to_string(mwb.fragment_start_position_) + "\t" +
+            std::to_string(positive_read_end) + "\tN\t" +
+            std::to_string(mwb.mapq_) + "\t+\n");
+      }
+    }
+    return;
+  }
+  if (!mapping.HasBamPairSection()) {
+    ExitWithMessage(
+        "ATAC dual BAM/CRAM output requires BAM mate payloads on each fragment "
+        "record; refusing to emit fragments without mates (overflow schema "
+        "mismatch or corrupt spill payload)");
+  }
   const PairedEndMappingWithBarcode &frag = mapping;
   uint32_t mapping_end_position = frag.GetEndPosition();
+  const bool bulk_no_barcode = mapping_parameters_.barcode_file_paths.empty();
+  const uint32_t peak_count =
+      bulk_no_barcode ? 1u : static_cast<uint32_t>(frag.num_dups_);
   if (atac_evidence_fp_) {
     AppendAtacEvidenceBinaryRecord(rid, frag.GetStartPosition(),
                                    mapping_end_position,
-                                   static_cast<uint32_t>(frag.num_dups_),
-                                   frag.cell_barcode_);
-  } else {
+                                   peak_count, frag.cell_barcode_);
+  }
+  if (atac_fragment_gz_output_ || atac_fragment_output_file_) {
     const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
-    AppendAtacFragmentOutput(
-        std::string(reference_sequence_name) + "\t" +
-        std::to_string(frag.GetStartPosition()) + "\t" +
-        std::to_string(mapping_end_position) + "\t" +
-        barcode_translator_.Translate(frag.cell_barcode_,
-                                      cell_barcode_length_) +
-        "\t" + std::to_string(frag.num_dups_) + "\n");
+    if (bulk_no_barcode) {
+      const std::string strand = frag.IsPositiveStrand() ? "+" : "-";
+      AppendAtacFragmentOutput(
+          std::string(reference_sequence_name) + "\t" +
+          std::to_string(frag.GetStartPosition()) + "\t" +
+          std::to_string(mapping_end_position) + "\tN\t" +
+          std::to_string(frag.mapq_) + "\t" + strand + "\t" +
+          std::to_string(frag.num_dups_) + "\n");
+    } else {
+      AppendAtacFragmentOutput(
+          std::string(reference_sequence_name) + "\t" +
+          std::to_string(frag.GetStartPosition()) + "\t" +
+          std::to_string(mapping_end_position) + "\t" +
+          barcode_translator_.Translate(frag.cell_barcode_,
+                                        cell_barcode_length_) +
+          "\t" + std::to_string(frag.num_dups_) + "\n");
+    }
   }
   if (mapping_parameters_.macs3_frag_memory_accumulator &&
       mapping_parameters_.macs3_frag_memory_accumulator->IsValid()) {
     std::string acc_err;
     if (!mapping_parameters_.macs3_frag_memory_accumulator->Add(
-            rid, frag.GetStartPosition(), mapping_end_position, frag.num_dups_,
+            rid, frag.GetStartPosition(), mapping_end_position, peak_count,
             &acc_err)) {
       ExitWithMessage("MACS3 FRAG memory accumulator: " + acc_err);
     }
@@ -1730,7 +1957,7 @@ void MappingWriter<PairedEndAtacDualMapping>::AppendMapping(
     rec.chrom_id = static_cast<int32_t>(rid);
     rec.start = static_cast<int32_t>(frag.GetStartPosition());
     rec.end = static_cast<int32_t>(mapping_end_position);
-    rec.count = static_cast<uint32_t>(frag.num_dups_);
+    rec.count = peak_count;
     if (rec.end > rec.start && rec.count > 0) {
       auto& buckets = *mapping_parameters_.macs3_frag_buffer;
       if (rid >= buckets.size()) {
@@ -1773,15 +2000,16 @@ void MappingWriter<PairedEndAtacDualMapping>::AppendMapping(
       bam_destroy1(b);
     }
   };
+
   write_sam(mapping.sam1);
   write_sam(mapping.sam2);
 }
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::OutputTempMapping(
+void MappingWriter<AtacSpillRecord>::OutputTempMapping(
     const std::string &temp_mapping_output_file_path,
     uint32_t num_reference_sequences,
-    const std::vector<std::vector<PairedEndAtacDualMapping>> &mappings) {
+    const std::vector<std::vector<AtacSpillRecord>> &mappings) {
   FILE *temp_mapping_output_file =
       fopen(temp_mapping_output_file_path.c_str(), "wb");
   assert(temp_mapping_output_file != NULL);
@@ -1798,7 +2026,10 @@ void MappingWriter<PairedEndAtacDualMapping>::OutputTempMapping(
 }
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::OpenHtsOutput() {
+void MappingWriter<AtacSpillRecord>::OpenHtsOutput() {
+  if (!mapping_parameters_.AtacDualFragmentAndBam()) {
+    return;
+  }
   if (mapping_parameters_.mapping_output_format != MAPPINGFORMAT_BAM &&
       mapping_parameters_.mapping_output_format != MAPPINGFORMAT_CRAM) {
     return;
@@ -1833,7 +2064,10 @@ void MappingWriter<PairedEndAtacDualMapping>::OpenHtsOutput() {
 }
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::FinalizeSortedOutput() {
+void MappingWriter<AtacSpillRecord>::FinalizeSortedOutput() {
+  if (!mapping_parameters_.AtacDualFragmentAndBam()) {
+    return;
+  }
   if (!bam_sorter_) return;
 
   bam_sorter_->finalize();
@@ -1862,7 +2096,10 @@ void MappingWriter<PairedEndAtacDualMapping>::FinalizeSortedOutput() {
 }
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::CloseHtsOutput() {
+void MappingWriter<AtacSpillRecord>::CloseHtsOutput() {
+  if (!mapping_parameters_.AtacDualFragmentAndBam()) {
+    return;
+  }
   if (bam_sorter_) {
     FinalizeSortedOutput();
   }
@@ -1914,7 +2151,10 @@ void MappingWriter<PairedEndAtacDualMapping>::CloseHtsOutput() {
 }
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::OpenYFilterStreams() {
+void MappingWriter<AtacSpillRecord>::OpenYFilterStreams() {
+  if (!mapping_parameters_.AtacDualFragmentAndBam()) {
+    return;
+  }
   if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM ||
       mapping_parameters_.mapping_output_format == MAPPINGFORMAT_CRAM) {
     const char *hts_mode =
@@ -1982,7 +2222,10 @@ void MappingWriter<PairedEndAtacDualMapping>::OpenYFilterStreams() {
 }
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::CloseYFilterStreams() {
+void MappingWriter<AtacSpillRecord>::CloseYFilterStreams() {
+  if (!mapping_parameters_.AtacDualFragmentAndBam()) {
+    return;
+  }
   if (noY_hts_out_) {
     if (mapping_parameters_.write_index &&
         mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BAM &&
@@ -2019,8 +2262,11 @@ void MappingWriter<PairedEndAtacDualMapping>::CloseYFilterStreams() {
 }
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::BuildHtsHeader(
+void MappingWriter<AtacSpillRecord>::BuildHtsHeader(
     uint32_t num_ref_seqs, const SequenceBatch &reference) {
+  if (!mapping_parameters_.AtacDualFragmentAndBam()) {
+    return;
+  }
   std::string header_text = "@HD\tVN:1.6";
 
   if (mapping_parameters_.sort_bam) {

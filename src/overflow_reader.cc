@@ -2,6 +2,9 @@
 
 #include <cassert>
 
+#include "atac_spill_record.h"
+#include "utils.h"
+
 OverflowReader::OverflowReader(const std::string& path) 
     : path_(path), file_(nullptr) {
     file_ = fopen(path.c_str(), "rb");
@@ -14,8 +17,46 @@ OverflowReader::~OverflowReader() {
     }
 }
 
+bool OverflowReader::ConsumeAtacSpillFilePrefixIfPresent() {
+    if (prefix_checked_) {
+        return true;
+    }
+    prefix_checked_ = true;
+    if (!file_) {
+        return false;
+    }
+    uint32_t magic = 0;
+    if (fread(&magic, sizeof(uint32_t), 1, file_) != 1) {
+        return false;
+    }
+    if (magic != chromap::kAtacSpillFileMagic) {
+        if (fseek(file_, 0, SEEK_SET) != 0) {
+            return false;
+        }
+        file_has_atac_spill_header_ = false;
+        return true;
+    }
+    chromap::AtacSpillFileHeader hdr;
+    hdr.magic = magic;
+    if (fread(reinterpret_cast<char*>(&hdr) + sizeof(uint32_t),
+              sizeof(hdr) - sizeof(uint32_t), 1, file_) != 1) {
+        return false;
+    }
+    if (hdr.format_version != 1 ||
+        hdr.record_codec_version != chromap::kAtacSpillRecordCodecVersion) {
+        chromap::ExitWithMessage(
+            "Unsupported ATAC spill overflow file header version/codec");
+    }
+    file_has_atac_spill_header_ = true;
+    atac_spill_schema_from_file_header_ = hdr.schema_mask;
+    return true;
+}
+
 bool OverflowReader::ReadNext(uint32_t& out_rid, std::string& out_payload) {
     if (!file_) {
+        return false;
+    }
+    if (!ConsumeAtacSpillFilePrefixIfPresent()) {
         return false;
     }
     

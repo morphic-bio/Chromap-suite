@@ -194,14 +194,20 @@ void AddOutputOptions(cxxopts::Options &options) {
           "Max RAM for sorting before spilling to disk [8G]",
           cxxopts::value<std::string>(), "SIZE")(
           "atac-fragments",
-          "With paired barcoded reads and --BAM/--CRAM: emit fragment-level BAM "
+          "With paired reads and --BAM/--CRAM: emit fragment-level BAM "
           "(and optional CRAM) from the retained ATAC fragment set in one pass, "
-          "and also write scATAC fragments (BED fields) to this path (.gz "
-          "supported). Invariants: retained fragment lines match a fragment-only "
-          "BED run with the same mapping options; BAM record count is exactly "
-          "2 * fragment rows. Dual BAM is not comparable row-for-row to --BAM "
-          "without --atac-fragments (read-level SAM path). Incompatible with "
-          "--low-mem.",
+          "and also write fragments to this path (.gz supported). Barcoded "
+          "inputs write 5-col fragments TSV (chrom,start,end,barcode,count); "
+          "bulk no-barcode inputs write 7-col BED (chrom,start,end,N,mapq,"
+          "strand,count). Invariants: retained fragment lines match a "
+          "fragment-only BED run with the same mapping options; BAM record "
+          "count is exactly 2 * fragment rows. Dual BAM is not comparable "
+          "row-for-row to --BAM without --atac-fragments (read-level SAM path).",
+          cxxopts::value<std::string>(), "FILE")(
+          "atac-fragment-binary-output",
+          "With paired reads, --BAM/--CRAM, and --atac-fragments: also write the "
+          "compact AEV1 binary sidecar to this path (plus <path>.chroms.tsv). "
+          "Fragment rows are still written to the --atac-fragments path.",
           cxxopts::value<std::string>(), "FILE");
   //("PAF", "Output mappings in PAF format (only for test)");
 }
@@ -210,8 +216,8 @@ void AddMacs3FragPeakOptions(cxxopts::Options &options) {
   options.add_options("MACS3 FRAG peaks (opt-in)")(
       "call-macs3-frag-peaks",
       "After mapping, run the validated MACS3-compatible FRAG narrowPeak pipeline on "
-      "the --atac-fragments file (C++ diagnostic path; slower than MACS3 on large "
-      "inputs; not default). Requires --atac-fragments plus output paths. "
+      "fragment rows from --atac-fragments or BED output (C++ diagnostic path; "
+      "slower than MACS3 on large inputs; not default). Requires output paths. "
       "BED3/summit geometry matches MACS3 validation; narrowPeak qValue and "
       "signalValue are not byte-for-byte MACS3 parity.",
       cxxopts::value<bool>()->default_value("false")->implicit_value("true"))(
@@ -234,8 +240,9 @@ void AddMacs3FragPeakOptions(cxxopts::Options &options) {
       cxxopts::value<std::string>(), "DIR")(
       "macs3-frag-peaks-source",
       "Where the MACS3 FRAG pipeline gets fragment rows after mapping: file "
-      "(reread --atac-fragments; default) or memory (opt-in in-memory copy of the "
-      "same rows, no TSV reread; requires --call-macs3-frag-peaks and dual ATAC).",
+      "(reread --atac-fragments or BED output; default) or memory (opt-in "
+      "in-memory copy of the same rows, no TSV reread; required for bulk "
+      "no-barcode BED/dual-BAM fragment output).",
       cxxopts::value<std::string>()->default_value("file"), "file|memory")(
       "macs3-frag-compact-min-count-bits",
       "When using --macs3-frag-peaks-source memory, minimum high bits for duplicate "
@@ -969,6 +976,10 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       mapping_parameters.atac_fragment_output_file_path =
           result["atac-fragments"].as<std::string>();
     }
+    if (result.count("atac-fragment-binary-output")) {
+      mapping_parameters.atac_fragment_binary_output_file_path =
+          result["atac-fragment-binary-output"].as<std::string>();
+    }
 
     if (result.count("call-macs3-frag-peaks")) {
       mapping_parameters.call_macs3_frag_peaks =
@@ -1080,10 +1091,6 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         chromap::ExitWithMessage(
             "--atac-fragments requires paired-end reads (-2)");
       }
-      if (mapping_parameters.barcode_file_paths.empty()) {
-        chromap::ExitWithMessage(
-            "--atac-fragments requires cell barcode reads (-b)");
-      }
       if (mapping_parameters.mapping_output_format != MAPPINGFORMAT_BAM &&
           mapping_parameters.mapping_output_format != MAPPINGFORMAT_CRAM) {
         chromap::ExitWithMessage(
@@ -1102,22 +1109,51 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       }
     }
 
+    if (!mapping_parameters.atac_fragment_binary_output_file_path.empty()) {
+      if (!mapping_parameters.AtacDualFragmentAndBam()) {
+        chromap::ExitWithMessage(
+            "--atac-fragment-binary-output requires paired-end reads, "
+            "--BAM or --CRAM, and --atac-fragments");
+      }
+      if (mapping_parameters.atac_fragment_binary_output_file_path ==
+          mapping_parameters.mapping_output_file_path) {
+        chromap::ExitWithMessage(
+            "--atac-fragment-binary-output path must differ from -o/--output");
+      }
+      if (mapping_parameters.atac_fragment_binary_output_file_path ==
+          mapping_parameters.atac_fragment_output_file_path) {
+        chromap::ExitWithMessage(
+            "--atac-fragment-binary-output path must differ from "
+            "--atac-fragments");
+      }
+    }
+
     if (mapping_parameters.call_macs3_frag_peaks) {
       // Two reachable shapes:
-      //   (a) BAM/CRAM dual + --atac-fragments  (AtacDualFragmentAndBam() true)
-      //   (b) BED-only PE+barcoded output       (BED format, paired-end, -b set)
+      //   (a) BAM/CRAM dual + --atac-fragments  (bulk or barcoded)
+      //   (b) BED-only PE output                (BED format, paired-end)
       const bool be_dual = mapping_parameters.AtacDualFragmentAndBam();
-      const bool be_bed = (mapping_parameters.mapping_output_format ==
-                               MAPPINGFORMAT_BED &&
-                           !mapping_parameters.read_file2_paths.empty() &&
-                           !mapping_parameters.barcode_file_paths.empty());
-      if (!be_dual && !be_bed) {
+      const bool be_bed_pe = (mapping_parameters.mapping_output_format ==
+                                  MAPPINGFORMAT_BED &&
+                              !mapping_parameters.read_file2_paths.empty());
+      const bool has_barcode = !mapping_parameters.barcode_file_paths.empty();
+      const bool memory_source =
+          mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory;
+      if (!be_dual && !be_bed_pe) {
         chromap::ExitWithMessage(
             "--call-macs3-frag-peaks requires either:\n"
-            "  (a) BAM/CRAM dual: paired-end barcoded reads, --BAM or --CRAM, "
+            "  (a) BAM/CRAM dual: paired-end reads, --BAM or --CRAM, "
             "and --atac-fragments\n"
-            "  (b) BED-only:      paired-end barcoded reads with default "
-            "(BED) output");
+            "  (b) BED-only:      paired-end reads with default (BED) output\n"
+            "                     (bulk allowed only with "
+            "--macs3-frag-peaks-source memory)");
+      }
+      if ((be_dual || be_bed_pe) && !has_barcode && !memory_source) {
+        chromap::ExitWithMessage(
+            "--call-macs3-frag-peaks on bulk (no-barcode) fragments requires "
+            "--macs3-frag-peaks-source memory; the file-source loader expects "
+            "5-col fragments TSV (duplicate count in column 5), but bulk BED "
+            "puts MAPQ in column 5");
       }
       if (mapping_parameters.macs3_frag_peaks_narrowpeak_path.empty() ||
           mapping_parameters.macs3_frag_peaks_summits_path.empty()) {
@@ -1545,8 +1581,15 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     } else {
       // Paired-end reads.
       if (mapping_parameters.AtacDualFragmentAndBam()) {
-        chromap_for_mapping
-            .MapPairedEndReads<chromap::PairedEndAtacDualMapping>();
+        chromap_for_mapping.MapPairedEndReads<chromap::AtacSpillRecord>();
+      } else if (mapping_parameters.low_memory_mode &&
+                 !mapping_parameters.is_bulk_data &&
+                 (mapping_parameters.mapping_output_format ==
+                      MAPPINGFORMAT_BED ||
+                  mapping_parameters.mapping_output_format ==
+                      MAPPINGFORMAT_TAGALIGN) &&
+                 result.count("b") != 0) {
+        chromap_for_mapping.MapPairedEndReads<chromap::AtacSpillRecord>();
       } else
       switch (mapping_parameters.mapping_output_format) {
         case MAPPINGFORMAT_PAF: {
@@ -1702,7 +1745,9 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       }
       WriteMacs3FragPeakSidecar(
           mapping_parameters.summary_metadata_file_path,
-          mapping_parameters.atac_fragment_output_file_path,
+          mapping_parameters.AtacDualFragmentAndBam()
+              ? mapping_parameters.atac_fragment_output_file_path
+              : mapping_parameters.mapping_output_file_path,
           mapping_parameters.macs3_frag_peaks_narrowpeak_path,
           mapping_parameters.macs3_frag_peaks_summits_path, work_used, keep,
           mapping_parameters.macs3_frag_pvalue, mapping_parameters.macs3_frag_min_length,

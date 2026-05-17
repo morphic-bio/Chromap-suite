@@ -13,11 +13,13 @@
 #include <unordered_set>
 
 #include <sstream> // Used for frip est params splitting
+#include <type_traits>
 
 #include "candidate_processor.h"
 #include "cxxopts.hpp"
 #include "draft_mapping_generator.h"
 #include "feature_barcode_matrix.h"
+#include "atac_spill_record.h"
 #include "index.h"
 #include "index_parameters.h"
 #include "khash.h"
@@ -632,6 +634,7 @@ void Chromap::MapSingleEndReads() {
                   mapping_writer.OutputTempMappingsToOverflow(num_reference_sequences,
                                                               mappings_on_diff_ref_seqs);
                   mapping_writer.RotateThreadOverflowWriter();
+                  RecordLowMemMidBatchOverflowFlush();
 #else
                   mapping_writer.OutputTempMappings(num_reference_sequences,
                                                     mappings_on_diff_ref_seqs,
@@ -786,7 +789,7 @@ void Chromap::MapPairedEndReads() {
   double real_start_time = GetRealTime();
 
   // ATAC dual output (--atac-fragments + --BAM/--CRAM) under --low-mem
-  // is supported as of relink-libmacs3 — the PairedEndAtacDualMapping
+  // is supported as of relink-libmacs3 — the AtacSpillRecord
   // overflow path in mapping_writer.cc emits both streams identically
   // to the non-low-mem path on read-back.
 
@@ -976,14 +979,21 @@ void Chromap::MapPairedEndReads() {
       custom_limit = 1;
     }
     max_num_mappings_in_mem = custom_limit;
-  } else if (mapping_parameters_.AtacDualFragmentAndBam() &&
-             mapping_parameters_.low_memory_mode) {
-    // PairedEndAtacDualMapping is much larger than PairedEndMappingWithBarcode.
-    // Using sizeof(MappingRecord) alone flushes overflow far earlier than
-    // fragment-only ATAC, changing merge/dedup and breaking fragment parity.
-    // Match the default BED paired-end spill count (same as --preset atac).
-    max_num_mappings_in_mem =
-        ((uint64_t)1 << 30) / sizeof(PairedEndMappingWithBarcode);
+  }
+
+  uint64_t current_mapping_buffer_bytes = 0;
+  uint64_t max_mapping_buffer_bytes = 0;
+  const bool atac_lowmem_use_byte_threshold =
+      mapping_parameters_.low_memory_mode &&
+      std::is_same<MappingRecord, AtacSpillRecord>::value;
+#ifndef LEGACY_OVERFLOW
+  ResetLowMemMidBatchOverflowFlushCount();
+#endif
+  if (atac_lowmem_use_byte_threshold) {
+    max_mapping_buffer_bytes =
+        mapping_parameters_.low_mem_ram_limit > 0
+            ? mapping_parameters_.low_mem_ram_limit
+            : (1ull << 30);
   }
   
   static uint64_t thread_num_candidates = 0;
@@ -1080,7 +1090,7 @@ void Chromap::MapPairedEndReads() {
                                  AtacPermitThreadState{});
     }
 
-#pragma omp parallel shared(num_reads_, num_reference_sequences, reference, index, read_batch1, read_batch2, barcode_batch, read_batch1_for_loading, read_batch2_for_loading, barcode_batch_for_loading, minimizer_generator, candidate_processor, mapping_processor, draft_mapping_generator, mapping_generator, mapping_writer, std::cerr, num_loaded_pairs_for_loading, num_loaded_pairs, mappings_on_diff_ref_seqs_for_diff_threads, mappings_on_diff_ref_seqs_for_diff_threads_for_saving, mappings_on_diff_ref_seqs, num_mappings_in_mem, max_num_mappings_in_mem, temp_mapping_file_handles, mm_to_candidates_cache, mm_history1, mm_history2, read_map_summary, y_contig_rids, thread_y_hit_read_ids, permit_thread_state) num_threads(mapping_parameters_.num_threads) reduction(+:num_candidates_, num_mappings_, num_mapped_reads_, num_uniquely_mapped_reads_, num_barcode_in_whitelist_, num_corrected_barcode_)
+#pragma omp parallel shared(num_reads_, num_reference_sequences, reference, index, read_batch1, read_batch2, barcode_batch, read_batch1_for_loading, read_batch2_for_loading, barcode_batch_for_loading, minimizer_generator, candidate_processor, mapping_processor, draft_mapping_generator, mapping_generator, mapping_writer, std::cerr, num_loaded_pairs_for_loading, num_loaded_pairs, mappings_on_diff_ref_seqs_for_diff_threads, mappings_on_diff_ref_seqs_for_diff_threads_for_saving, mappings_on_diff_ref_seqs, num_mappings_in_mem, max_num_mappings_in_mem, current_mapping_buffer_bytes, max_mapping_buffer_bytes, temp_mapping_file_handles, mm_to_candidates_cache, mm_history1, mm_history2, read_map_summary, y_contig_rids, thread_y_hit_read_ids, permit_thread_state) num_threads(mapping_parameters_.num_threads) reduction(+:num_candidates_, num_mappings_, num_mapped_reads_, num_uniquely_mapped_reads_, num_barcode_in_whitelist_, num_corrected_barcode_)
     {
       thread_num_candidates = 0;
       thread_num_mappings = 0;
@@ -1547,19 +1557,30 @@ void Chromap::MapPairedEndReads() {
 #pragma omp task
           {
             // Handle output
+            uint64_t added_bytes = 0;
             uint32_t added_mappings =
                 mapping_processor.MoveMappingsInBuffersToMappingContainer(
                     num_reference_sequences,
                     mappings_on_diff_ref_seqs_for_diff_threads_for_saving,
-                    mappings_on_diff_ref_seqs);
-            
+                    mappings_on_diff_ref_seqs,
+                    atac_lowmem_use_byte_threshold ? &added_bytes : nullptr);
+
 #pragma omp atomic
             num_mappings_in_mem += added_mappings;
-            
+            if (atac_lowmem_use_byte_threshold) {
+#pragma omp atomic
+              current_mapping_buffer_bytes += added_bytes;
+            }
+
             if (mapping_parameters_.low_memory_mode) {
 #pragma omp critical(output_flush)
               {
-                if (num_mappings_in_mem > max_num_mappings_in_mem) {
+                const bool should_flush =
+                    atac_lowmem_use_byte_threshold
+                        ? (current_mapping_buffer_bytes >
+                           max_mapping_buffer_bytes)
+                        : (num_mappings_in_mem > max_num_mappings_in_mem);
+                if (should_flush) {
                   mapping_processor.ParallelSortOutputMappings(num_reference_sequences,
                                                        mappings_on_diff_ref_seqs, 0);
 
@@ -1567,17 +1588,21 @@ void Chromap::MapPairedEndReads() {
                   mapping_writer.OutputTempMappingsToOverflow(num_reference_sequences,
                                                               mappings_on_diff_ref_seqs);
                   mapping_writer.RotateThreadOverflowWriter();
+                  RecordLowMemMidBatchOverflowFlush();
 #else
                   mapping_writer.OutputTempMappings(num_reference_sequences,
                                                     mappings_on_diff_ref_seqs,
                                                     temp_mapping_file_handles);
                   if (temp_mapping_file_handles.size() > 850
-                      && temp_mapping_file_handles.size() % 10 == 1) { // every 10 temp files, double the temp file size
+                      && temp_mapping_file_handles.size() % 10 == 1) { // every 10 temp files, double the temp file volume
                     max_num_mappings_in_mem <<= 1;
                     std::cerr << "Used " << temp_mapping_file_handles.size() << "temp files. Double the temp file volume to " << max_num_mappings_in_mem << "\n" ;
                   }
 #endif
                   num_mappings_in_mem = 0;
+                  if (atac_lowmem_use_byte_threshold) {
+                    current_mapping_buffer_bytes = 0;
+                  }
                 }
               }
             }
@@ -1674,6 +1699,9 @@ void Chromap::MapPairedEndReads() {
                                         temp_mapping_file_handles);
 #endif
       num_mappings_in_mem = 0;
+      if (atac_lowmem_use_byte_threshold) {
+        current_mapping_buffer_bytes = 0;
+      }
     }
 
 #ifndef LEGACY_OVERFLOW
@@ -1696,8 +1724,8 @@ void Chromap::MapPairedEndReads() {
 
     if (mapping_parameters_.remove_pcr_duplicates) {
       mapping_processor.RemovePCRDuplicate(num_reference_sequences,
-                                           mappings_on_diff_ref_seqs,
-                                           mapping_parameters_.num_threads);
+                                         mappings_on_diff_ref_seqs,
+                                         mapping_parameters_.num_threads);
       std::cerr << "After removing PCR duplications, ";
       mapping_processor.OutputMappingStatistics(num_reference_sequences,
                                                 mappings_on_diff_ref_seqs);

@@ -82,7 +82,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 
 -include $(deps)
 
-.PHONY: clean test-unit test-frag-compact-store test-libchromap-core-smoke \
+.PHONY: clean test-unit test-atac-spill-record-roundtrip test-atac-runtime-spill-schema-harness test-frag-compact-store test-libchromap-core-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 test-peak-memory-source-100k \
 	benchmark-peak-memory-fullset test-peak-100k test-peak-calibration-100k \
@@ -152,9 +152,20 @@ test-lowmem-bed-100k: chromap
 # Cheap smoke bundle: unit + frag_compact_store + the two integration
 # matrices that cover the chromap+MACS3 integration surface end-to-end.
 # ~3 min total; suitable for pre-commit CI.
-test-smoke: test-unit test-frag-compact-store \
+test-smoke: test-unit test-frag-compact-store test-atac-spill-record-roundtrip \
             test-lowmem-bed-100k \
             test-peak-integration-matrix-100k
+
+# ATAC runtime spill record serde (prefix-only + BAM-pair payload).
+test-atac-spill-record-roundtrip: dir
+	@mkdir -p tests
+	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_atac_spill_record_roundtrip.cc \
+		-o tests/test_atac_spill_record_roundtrip $(LDFLAGS)
+	./tests/test_atac_spill_record_roundtrip
+
+# ATAC spill schema + low-memory parity harness (100K fixture; optional paths).
+test-atac-runtime-spill-schema-harness: chromap
+	./tests/run_atac_runtime_spill_schema_harness.sh
 
 # Unit test for Y-filtering
 test-unit: dir

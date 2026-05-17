@@ -298,7 +298,7 @@ inline void TempMappingFileHandle<PairsMapping>::LoadTempMappingBlock(
 }
 
 template <>
-inline void TempMappingFileHandle<PairedEndAtacDualMapping>::LoadTempMappingBlock(
+inline void TempMappingFileHandle<AtacSpillRecord>::LoadTempMappingBlock(
     uint32_t num_reference_sequences) {
   num_mappings = 0;
   while (num_mappings == 0) {
@@ -309,7 +309,7 @@ inline void TempMappingFileHandle<PairedEndAtacDualMapping>::LoadTempMappingBloc
         num_mappings_to_load_on_current_rid = block_size;
       }
       for (size_t mi = 0; mi < num_mappings_to_load_on_current_rid; ++mi) {
-        mappings[mi].LoadFromFile(file);
+        mappings[mi].LoadFromFile(file, kAtacSpillPayloadMaskAuthoritative);
       }
       num_loaded_mappings_on_current_rid += num_mappings_to_load_on_current_rid;
       num_mappings = num_mappings_to_load_on_current_rid;

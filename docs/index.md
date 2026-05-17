@@ -4,6 +4,7 @@
 * [HISTORY](https://github.com/morphic-bio/Chromap-suite/blob/master/HISTORY.md): project lineage (spun off from `haowenz/chromap` in 2026) and pre-spinoff fork notes
 * [Manpage](chromap.html): legacy CLI option reference (inherited from Chromap; the README covers Chromap Suite's new flags)
 * [BAM sort specification](sort_spec.md): coordinate-sort key, `samtools sort` differences, indexing rules
+* [ATAC runtime spill schema runbook](atac_runtime_spill_schema_runbook.md): design and harness plan for one low-memory ATAC spill buffer across fragments, sidecar, and BAM output
 * [Chromap Launchpad](chromap_launchpad.md): browser-based recipe builder served from the MCP server
 * [MCP server](https://github.com/morphic-bio/Chromap-suite/blob/master/mcp_server/README.md): recipe registry, Launchpad API, preflight, run manifests, test tiers
 * [GitHub Issues](https://github.com/morphic-bio/Chromap-suite/issues): report bugs, request features, ask questions
