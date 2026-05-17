@@ -186,9 +186,10 @@ struct MappingParameters {
   }
 
   // Dual ATAC: BAM/CRAM to mapping_output_file_path and fragments to
-  // atac_fragment_output_file_path (one pass; not supported with --low-mem).
+  // atac_fragment_output_file_path in one mapping pass. Works for scATAC
+  // (barcode files present) and bulk ATAC (no barcode files).
   bool AtacDualFragmentAndBam() const {
-    return !read_file2_paths.empty() && !barcode_file_paths.empty() &&
+    return !read_file2_paths.empty() &&
            !atac_fragment_output_file_path.empty() &&
            (mapping_output_format == MAPPINGFORMAT_BAM ||
             mapping_output_format == MAPPINGFORMAT_CRAM);

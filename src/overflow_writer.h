@@ -15,6 +15,10 @@ public:
     explicit OverflowWriter(const std::string& base_dir = "", const std::string& prefix = "chromap_of");
     ~OverflowWriter();
 
+    // When enabled, each newly opened overflow file begins with
+    // AtacSpillFileHeader (magic, version, schema_mask, codec version).
+    void EnableAtacSpillFileHeader(uint16_t schema_mask);
+
     // Thread-safe: write a record to thread-local file for the given rid
     template<typename MappingRecord>
     void Write(uint32_t rid, const MappingRecord& rec) {
@@ -34,8 +38,12 @@ public:
     std::vector<std::string> Close();
 
 private:
+    bool WriteAtacSpillFileHeaderIfNeeded(FILE* fp);
+
     std::string base_dir_;
     std::string prefix_;
+    bool atac_spill_header_enabled_ = false;
+    uint16_t atac_spill_schema_mask_ = 0;
     static std::atomic<uint32_t> global_counter_;
     
     // Thread-local storage for file handles

@@ -25,6 +25,7 @@ objs/
 
 # Test binaries
 tests/test_y_filter
+tests/test_atac_spill_record_roundtrip
 
 # Test outputs
 tests/bamwriter/out/

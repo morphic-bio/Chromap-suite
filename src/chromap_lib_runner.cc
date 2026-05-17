@@ -190,6 +190,23 @@ void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
     chromap::ExitWithMessage(
         "--emit-Y-bam requires --Y-output when primary output is stdout");
   }
+  if (!mapping_parameters.atac_fragment_binary_output_file_path.empty()) {
+    if (!mapping_parameters.AtacDualFragmentAndBam()) {
+      chromap::ExitWithMessage(
+          "--atac-fragment-binary-output requires paired-end reads, "
+          "--BAM or --CRAM, and --atac-fragments");
+    }
+    if (mapping_parameters.atac_fragment_binary_output_file_path ==
+        mapping_parameters.mapping_output_file_path) {
+      chromap::ExitWithMessage(
+          "--atac-fragment-binary-output path must differ from -o/--output");
+    }
+    if (mapping_parameters.atac_fragment_binary_output_file_path ==
+        mapping_parameters.atac_fragment_output_file_path) {
+      chromap::ExitWithMessage(
+          "--atac-fragment-binary-output path must differ from --atac-fragments");
+    }
+  }
 }
 
 void PrintRunSummary(const chromap::MappingParameters &mapping_parameters) {
@@ -242,6 +259,9 @@ int main(int argc, char **argv) {
       ("o,output", "Mapping output path",
        cxxopts::value<std::string>(), "FILE")
       ("atac-fragments", "Secondary ATAC fragments output path",
+       cxxopts::value<std::string>(), "FILE")
+      ("atac-fragment-binary-output",
+       "AEV1 binary sidecar path (requires --atac-fragments and --BAM/--CRAM)",
        cxxopts::value<std::string>(), "FILE")
       ("summary", "Summary metadata output path",
        cxxopts::value<std::string>(), "FILE")
@@ -376,6 +396,10 @@ int main(int argc, char **argv) {
     if (result.count("atac-fragments")) {
       mapping_parameters.atac_fragment_output_file_path =
           result["atac-fragments"].as<std::string>();
+    }
+    if (result.count("atac-fragment-binary-output")) {
+      mapping_parameters.atac_fragment_binary_output_file_path =
+          result["atac-fragment-binary-output"].as<std::string>();
     }
     if (result.count("summary")) {
       mapping_parameters.summary_metadata_file_path =

@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "atac_spill_record.h"
 #include "bed_mapping.h"
 #include "mapping.h"
 #include "mapping_parameters.h"
@@ -20,6 +21,16 @@
 #include "utils.h"
 
 namespace chromap {
+
+template <typename T>
+inline uint64_t MappingBufferBytesForLowMem(const T &) {
+  return static_cast<uint64_t>(sizeof(T));
+}
+
+template <>
+inline uint64_t MappingBufferBytesForLowMem(const AtacSpillRecord &m) {
+  return static_cast<uint64_t>(m.HeapMemoryBytes());
+}
 
 template <typename MappingRecord>
 bool ReadIdLess(const std::pair<uint32_t, MappingRecord> &a,
@@ -73,7 +84,8 @@ class MappingProcessor {
       uint32_t num_reference_sequences,
       std::vector<std::vector<std::vector<MappingRecord>>>
           &mappings_on_diff_ref_seqs_for_diff_threads_for_saving,
-      std::vector<std::vector<MappingRecord>> &mappings_on_diff_ref_seqs);
+      std::vector<std::vector<MappingRecord>> &mappings_on_diff_ref_seqs,
+      uint64_t *out_added_buffer_bytes = nullptr);
 
   void OutputMappingStatistics(
       uint32_t num_reference_sequences,
@@ -463,28 +475,33 @@ MappingProcessor<MappingRecord>::MoveMappingsInBuffersToMappingContainer(
     uint32_t num_reference_sequences,
     std::vector<std::vector<std::vector<MappingRecord>>>
         &mappings_on_diff_ref_seqs_for_diff_threads_for_saving,
-    std::vector<std::vector<MappingRecord>> &mappings_on_diff_ref_seqs) {
+    std::vector<std::vector<MappingRecord>> &mappings_on_diff_ref_seqs,
+    uint64_t *out_added_buffer_bytes) {
   // double real_start_time = Chromap<>::GetRealTime();
   uint32_t num_moved_mappings = 0;
+  uint64_t added_bytes = 0;
   for (size_t ti = 0;
        ti < mappings_on_diff_ref_seqs_for_diff_threads_for_saving.size();
        ++ti) {
     for (uint32_t i = 0; i < num_reference_sequences; ++i) {
-      num_moved_mappings +=
-          mappings_on_diff_ref_seqs_for_diff_threads_for_saving[ti][i].size();
+      auto &src =
+          mappings_on_diff_ref_seqs_for_diff_threads_for_saving[ti][i];
+      num_moved_mappings += static_cast<uint32_t>(src.size());
+      if (out_added_buffer_bytes) {
+        for (const auto &m : src) {
+          added_bytes += MappingBufferBytesForLowMem(m);
+        }
+      }
       mappings_on_diff_ref_seqs[i].insert(
           mappings_on_diff_ref_seqs[i].end(),
-          std::make_move_iterator(
-              mappings_on_diff_ref_seqs_for_diff_threads_for_saving[ti][i]
-                  .begin()),
-          std::make_move_iterator(
-              mappings_on_diff_ref_seqs_for_diff_threads_for_saving[ti][i]
-                  .end()));
-      mappings_on_diff_ref_seqs_for_diff_threads_for_saving[ti][i].clear();
+          std::make_move_iterator(src.begin()),
+          std::make_move_iterator(src.end()));
+      src.clear();
     }
   }
-  // std::cerr << "Moved mappings in " << Chromap<>::GetRealTime() -
-  // real_start_time << "s.\n";
+  if (out_added_buffer_bytes) {
+    *out_added_buffer_bytes += added_bytes;
+  }
   return num_moved_mappings;
 }
 

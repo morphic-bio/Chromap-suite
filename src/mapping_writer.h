@@ -48,6 +48,15 @@
 
 namespace chromap {
 
+#ifndef LEGACY_OVERFLOW
+// Counts low-memory overflow flushes triggered from the per-batch mapping
+// loop (excludes the single end-of-run drain in MapPairedEndReads). Used for
+// harness assertions and diagnostics.
+void RecordLowMemMidBatchOverflowFlush();
+void ResetLowMemMidBatchOverflowFlushCount();
+uint32_t LowMemMidBatchOverflowFlushCount();
+#endif
+
 #pragma pack(push, 1)
 struct AtacEvidenceBinaryHeader {
   char magic[4];
@@ -90,8 +99,7 @@ class MappingWriter {
           mapping_parameters_.barcode_translate_from_first_column);
     }
     summary_metadata_.SetBarcodeLength(cell_barcode_length);
-    if (mapping_parameters_.AtacDualFragmentAndBam() &&
-        mapping_parameters_.atac_fragment_binary_output_file_path.empty()) {
+    if (mapping_parameters_.AtacDualFragmentAndBam()) {
       const std::string &af =
           mapping_parameters_.atac_fragment_output_file_path;
       if (af.size() >= 3 && af.compare(af.size() - 3, 3, ".gz") == 0) {
@@ -912,40 +920,40 @@ void MappingWriter<SAMMapping>::CloseYFilterStreams();
 template <>
 void MappingWriter<SAMMapping>::FinalizeSortedOutput();
 
-// ATAC dual output: BED fragments + BAM/CRAM (paired barcoded reads only).
+// ATAC spill record: dual BAM+fragments and scATAC BED --low-mem (barcoded PE).
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::OutputHeader(
+void MappingWriter<AtacSpillRecord>::OutputHeader(
     uint32_t num_reference_sequences, const SequenceBatch &reference);
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::AppendMapping(
+void MappingWriter<AtacSpillRecord>::AppendMapping(
     uint32_t rid, const SequenceBatch &reference,
-    const PairedEndAtacDualMapping &mapping);
+    const AtacSpillRecord &mapping);
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::OutputTempMapping(
+void MappingWriter<AtacSpillRecord>::OutputTempMapping(
     const std::string &temp_mapping_output_file_path,
     uint32_t num_reference_sequences,
-    const std::vector<std::vector<PairedEndAtacDualMapping>> &mappings);
+    const std::vector<std::vector<AtacSpillRecord>> &mappings);
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::OpenHtsOutput();
+void MappingWriter<AtacSpillRecord>::OpenHtsOutput();
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::CloseHtsOutput();
+void MappingWriter<AtacSpillRecord>::CloseHtsOutput();
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::BuildHtsHeader(
+void MappingWriter<AtacSpillRecord>::BuildHtsHeader(
     uint32_t num_reference_sequences, const SequenceBatch &reference);
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::OpenYFilterStreams();
+void MappingWriter<AtacSpillRecord>::OpenYFilterStreams();
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::CloseYFilterStreams();
+void MappingWriter<AtacSpillRecord>::CloseYFilterStreams();
 
 template <>
-void MappingWriter<PairedEndAtacDualMapping>::FinalizeSortedOutput();
+void MappingWriter<AtacSpillRecord>::FinalizeSortedOutput();
 
 // Specialization for pairs format.
 template <>

@@ -70,7 +70,15 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
       }
     } else {
       if (mapping_parameters.AtacDualFragmentAndBam()) {
-        chromap_for_mapping.MapPairedEndReads<PairedEndAtacDualMapping>();
+        chromap_for_mapping.MapPairedEndReads<AtacSpillRecord>();
+      } else if (mapping_parameters.low_memory_mode &&
+                 !mapping_parameters.is_bulk_data &&
+                 (mapping_parameters.mapping_output_format ==
+                      MAPPINGFORMAT_BED ||
+                  mapping_parameters.mapping_output_format ==
+                      MAPPINGFORMAT_TAGALIGN) &&
+                 !mapping_parameters.barcode_file_paths.empty()) {
+        chromap_for_mapping.MapPairedEndReads<AtacSpillRecord>();
       } else {
         switch (mapping_parameters.mapping_output_format) {
           case MAPPINGFORMAT_PAF:
@@ -114,14 +122,22 @@ namespace {
 ChromapRunResult RunMacs3FragPeaksFromMappingParameters(
     MappingParameters &mapping_parameters) {
   const bool be_dual = mapping_parameters.AtacDualFragmentAndBam();
-  const bool be_bed =
+  const bool be_bed_pe =
       (mapping_parameters.mapping_output_format == MAPPINGFORMAT_BED &&
-       !mapping_parameters.read_file2_paths.empty() &&
-       !mapping_parameters.barcode_file_paths.empty());
-  if (!be_dual && !be_bed) {
+       !mapping_parameters.read_file2_paths.empty());
+  const bool has_barcode = !mapping_parameters.barcode_file_paths.empty();
+  const bool memory_source =
+      mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory;
+  if (!be_dual && !be_bed_pe) {
     return MakeFailure(mapping_parameters,
                        "MACS3 FRAG peaks require BAM/CRAM dual + --atac-fragments "
-                       "or paired-end barcoded BED output");
+                       "or paired-end BED output");
+  }
+  if ((be_dual || be_bed_pe) && !has_barcode && !memory_source) {
+    return MakeFailure(
+        mapping_parameters,
+        "MACS3 FRAG peaks on bulk (no-barcode) fragments require memory source; "
+        "file source expects 5-col fragments TSV with duplicate count in column 5");
   }
   if (mapping_parameters.macs3_frag_peaks_narrowpeak_path.empty() ||
       mapping_parameters.macs3_frag_peaks_summits_path.empty()) {
@@ -235,10 +251,6 @@ ChromapRunResult RunAtacMapping(const MappingParameters &mapping_parameters) {
   }
   if (mapping_parameters.read_file2_paths.empty()) {
     return MakeFailure(mapping_parameters, "ATAC mapping requires read 2 input");
-  }
-  if (mapping_parameters.barcode_file_paths.empty()) {
-    return MakeFailure(mapping_parameters,
-                       "ATAC mapping requires barcode input");
   }
   if (mapping_parameters.mapping_output_format != MAPPINGFORMAT_BED &&
       mapping_parameters.mapping_output_format != MAPPINGFORMAT_TAGALIGN &&
