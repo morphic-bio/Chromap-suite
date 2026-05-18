@@ -60,6 +60,18 @@ def test_current_public_recipes_have_handoff_or_output_metadata():
         assert recipe.handoff_artifacts
 
 
+def test_atac_bam_fragments_recipe_exposes_sidecar_metadata():
+    recipe = get_recipe("chromap_atac_bam_fragments")
+    assert recipe is not None
+
+    input_names = {input_def.name for input_def in recipe.inputs}
+    outputs = {output.name: output.path_template for output in recipe.outputs}
+
+    assert "atac_fragment_binary_output" in input_names
+    assert outputs["fragments_binary_sidecar"] == "{atac_fragment_binary_output}"
+    assert outputs["fragments_binary_chroms"] == "{atac_fragment_binary_output}.chroms.tsv"
+
+
 def test_planned_recipes_are_metadata_only():
     for recipe_id in PLANNED_RECIPES:
         recipe = get_recipe(recipe_id)

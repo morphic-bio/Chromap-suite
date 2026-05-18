@@ -107,7 +107,7 @@ recipes:
 
   - id: chromap_atac_bam_fragments
     title: Chromap ATAC BAM + fragments
-    purpose: Map barcoded paired-end ATAC reads and emit BAM plus scATAC fragments.
+    purpose: Map barcoded paired-end ATAC reads and emit BAM plus scATAC fragments, with optional AEV1 binary sidecar output.
     enabled: true
     workflow_id: chromap_atac_bam_fragments
     runtime_class: interactive
@@ -160,6 +160,10 @@ recipes:
         type: file
         required: true
         description: Output fragments TSV/TSV.GZ path.
+      - name: atac_fragment_binary_output
+        type: file
+        required: false
+        description: Optional AEV1 binary sidecar path; Chromap also writes <path>.chroms.tsv.
     outputs:
       - name: bam
         artifact_type: bam
@@ -171,9 +175,14 @@ recipes:
         description: scATAC fragments table.
       - name: fragments_binary_sidecar
         artifact_type: other
-        path_template: "{atac_fragments}.bin"
+        path_template: "{atac_fragment_binary_output}"
         required: false
-        description: Optional binary sidecar equivalent of the fragments table.
+        description: Optional AEV1 binary sidecar equivalent of the fragments table.
+      - name: fragments_binary_chroms
+        artifact_type: other
+        path_template: "{atac_fragment_binary_output}.chroms.tsv"
+        required: false
+        description: Chromosome id/name metadata written with the AEV1 sidecar.
     preflight:
       - reference_fasta_exists
       - chromap_index_exists
@@ -192,8 +201,10 @@ recipes:
     handoff_artifacts:
       - BAM consumed by downstream alignment/QC tools.
       - fragments TSV consumed by ATAC peak and evidence workflows.
-      - fragments binary sidecar may replace TSV rereads in in-memory evidence workflows.
+      - AEV1 fragments binary sidecar plus .chroms.tsv metadata may replace TSV rereads in in-memory evidence workflows.
       - STAR Suite may consume fragments or derived evidence TSVs.
+    notes:
+      - Set atac_fragment_binary_output to render --atac-fragment-binary-output and produce the AEV1 sidecar plus .chroms.tsv metadata.
 
   - id: chromap_hic_pairs
     title: Chromap Hi-C pairs

@@ -1,12 +1,12 @@
 id: chromap_atac_bam_fragments
 title: Chromap ATAC BAM + fragments
-summary: Map barcoded paired-end ATAC reads and emit BAM plus scATAC fragments.
+summary: Map barcoded paired-end ATAC reads and emit BAM plus scATAC fragments, with optional AEV1 sidecar output.
 kind: chromap_cli
 entry_script: chromap
 supported_modes: ["local", "dry-run-capable"]
 caveats:
-  - "--atac-fragments is incompatible with --low-mem in Chromap."
-default_output_layout: "BAM/CRAM is written to --output; fragment rows are written to --atac-fragments."
+  - "The optional AEV1 sidecar requires --atac-fragments and BAM/CRAM output."
+default_output_layout: "BAM/CRAM is written to --output; fragment rows are written to --atac-fragments; optional AEV1 sidecar output is written to --atac-fragment-binary-output plus <sidecar>.chroms.tsv."
 scripts:
   - role: entry
     path: chromap
@@ -23,7 +23,7 @@ parameter_groups:
     parameters: [reference, index, read1, read2, barcode, barcode_whitelist]
   - name: output
     title: Output
-    parameters: [output, atac_fragments, summary, sort_bam, write_index]
+    parameters: [output, atac_fragments, atac_fragment_binary_output, summary, sort_bam, write_index]
   - name: mapping
     title: Mapping
     parameters: [num_threads, hts_threads, mapq_threshold, max_insert_size, remove_pcr_duplicates, tn5_shift, temp_dir]
@@ -74,6 +74,10 @@ parameters:
     type: file
     required: true
     description: Output scATAC fragments TSV/TSV.GZ path.
+  - name: atac_fragment_binary_output
+    cli_flag: --atac-fragment-binary-output
+    type: file
+    description: Optional AEV1 binary sidecar path; also writes <path>.chroms.tsv.
   - name: summary
     cli_flag: --summary
     type: file
@@ -170,7 +174,7 @@ parameters:
     description: BAM output mode.
     widget_hint: hidden
 rendering:
-  flag_order: [preset, bam, reference, index, read1, read2, barcode, barcode_whitelist, output, atac_fragments, summary, num_threads, hts_threads, mapq_threshold, max_insert_size, remove_pcr_duplicates, tn5_shift, sort_bam, write_index, temp_dir, call_macs3_frag_peaks, macs3_frag_peaks_output, macs3_frag_summits_output, macs3_frag_peaks_source, macs3_frag_low_mem]
+  flag_order: [preset, bam, reference, index, read1, read2, barcode, barcode_whitelist, output, atac_fragments, atac_fragment_binary_output, summary, num_threads, hts_threads, mapq_threshold, max_insert_size, remove_pcr_duplicates, tn5_shift, sort_bam, write_index, temp_dir, call_macs3_frag_peaks, macs3_frag_peaks_output, macs3_frag_summits_output, macs3_frag_peaks_source, macs3_frag_low_mem]
 constraints:
   - kind: positive
     params: [num_threads, hts_threads, max_insert_size]
