@@ -69,6 +69,28 @@ def test_atac_bam_fragments_renders_peak_options(loaded_default_config):
     assert result.argv[result.argv.index("--macs3-frag-peaks-source") + 1] == "memory"
 
 
+def test_atac_bam_fragments_renders_optional_sidecar(loaded_default_config):
+    result = render_workflow_command(
+        "chromap_atac_bam_fragments",
+        {
+            "reference": "ref.fa",
+            "index": "ref.idx",
+            "read1": "r1.fastq.gz",
+            "read2": "r2.fastq.gz",
+            "barcode": "bc.fastq.gz",
+            "output": "out.bam",
+            "atac_fragments": "fragments.tsv.gz",
+            "atac_fragment_binary_output": "fragments.bin",
+        },
+    )
+
+    assert "--atac-fragment-binary-output" in result.argv
+    assert (
+        result.argv[result.argv.index("--atac-fragment-binary-output") + 1]
+        == "fragments.bin"
+    )
+
+
 def test_hic_pairs_renders_pairs_command(loaded_default_config):
     result = render_workflow_command(
         "chromap_hic_pairs",

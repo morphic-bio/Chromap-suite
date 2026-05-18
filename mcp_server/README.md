@@ -56,9 +56,10 @@ runtime class, benchmark policy, docs, and STAR Suite/downstream handoff
 artifacts.
 
 Current handoff metadata covers Chromap-owned ATAC BAM, fragments TSV, optional
-fragments binary sidecar, integrated MACS3 peak outputs, ATAC evidence TSV, and
-Hi-C `.pairs`. STAR Suite lives at `/mnt/pikachu/STAR-suite` and may consume
-these artifacts, but STAR orchestration is not a Chromap Launchpad default.
+AEV1 fragments binary sidecar output plus its `<sidecar>.chroms.tsv` metadata,
+integrated MACS3 peak outputs, ATAC evidence TSV, and Hi-C `.pairs`. STAR Suite
+lives at `/mnt/pikachu/STAR-suite` and may consume these artifacts, but STAR
+orchestration is not a Chromap Launchpad default.
 
 Launchpad recipe endpoints:
 
@@ -116,6 +117,10 @@ rule ids before command rendering or execution. It returns per-rule
 rendered argv, shell preview, git state, binary metadata, inputs, outputs,
 preflight results, log paths, host/user context, and benchmark policy before any
 real execution.
+
+For `chromap_atac_bam_fragments`, set `atac_fragment_binary_output` to render
+`--atac-fragment-binary-output`. Expected outputs and manifests then include
+both the AEV1 binary file and the generated `<sidecar>.chroms.tsv` metadata.
 
 ## Test Tiers
 

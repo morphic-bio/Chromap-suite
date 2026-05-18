@@ -202,23 +202,39 @@ def _check_barcode_list_matches_read1(params: dict[str, Any]) -> RecipePreflight
 
 
 def _check_secondary_output_not_primary(params: dict[str, Any]) -> RecipePreflightCheck:
-    primary = params.get("output")
-    secondary_candidates = [
-        params.get("atac_fragments"),
-        params.get("noY_output"),
-        params.get("Y_output"),
-        params.get("y_read_names_output"),
-    ]
-    for secondary in secondary_candidates:
-        if primary and secondary and Path(str(primary)) == Path(str(secondary)):
-            return _check(
-                "secondary_output_not_primary",
-                "fail",
-                "Primary and secondary output paths must differ",
-                path=str(primary),
-                suggested_fix="Choose distinct output paths.",
-            )
-    return _check("secondary_output_not_primary", "pass", "Primary and secondary outputs differ")
+    named_outputs = {
+        "output": params.get("output"),
+        "atac_fragments": params.get("atac_fragments"),
+        "noY_output": params.get("noY_output"),
+        "Y_output": params.get("Y_output"),
+        "y_read_names_output": params.get("y_read_names_output"),
+        "atac_fragment_binary_output": params.get("atac_fragment_binary_output"),
+    }
+    sidecar = named_outputs["atac_fragment_binary_output"]
+    if sidecar:
+        named_outputs["atac_fragment_binary_chroms"] = f"{sidecar}.chroms.tsv"
+
+    seen: list[tuple[str, Path]] = []
+    for name, value in named_outputs.items():
+        if not value:
+            continue
+        path = Path(str(value))
+        for other_name, other_path in seen:
+            if path == other_path:
+                message = (
+                    f"Output paths must differ: {other_name} and {name} "
+                    f"both use {path}"
+                )
+                return _check(
+                    "secondary_output_not_primary",
+                    "fail",
+                    message,
+                    path=str(path),
+                    suggested_fix="Choose distinct output paths.",
+                )
+        seen.append((name, path))
+
+    return _check("secondary_output_not_primary", "pass", "Output paths are distinct")
 
 
 def _check_atac_fragments_requires_barcoded_paired_bam(params: dict[str, Any]) -> RecipePreflightCheck:

@@ -94,6 +94,13 @@ def recipe_id_for_workflow(workflow_id: str) -> str | None:
 def _output_paths(recipe: RecipeEntry, params: dict[str, Any]) -> list[str]:
     paths: list[str] = []
     for output in recipe.outputs:
+        field_names = [
+            field_name
+            for _, field_name, _, _ in Formatter().parse(output.path_template)
+            if field_name
+        ]
+        if any(params.get(field_name) in (None, "") for field_name in field_names):
+            continue
         rendered = _safe_format(output.path_template, params).strip()
         if rendered:
             paths.append(rendered)

@@ -72,6 +72,19 @@ def test_launchpad_recipe_schema_is_registry_driven(loaded_default_config):
     assert payload["outputs"][0]["artifact_type"] == "bed"
 
 
+def test_launchpad_atac_bam_recipe_schema_includes_sidecar(loaded_default_config):
+    with TestClient(build_http_app()) as client:
+        response = client.get("/launchpad/api/recipes/chromap_atac_bam_fragments/schema")
+
+    assert response.status_code == 200
+    payload = response.json()
+    names = [p["name"] for p in payload["parameters"]]
+    outputs = {out["name"]: out["path_template"] for out in payload["outputs"]}
+    assert "atac_fragment_binary_output" in names
+    assert outputs["fragments_binary_sidecar"] == "{atac_fragment_binary_output}"
+    assert outputs["fragments_binary_chroms"] == "{atac_fragment_binary_output}.chroms.tsv"
+
+
 def test_launchpad_recipe_preflight_render_and_manifest(loaded_default_config, temp_dir):
     loaded_default_config.paths.artifact_log_root = temp_dir / "artifacts"
     params = _recipe_params(temp_dir)
