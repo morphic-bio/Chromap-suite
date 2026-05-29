@@ -112,8 +112,7 @@ FASTQ harness.
 - Experiment: `ENCSR308ZGJ`
 - Assay: snATAC-seq
 - Biosample: K562 nuclear fraction
-- Layout: 10x-style ATAC, with genomic read mates in R1/R3 and barcode/index in
-  R2.
+- Layout: paired genomic read mates plus a barcode/index read in R2.
 
 Start with one lane for a fast smoke:
 
@@ -138,14 +137,14 @@ https://www.encodeproject.org/files/<ACCESSION>/@@download/<ACCESSION>.fastq.gz
 
 Whitelist source:
 
-```text
-https://www.encodeproject.org/files/737K-arc-v1(ATAC)/@@download/737K-arc-v1(ATAC).txt.gz
-```
+No public matching whitelist is recorded for this ENCODE row. The smoke should
+therefore exercise barcode/index FASTQ ingestion without `--barcode-whitelist`
+unless a future manifest row records a verified matching whitelist.
 
 Chromap smoke:
 
 ```bash
---preset atac --BED --read-format bc:0:-1 --barcode-whitelist <whitelist>
+--preset atac --BED --read-format bc:0:-1
 ```
 
 Inputs:
@@ -164,7 +163,10 @@ Checks:
 - CLI output is nonempty.
 - Runner output is nonempty.
 - Sorted non-header fragment rows are byte-identical between CLI and runner.
-- Summary files, when emitted, report at least one total barcode category.
+- Summary files report at least one total barcode category.
+- If a future scATAC row includes a whitelist, first verify that sampled barcode
+  reads match the whitelist at a meaningful rate before making it part of the
+  default smoke.
 
 ### Hi-C
 
@@ -231,8 +233,9 @@ Rules:
 
 - `layout=paired` for ChIP, bulk ATAC, and Hi-C.
 - `layout=scatac_10x_atac` for R1/R3 genomic plus R2 barcode/index input.
-- `barcode_accession`, `barcode_url`, `whitelist_id`, and `whitelist_url` are
-  empty for paired-only assays.
+- `barcode_accession` and `barcode_url` are empty for paired-only assays.
+- `whitelist_id` and `whitelist_url` are optional for scATAC. Leave them empty
+  unless the row has a verified matching whitelist.
 - Keep accessions and URLs explicit so the suite remains reproducible even if
   ENCODE search result ordering changes.
 
@@ -294,7 +297,7 @@ Behavior:
 
 7. Normalize gzip output with `gzip -n` so checksums are stable.
 8. Verify paired or triplet read-name alignment.
-9. Download/decompress the whitelist for scATAC if not already cached.
+9. Download/decompress the whitelist for scATAC if the manifest provides one.
 10. Write `manifest.generated.tsv`.
 
 Default read counts:

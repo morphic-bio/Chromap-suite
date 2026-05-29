@@ -131,8 +131,9 @@ Useful knobs:
 
 The runner compares canonical non-comment, non-empty text rows between
 `chromap` and `chromap_lib_runner`. Hi-C stops at `.pairs`; scATAC uses the
-barcode/index FASTQ plus whitelist and also checks summary files contain barcode
-totals. See
+barcode/index FASTQ and also checks summary files contain barcode totals. A
+whitelist is used only when the manifest provides one; the current ENCODE
+snATAC row has no public matching whitelist. See
 `plans/2026-05-29-encode-cross-assay-smoke-runbook.md` for the implementation
 plan and source-accession rationale.
 
