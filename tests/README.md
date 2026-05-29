@@ -102,6 +102,40 @@ Useful knobs:
 Hi-C coverage stops at Chromap `.pairs` output. Downstream `.hic`, `.cool`, and
 TAD callers are outside this smoke gate.
 
+## ENCODE Cross-Assay Smoke
+
+`prepare_encode_cross_assay_fixtures.sh` and
+`run_encode_cross_assay_smoke.sh` are the S1 real-data regression suite for
+Chromap development across ChIP-seq, bulk ATAC-seq, scATAC/snATAC, and Hi-C.
+The source rows live in `encode_cross_assay_manifest.tsv`; full ENCODE downloads
+and deterministic first-N downsampled FASTQs stay under
+`plans/artifacts/encode_cross_assay_cache/`.
+
+Run all cases with:
+
+```bash
+CHROMAP_GRCH38_REF=/path/to/genome.fa \
+CHROMAP_GRCH38_INDEX=/path/to/genome.index \
+ENCODE_ALLOW_DOWNLOAD=1 \
+make test-encode-cross-assay-smoke
+```
+
+Useful knobs:
+
+- `ENCODE_ASSAYS=chip,atac,scatac,hic` selects a subset; default is `all`.
+- `ENCODE_DOWNSAMPLE_READS=10000` overrides the manifest read count.
+- `ENCODE_CROSS_ASSAY_CACHE=/path/to/cache` relocates ignored downloads and
+  downsampled FASTQs.
+- `ENCODE_SKIP_PREPARE=1` reuses an existing generated manifest/cache.
+- `SCATAC_WHITELIST=/path/to/whitelist.txt` overrides the manifest whitelist.
+
+The runner compares canonical non-comment, non-empty text rows between
+`chromap` and `chromap_lib_runner`. Hi-C stops at `.pairs`; scATAC uses the
+barcode/index FASTQ plus whitelist and also checks summary files contain barcode
+totals. See
+`plans/2026-05-29-encode-cross-assay-smoke-runbook.md` for the implementation
+plan and source-accession rationale.
+
 ## MCP Recipe Registry Tests
 
 The MCP/Launchpad hardening work adds recipe metadata under
