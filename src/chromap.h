@@ -1047,6 +1047,16 @@ void Chromap::MapPairedEndReads() {
         if (!barcode_cbq_reader->Open(&error)) {
           ExitWithMessage("Cannot open CBQ barcode input: " + error);
         }
+        // The read/barcode record-alignment guard compares read names, so both
+        // lanes must carry headers. Without names a reordered barcode lane
+        // would silently misassign barcodes; require headers and fail loudly.
+        if (!read_cbq_reader->HasHeaders() ||
+            !barcode_cbq_reader->HasHeaders()) {
+          ExitWithMessage(
+              "Barcoded CBQ input requires read names (headers) in both the "
+              "read-pair and barcode CBQ so record alignment can be verified; "
+              "re-encode without --skip-headers");
+        }
       }
     } else {
       // Set read batches to the current read files.

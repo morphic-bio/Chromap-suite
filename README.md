@@ -221,7 +221,9 @@ chromap --preset atac \
   -o fragments.bed --BED
 ```
 
-Rules: `--input-format fastq` is the default; `--input-format cbq` requires `--read-pair-cbq`; `--barcode-cbq` count must match `--read-pair-cbq` count; `--barcode-whitelist` requires `--barcode-cbq`; FASTQ inputs (`-1/-2/-b`) cannot be mixed with CBQ; the read-pair and barcode CBQ lanes must be record-aligned (same order); and PAIRS/Hi-C output and `--emit-Y-noY-fastq` are not yet supported in CBQ mode.
+Rules: `--input-format fastq` is the default; `--input-format cbq` requires `--read-pair-cbq`; `--barcode-cbq` count must match `--read-pair-cbq` count; `--barcode-whitelist` requires `--barcode-cbq`; FASTQ inputs (`-1/-2/-b`) cannot be mixed with CBQ; and PAIRS/Hi-C output and `--emit-Y-noY-fastq` are not yet supported in CBQ mode.
+
+Alignment contract: the read-pair and barcode CBQ lanes must be **record-aligned** — record *i* of each lane must be the same original read, in the same order. To make this verifiable, barcoded CBQ inputs must include read names (headers); both lanes are checked to carry headers at startup and read/barcode names are compared per record (re-encode without `--skip-headers`). Encode with an order-preserving encoder: encoders that reorder records across blocks under parallelism (e.g. `bqtools` at scale) break this alignment.
 
 ### ChIP-seq
 

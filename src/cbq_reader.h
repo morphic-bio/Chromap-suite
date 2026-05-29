@@ -65,6 +65,11 @@ class CbqLaneReader {
   const std::string &path() const { return path_; }
   uint32_t mate_count() const { return mate_count_; }
 
+  // Whether the CBQ file carries per-record names (headers). Valid only after a
+  // successful Open(). Barcoded ATAC requires this on both lanes so the
+  // read/barcode record-alignment check has names to compare.
+  bool HasHeaders() const;
+
  private:
   struct Impl;
 
