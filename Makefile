@@ -17,9 +17,9 @@ endif
 
 CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(LIBMACS3_DIR)/include
 DEPFLAGS=-MMD -MP
-LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -lcurl -lcrypto -lbz2 -llzma -ldeflate
+LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -ldl -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
-core_cpp_source=sequence_batch.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc chromap.cc
+core_cpp_source=sequence_batch.cc cbq_reader.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc chromap.cc
 driver_cpp_source=chromap_driver.cc
 libchromap_cpp_source=libchromap.cc
 runner_cpp_source=chromap_lib_runner.cc
@@ -82,7 +82,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 
 -include $(deps)
 
-.PHONY: clean test-unit test-atac-spill-record-roundtrip test-atac-runtime-spill-schema-harness test-frag-compact-store test-libchromap-core-smoke \
+.PHONY: clean test-unit test-atac-spill-record-roundtrip test-atac-runtime-spill-schema-harness test-frag-compact-store test-input-format-smoke test-cbq-atac-smoke test-cbq-atac-100k test-libchromap-core-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 test-peak-memory-source-100k \
 	benchmark-peak-memory-fullset test-peak-100k test-peak-calibration-100k \
@@ -180,6 +180,21 @@ test-frag-compact-store: dir $(LIBMACS3_LIB)
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_frag_compact_store.cc \
 		$(LIBMACS3_LIB) -o tests/test_frag_compact_store $(LDFLAGS)
 	./tests/test_frag_compact_store
+
+# Hermetic input-format smoke. Verifies plain/gzip FASTQ parity and, when
+# bqtools is available, CBQ default/uncompressed decode-to-FASTQ compatibility.
+test-input-format-smoke: chromap
+	./tests/run_input_format_smoke.sh
+
+# Synthetic ATAC CBQ parity smoke. Requires bqtools (or BQTOOLS=/path/to/bqtools).
+test-cbq-atac-smoke: chromap chromap_lib_runner
+	./tests/run_cbq_atac_smoke.sh
+
+# 100K PBMC ATAC CBQ vs FASTQ parity gate. Requires bqtools plus the 100K
+# fixture, index, GRCh38 reference, and 10x ATAC whitelist (skips when absent).
+# Serial benchmark; artifacts under plans/artifacts/cbq_atac_100k/<timestamp>/.
+test-cbq-atac-100k: chromap chromap_lib_runner
+	./tests/run_cbq_atac_100k.sh
 
 # Hermetic synthetic smoke for CLI vs libchromap parity. Artifacts are written
 # under CHROMAP_ARTIFACT_ROOT (default: plans/artifacts).

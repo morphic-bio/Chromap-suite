@@ -152,9 +152,9 @@ bam1_t *BuildBamRecordFromSamMappingFields(
   if (!mapping_parameters.read_group_id.empty()) {
     std::string rg_id = mapping_parameters.read_group_id;
     if (rg_id == "auto") {
-      if (!mapping_parameters.read_file1_paths.empty()) {
+      if (!mapping_parameters.ReadGroupSourcePath().empty()) {
         rg_id = DeriveReadGroupFromFilenameImpl(
-            mapping_parameters.read_file1_paths[0]);
+            mapping_parameters.ReadGroupSourcePath());
       } else {
         rg_id = "default";
       }
@@ -1647,9 +1647,9 @@ void MappingWriter<SAMMapping>::BuildHtsHeader(uint32_t num_ref_seqs,
   if (!mapping_parameters_.read_group_id.empty()) {
     std::string rg_id = mapping_parameters_.read_group_id;
     if (rg_id == "auto") {
-      if (!mapping_parameters_.read_file1_paths.empty()) {
+      if (!mapping_parameters_.ReadGroupSourcePath().empty()) {
         rg_id = DeriveReadGroupFromFilenameImpl(
-            mapping_parameters_.read_file1_paths[0]);
+            mapping_parameters_.ReadGroupSourcePath());
       } else {
         rg_id = "default";
       }
@@ -1915,7 +1915,7 @@ void MappingWriter<AtacSpillRecord>::AppendMapping(
   }
   const PairedEndMappingWithBarcode &frag = mapping;
   uint32_t mapping_end_position = frag.GetEndPosition();
-  const bool bulk_no_barcode = mapping_parameters_.barcode_file_paths.empty();
+  const bool bulk_no_barcode = !mapping_parameters_.HasBarcodeInput();
   const uint32_t peak_count =
       bulk_no_barcode ? 1u : static_cast<uint32_t>(frag.num_dups_);
   if (atac_evidence_fp_) {
@@ -2288,9 +2288,9 @@ void MappingWriter<AtacSpillRecord>::BuildHtsHeader(
   if (!mapping_parameters_.read_group_id.empty()) {
     std::string rg_id = mapping_parameters_.read_group_id;
     if (rg_id == "auto") {
-      if (!mapping_parameters_.read_file1_paths.empty()) {
+      if (!mapping_parameters_.ReadGroupSourcePath().empty()) {
         rg_id = DeriveReadGroupFromFilenameImpl(
-            mapping_parameters_.read_file1_paths[0]);
+            mapping_parameters_.ReadGroupSourcePath());
       } else {
         rg_id = "default";
       }
