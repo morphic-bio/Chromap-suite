@@ -155,7 +155,8 @@ void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
   if (mapping_parameters.mapping_output_file_path.empty()) {
     chromap::ExitWithMessage("No output specified");
   }
-  if (mapping_parameters.NumInputLanes() == 0) {
+  if (!mapping_parameters.UsesCbqInput() &&
+      mapping_parameters.NumInputLanes() == 0) {
     chromap::ExitWithMessage("No read 1 input specified");
   }
   if (mapping_parameters.UsesCbqInput()) {
