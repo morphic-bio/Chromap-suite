@@ -237,7 +237,7 @@ Known passing run on this branch (4 lanes, 8 threads, 320017 sorted fragment
 rows, FASTQ == CLI CBQ == libchromap CBQ):
 
 ```text
-plans/artifacts/cbq_atac_100k/20260529T191820Z/
+plans/artifacts/cbq_atac_100k/20260529T202040Z/
 ```
 
 ## Merge Checklist
