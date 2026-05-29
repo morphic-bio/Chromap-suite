@@ -895,7 +895,8 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
               << "\n";
     chromap::Chromap chromap_for_indexing(index_parameters);
     chromap_for_indexing.ConstructIndex();
-  } else if (result.count("1") || result.count("read-pair-cbq")) {
+  } else if (result.count("1") || result.count("read-pair-cbq") ||
+             result.count("input-format")) {
     std::cerr << "Start to map reads.\n";
     if (result.count("r")) {
       mapping_parameters.reference_file_path = result["ref"].as<std::string>();

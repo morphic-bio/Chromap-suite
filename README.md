@@ -32,6 +32,7 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 
 - **ATAC fragment sidecar** (AEV1 format, `--atac-fragment-binary-output`). Compact binary file emitted alongside BAM/CRAM plus fragments TSV: a 32-byte header followed by 24-byte fragment records keyed by the run's barcode length, with `(size - 32) / 24 == record-count` parity. Chromosome ids are paired with names in `<sidecar>.chroms.tsv`. The runtime spill harness decodes sidecar records back to full `(chrom, start, end, barcode, count)` tuples and compares them with the fragments TSV/BED baseline. Lets STAR Suite's `libscrna` empty-cells function call cells without re-parsing the gzipped fragments TSV. On the 3K PBMC headline run the sidecar contains 53,969,811 records (md5 `a4251bbc…`). See [`src/mapping_writer.h`](src/mapping_writer.h) and [`docs/atac_runtime_spill_schema_runbook.md`](docs/atac_runtime_spill_schema_runbook.md).
 - **Multiomic integration with STAR Suite**. `libchromap.a` runs as a STAR Suite worker thread for concurrent ATAC + GEX processing in a single `STAR` invocation. STAR Suite's permit allocator partitions a shared thread budget across GEX mapping, feature processing, and ATAC mapping by observing per-domain drain rates and rebalancing toward simultaneous completion. End-to-end on 3K PBMC: 18:17 / 64.8 GB / 2.19× faster than Cell Ranger ARC v2.2.0. See [STAR Suite](https://github.com/morphic-bio/STAR-suite) for the integration entry point.
+- **Native CBQ input** (`--input-format cbq`, `--read-pair-cbq`, `--barcode-cbq`). Maps paired-end ATAC/scATAC reads straight from BINSEQ CBQ files with no intermediate FASTQ, producing fragments byte-identical (under canonical sort) to the FASTQ path. FASTQ remains the default. ATAC-only for this milestone; see the [Native CBQ input (ATAC)](#native-cbq-input-atac) sample command below.
 
 ## Folder Structure
 
@@ -205,6 +206,22 @@ chromap --preset atac \
   --call-macs3-frag-peaks \
   -o aln.bam
 ```
+
+### Native CBQ input (ATAC)
+
+Maps paired-end ATAC/scATAC directly from BINSEQ CBQ without writing intermediate FASTQ. The same options work with `chromap_lib_runner`.
+
+```sh
+chromap --preset atac \
+  --input-format cbq \
+  --read-pair-cbq lane1.reads.cbq,lane2.reads.cbq \
+  --barcode-cbq lane1.barcode.cbq,lane2.barcode.cbq \
+  --barcode-whitelist whitelist.txt \
+  -x ref.index -r ref.fa \
+  -o fragments.bed --BED
+```
+
+Rules: `--input-format fastq` is the default; `--input-format cbq` requires `--read-pair-cbq`; `--barcode-cbq` count must match `--read-pair-cbq` count; `--barcode-whitelist` requires `--barcode-cbq`; FASTQ inputs (`-1/-2/-b`) cannot be mixed with CBQ; the read-pair and barcode CBQ lanes must be record-aligned (same order); and PAIRS/Hi-C output and `--emit-Y-noY-fastq` are not yet supported in CBQ mode.
 
 ### ChIP-seq
 

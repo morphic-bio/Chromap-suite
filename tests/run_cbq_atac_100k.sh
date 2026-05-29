@@ -200,7 +200,9 @@ PAIR_CBQ_CSV="$(join_csv "${PAIR_CBQ_LIST[@]}")"
 BC_CBQ_CSV="$(join_csv "${BC_CBQ_LIST[@]}")"
 
 GIT_STATE="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-if ! git -C "${REPO_ROOT}" diff --quiet 2>/dev/null || ! git -C "${REPO_ROOT}" diff --cached --quiet 2>/dev/null; then
+# --porcelain reports staged, unstaged, AND untracked changes, so an untracked
+# input or script that affected the run still marks the SHA dirty.
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null)" ]]; then
   GIT_STATE="${GIT_STATE}-dirty"
 fi
 

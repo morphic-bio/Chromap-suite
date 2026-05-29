@@ -219,6 +219,7 @@ uint32_t Chromap::LoadPairedEndReadsFromCbq(CbqLaneReader &read_reader,
   barcode_batch.ResetLoadedSequences();
 
   uint32_t num_loaded_pairs = 0;
+  bool reads_reached_end = false;
   while (num_loaded_pairs < read_batch_size_) {
     std::string error;
     CbqReadView read_record;
@@ -227,6 +228,7 @@ uint32_t Chromap::LoadPairedEndReadsFromCbq(CbqLaneReader &read_reader,
       ExitWithMessage("CBQ read-pair load failed: " + error);
     }
     if (read_status == CbqReadStatus::kEnd) {
+      reads_reached_end = true;
       break;
     }
     if (read_record.segment_count < 2) {
@@ -263,6 +265,20 @@ uint32_t Chromap::LoadPairedEndReadsFromCbq(CbqLaneReader &read_reader,
                               num_loaded_pairs, barcode_batch);
     }
     ++num_loaded_pairs;
+  }
+
+  // When the read lane is exhausted the barcode lane must be too; otherwise the
+  // barcode CBQ has extra records and the lanes are not record-aligned.
+  if (reads_reached_end && barcode_reader != nullptr) {
+    std::string error;
+    CbqReadView barcode_record;
+    CbqReadStatus barcode_status = barcode_reader->Next(&barcode_record, &error);
+    if (barcode_status == CbqReadStatus::kError) {
+      ExitWithMessage("CBQ barcode load failed: " + error);
+    }
+    if (barcode_status != CbqReadStatus::kEnd) {
+      ExitWithMessage("Numbers of reads and barcodes don't match!");
+    }
   }
 
   return num_loaded_pairs;
