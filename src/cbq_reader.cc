@@ -16,6 +16,16 @@ const uint64_t PRESENCE_QUALITIES = 1ULL << 1;
 const uint64_t PRESENCE_HEADERS = 1ULL << 2;
 const uint64_t PRESENCE_FLAGS = 1ULL << 3;
 
+// Defensive ceilings on per-block structural dimensions. Real CBQ blocks are
+// orders of magnitude below these; the limits exist only so a malformed or
+// hostile header turns into a clean error instead of an astronomical
+// allocation. They are well above any legitimate encoder block and below the
+// thresholds where the size arithmetic below could overflow.
+const uint64_t kMaxBasesPerBlock = 1ULL << 33;       // 8 GiB of bases (nuclen)
+const uint64_t kMaxSequencesPerBlock = 1ULL << 30;   // ~1.07e9 segments
+const uint64_t kMaxRecordsPerBlock = 1ULL << 30;     // ~1.07e9 records
+const uint64_t kMaxColumnBytes = 1ULL << 33;         // 8 GiB per decoded column
+
 bool SetError(std::string *error, const std::string &message) {
   if (error != nullptr) {
     *error = message;
@@ -378,7 +388,11 @@ class SliceReader {
       return SetError(error, "sucds Vec length exceeds platform size");
     }
     values->clear();
-    values->reserve(len);
+    // Cap the reservation to what the remaining payload could actually hold so
+    // a bogus length field cannot trigger a huge allocation before the read
+    // loop detects the truncation.
+    const size_t max_possible = (bytes_.size() - offset_) / 8;
+    values->reserve(std::min(len, max_possible));
     for (size_t i = 0; i < len; ++i) {
       uint64_t value = 0;
       if (!ReadU64(&value, error)) {
@@ -557,6 +571,13 @@ bool MakeOffsets(const std::vector<uint64_t> &lengths, uint64_t expected_total,
   offsets->assign(lengths.size() + 1, 0);
   uint64_t total = 0;
   for (size_t i = 0; i < lengths.size(); ++i) {
+    // Detect 64-bit wrap so the prefix sums stay strictly monotonic. Without
+    // this an attacker could pick lengths whose true sum overflows back to
+    // expected_total, defeating the sum check below and yielding offsets that
+    // point past the backing buffer.
+    if (total > std::numeric_limits<uint64_t>::max() - lengths[i]) {
+      return SetError(error, "CBQ " + description + " lengths overflow 64 bits");
+    }
     total += lengths[i];
     (*offsets)[i + 1] = total;
   }
@@ -687,6 +708,9 @@ struct CbqLaneReader::Impl {
             static_cast<size_t>(block.header_offsets[first_sequence_index]);
         const size_t end =
             static_cast<size_t>(block.header_offsets[first_sequence_index + 1]);
+        if (begin > end || end > block.headers.size()) {
+          return SetError(error, "CBQ header offset is out of range");
+        }
         parsed = ParseHeaderPayloadSpan(block.headers, begin, end - begin,
                                         file_header.HasQualities());
       } else {
@@ -713,6 +737,9 @@ struct CbqLaneReader::Impl {
             static_cast<size_t>(block.seq_offsets[seq_index]);
         const size_t end =
             static_cast<size_t>(block.seq_offsets[seq_index + 1]);
+        if (begin > end || end > block.qualities.size()) {
+          return SetError(error, "CBQ sequence offset is out of range");
+        }
         const size_t length = end - begin;
         if (length > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
           return SetError(error, "CBQ sequence length exceeds uint32_t");
@@ -779,6 +806,14 @@ struct CbqLaneReader::Impl {
     if (!ParseBlockHeader(header_bytes, &header, error)) {
       return BlockLoadStatus::kError;
     }
+    if (header.nuclen > kMaxBasesPerBlock ||
+        header.num_sequences > kMaxSequencesPerBlock ||
+        header.num_records > kMaxRecordsPerBlock ||
+        header.len_nef > kMaxColumnBytes) {
+      SetError(error, "CBQ block declares implausibly large dimensions");
+      return BlockLoadStatus::kError;
+    }
+    // Bounded above, so num_records * mate_count (mate_count <= 2) cannot wrap.
     const uint64_t expected_sequences = header.num_records * mate_count;
     if (header.num_sequences != expected_sequences) {
       std::ostringstream msg;
@@ -882,7 +917,15 @@ struct CbqLaneReader::Impl {
 
     uint64_t total_header_len = 0;
     for (uint64_t length : block.header_lengths) {
+      if (total_header_len > std::numeric_limits<uint64_t>::max() - length) {
+        SetError(error, "CBQ header lengths overflow 64 bits");
+        return BlockLoadStatus::kError;
+      }
       total_header_len += length;
+    }
+    if (total_header_len > kMaxColumnBytes) {
+      SetError(error, "CBQ header payload declares implausibly large size");
+      return BlockLoadStatus::kError;
     }
     if (!MakeOffsets(block.header_lengths, total_header_len,
                      &block.header_offsets, "header", error)) {
@@ -1015,6 +1058,10 @@ CbqReadStatus CbqLaneReader::Next(CbqReadView *record, std::string *error) {
   DecodedBlock &block = impl_->batch->block;
   *record = impl_->batch->read_views[block.record_index++];
   return CbqReadStatus::kRecord;
+}
+
+bool CbqLaneReader::HasHeaders() const {
+  return impl_ && impl_->file_header.HasHeaders();
 }
 
 void CbqLaneReader::Close() {
