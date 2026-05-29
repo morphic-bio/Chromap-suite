@@ -1,26 +1,29 @@
-# CBQ ATAC Implementation Runbook
+# CBQ Paired-Read Implementation Runbook
 
 Date: 2026-05-29
 
 ## Scope
 
 This runbook tracks the first Chromap-suite implementation of native CBQ input
-for ATAC/scATAC. The target branch is:
+for paired-read Chromap workflows. The target branch is:
 
 ```bash
 feature/cbq-atac-input
 ```
 
-The implementation is intentionally ATAC-only for this milestone:
+The implementation started as ATAC/scATAC-only and now covers the shared
+paired-read path:
 
 - paired-end read CBQ input,
 - optional single barcode CBQ input for scATAC,
+- ChIP TagAlign output,
+- Hi-C pairs output,
 - `chromap` CLI support,
 - `chromap_lib_runner` / `libchromap` parity,
 - no intermediate FASTQ materialization in the production path.
 
-Do not expand this first pass to single-end CBQ, ChIP, Hi-C, or STAR-suite
-orchestration defaults.
+Do not expand this first pass to single-end CBQ or STAR-suite orchestration
+defaults.
 
 ## User Interface
 
@@ -62,7 +65,6 @@ Validation rules:
 - `--barcode-whitelist` with CBQ requires `--barcode-cbq`.
 - FASTQ inputs (`-1`, `-2`, `-b`) cannot be mixed with CBQ inputs.
 - CBQ currently rejects `--emit-Y-noY-fastq`.
-- CBQ currently rejects PAIRS / Hi-C output.
 
 ## Implementation Shape
 
@@ -86,11 +88,11 @@ The production path is:
    CBQ lane.
 2. Each decoded CBQ record is assigned into the existing `SequenceBatch`
    storage through `AssignLoadedSequence()`.
-3. The paired-end ATAC mapping loop consumes the filled `SequenceBatch` objects
+3. The paired-end mapping loop consumes the filled `SequenceBatch` objects
    exactly like FASTQ-loaded batches.
-4. Barcode correction, duplicate handling, fragment/BAM writing, low-memory
-   spill handling, summary metadata, and peak sidecars remain downstream of the
-   input mode branch.
+4. Barcode correction, duplicate handling, BED/TagAlign/pairs/BAM writing,
+   low-memory spill handling, summary metadata, and peak sidecars remain
+   downstream of the input mode branch.
 
 The CBQ reader decodes CBQ v1 block structure and zstd-compressed columns. It
 uses `dlopen()` for `libzstd.so.1` / `libzstd.so`, so the top-level link adds
@@ -115,9 +117,8 @@ The implementation had more integration risk than a normal FASTQ reader swap:
 
 These are intentional for the first milestone:
 
-- ATAC/scATAC paired-end only.
+- Paired-end CBQ only.
 - No CBQ support for single-end mapping.
-- No CBQ support for ChIP or Hi-C / PAIRS.
 - No `--emit-Y-noY-fastq` support in CBQ mode.
 - The first reader materializes ASCII sequences into `SequenceBatch`; packed
   CBQ-to-minimizer optimization is deferred.
@@ -240,12 +241,34 @@ rows, FASTQ == CLI CBQ == libchromap CBQ):
 plans/artifacts/cbq_atac_100k/20260529T202040Z/
 ```
 
+## ENCODE Cross-Assay CBQ Gate
+
+Run:
+
+```bash
+CHROMAP_GRCH38_REF=/path/to/genome.fa \
+CHROMAP_GRCH38_INDEX=/path/to/genome.index \
+make test-encode-cbq-cross-assay-smoke
+```
+
+This gate layers CBQ parity on the ENCODE cross-assay FASTQ fixtures:
+
+- ChIP TagAlign,
+- bulk ATAC BED,
+- scATAC BED plus barcode summary,
+- Hi-C pairs.
+
+It uses `cbq_ordered_encoder` with zstd compression by default and compares
+canonical FASTQ, CBQ CLI, and CBQ lib-runner rows.
+
 ## Merge Checklist
 
 - `make chromap chromap_lib_runner` passes.
 - `make test-cbq-atac-smoke` passes.
 - `make test-libchromap-core-smoke` passes.
 - `make test-cbq-atac-100k` passes (requires `cbq_ordered_encoder`; see above).
+- `make test-encode-cbq-cross-assay-smoke` passes for `chip`, `atac`,
+  `scatac`, and `hic` when the ENCODE fixtures and GRCh38 index are available.
 - No production CBQ path writes temporary FASTQs.
 - Unsupported CBQ combinations fail during argument validation.
 - Branch commits exclude unrelated pre-existing dirty files.
