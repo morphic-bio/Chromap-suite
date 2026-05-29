@@ -295,7 +295,11 @@ struct BitVectorLite {
     if (pos >= len) {
       return false;
     }
-    return ((words[static_cast<size_t>(pos / 64)] >> (pos % 64)) & 1ULL) != 0;
+    const size_t word_index = static_cast<size_t>(pos / 64);
+    if (word_index >= words.size()) {
+      return false;
+    }
+    return ((words[word_index] >> (pos % 64)) & 1ULL) != 0;
   }
 
   uint64_t Bits(uint64_t pos, uint64_t nbits) const {
@@ -350,7 +354,10 @@ class SliceReader {
 
   bool SkipBytes(uint64_t nbytes64, std::string *error) {
     size_t nbytes = 0;
-    if (!CheckedSize(nbytes64, &nbytes) || offset_ + nbytes > bytes_.size()) {
+    // Compare as (nbytes > remaining) rather than (offset_ + nbytes > size) so
+    // a huge nbytes cannot wrap the addition and pass. offset_ <= size always.
+    if (!CheckedSize(nbytes64, &nbytes) ||
+        nbytes > bytes_.size() - offset_) {
       return SetError(error, "truncated sucds payload while skipping bytes");
     }
     offset_ += nbytes;
@@ -361,7 +368,11 @@ class SliceReader {
     if (!ReadVecU64(&bv->words, error) || !ReadU64(&bv->len, error)) {
       return false;
     }
-    const uint64_t expected_words = (bv->len + 63) / 64;
+    // Overflow-safe ceil-div: (len + 63) / 64 wraps when len is within 63 of
+    // 2^64, which would let a tiny word vector satisfy the check below and
+    // leave Bit() indexing past the vector.
+    const uint64_t expected_words =
+        bv->len / 64 + (bv->len % 64 != 0 ? 1 : 0);
     if (expected_words > bv->words.size()) {
       return SetError(error,
                       "sucds BitVector has fewer words than bit length needs");
@@ -403,20 +414,26 @@ class SliceReader {
     return true;
   }
 
-  bool SkipVecI64(std::string *error) {
+  // Skip a sucds Vec of `len` elements of `element_size` bytes each, guarding
+  // the len * element_size multiply against 64-bit overflow (a wrapped product
+  // would skip too few bytes and desynchronize the parser).
+  bool SkipVecElements(uint64_t element_size, std::string *error) {
     uint64_t len = 0;
-    return ReadU64(&len, error) && SkipBytes(len * 8, error);
+    if (!ReadU64(&len, error)) {
+      return false;
+    }
+    if (element_size != 0 &&
+        len > std::numeric_limits<uint64_t>::max() / element_size) {
+      return SetError(error, "sucds Vec byte length overflows 64 bits");
+    }
+    return SkipBytes(len * element_size, error);
   }
 
-  bool SkipVecU16(std::string *error) {
-    uint64_t len = 0;
-    return ReadU64(&len, error) && SkipBytes(len * 2, error);
-  }
+  bool SkipVecI64(std::string *error) { return SkipVecElements(8, error); }
 
-  bool SkipVecU64(std::string *error) {
-    uint64_t len = 0;
-    return ReadU64(&len, error) && SkipBytes(len * 8, error);
-  }
+  bool SkipVecU16(std::string *error) { return SkipVecElements(2, error); }
+
+  bool SkipVecU64(std::string *error) { return SkipVecElements(8, error); }
 
   bool SkipOptionalVecU64(std::string *error) {
     bool present = false;
@@ -528,6 +545,27 @@ bool ReadVector(std::ifstream &stream, uint64_t nbytes64,
     return SetError(error,
                     "CBQ column length exceeds platform size for " +
                         description);
+  }
+  if (nbytes64 > kMaxColumnBytes) {
+    return SetError(error,
+                    "CBQ compressed column " + description +
+                        " declares an implausibly large size");
+  }
+  // Reject a column that claims more bytes than the file actually has left, so
+  // a malformed length cannot force a huge allocation before the read detects
+  // the truncation.
+  const std::streampos cur = stream.tellg();
+  if (cur >= 0) {
+    stream.seekg(0, std::ios::end);
+    const std::streampos end = stream.tellg();
+    stream.seekg(cur);
+    if (!stream.good()) {
+      return SetError(error, "CBQ stream seek failed for " + description);
+    }
+    if (end >= cur && nbytes64 > static_cast<uint64_t>(end - cur)) {
+      return SetError(error, "CBQ column " + description +
+                                 " declares more bytes than remain in file");
+    }
   }
   dest->assign(nbytes, 0);
   if (nbytes == 0) {
