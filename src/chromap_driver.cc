@@ -994,11 +994,6 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         chromap::ExitWithMessage(
             "--barcode-whitelist with CBQ input requires --barcode-cbq");
       }
-      if (mapping_parameters.mapping_output_format == MAPPINGFORMAT_PAIRS) {
-        chromap::ExitWithMessage(
-            "CBQ input is currently supported only for ATAC-style outputs, "
-            "not pairs/Hi-C output");
-      }
     }
 
     if (result.count("p")) {

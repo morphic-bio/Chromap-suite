@@ -184,12 +184,6 @@ void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
       chromap::ExitWithMessage(
           "--emit-Y-noY-fastq is not supported with --input-format cbq yet");
     }
-    if (mapping_parameters.mapping_output_format ==
-        chromap::MAPPINGFORMAT_PAIRS) {
-      chromap::ExitWithMessage(
-          "CBQ input is currently supported only for ATAC-style outputs, "
-          "not pairs/Hi-C output");
-    }
   }
   if (!mapping_parameters.UsesCbqInput() &&
       !mapping_parameters.read_file2_paths.empty() &&

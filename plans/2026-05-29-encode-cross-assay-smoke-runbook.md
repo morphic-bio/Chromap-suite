@@ -421,16 +421,15 @@ Implementation is complete when:
   - `ENCODE_ASSAYS=all`.
 - CLI and `chromap_lib_runner` produce identical canonical text rows for each
   supported text-output case.
+- `make test-encode-cbq-cross-assay-smoke` passes for ChIP, bulk ATAC, scATAC,
+  and Hi-C when `cbq_ordered_encoder` and the generated ENCODE fixtures are
+  available.
 - `tests/README.md` documents the new S1 suite and environment variables.
 - `docs/` or `mcp_server/README.md` is updated if the suite becomes part of a
   durable public testing workflow.
 
 ## Follow-Ups
 
-- Add a compressed CBQ parity case for the scATAC ENCODE downsample after CBQ
-  ATAC validation is hardened.
-- Add a negative assertion that CBQ plus Hi-C/PAIRS is rejected until CBQ Hi-C is
-  intentionally implemented.
 - Add optional BAM/CRAM semantic comparison for bulk ATAC or scATAC dual-output
   cases once runner support and comparison tooling are stable.
 - Consider a separate STAR-suite runbook for downstream multiome validation

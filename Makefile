@@ -85,6 +85,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 .PHONY: clean test-unit test-atac-spill-record-roundtrip test-atac-runtime-spill-schema-harness test-frag-compact-store test-input-format-smoke test-cbq-atac-smoke test-cbq-atac-100k test-libchromap-core-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
+	 test-encode-cbq-cross-assay-smoke \
 	 test-peak-memory-source-100k \
 	benchmark-peak-memory-fullset test-peak-100k test-peak-calibration-100k \
 	test-peak-input-repr-100k test-peak-pileup-100k test-peak-frag-pileup-100k \
@@ -218,6 +219,12 @@ prepare-encode-cross-assay-fixtures:
 
 test-encode-cross-assay-smoke: chromap chromap_lib_runner
 	./tests/run_encode_cross_assay_smoke.sh
+
+# Optional S1 CBQ parity over the ENCODE cross-assay FASTQ fixtures. Requires
+# cbq_ordered_encoder plus CHROMAP_GRCH38_REF/INDEX; downloads still go through
+# prepare_encode_cross_assay_fixtures.sh when ENCODE_ALLOW_DOWNLOAD=1.
+test-encode-cbq-cross-assay-smoke: chromap chromap_lib_runner
+	./tests/run_encode_cbq_cross_assay_smoke.sh
 
 # 100K: memory vs file fragment source for integrated MACS3 FRAG peaks
 test-peak-memory-source-100k: chromap chromap_callpeaks

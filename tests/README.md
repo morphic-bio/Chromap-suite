@@ -137,6 +137,22 @@ snATAC row has no public matching whitelist. See
 `plans/2026-05-29-encode-cross-assay-smoke-runbook.md` for the implementation
 plan and source-accession rationale.
 
+`run_encode_cbq_cross_assay_smoke.sh` layers CBQ parity on top of the same
+generated ENCODE fixtures. It encodes each downsampled paired read set with the
+order-preserving `cbq_ordered_encoder`, then compares canonical FASTQ,
+`chromap` CBQ, and `chromap_lib_runner` CBQ rows for ChIP, bulk ATAC, scATAC,
+and Hi-C `.pairs` output:
+
+```bash
+CHROMAP_GRCH38_REF=/path/to/genome.fa \
+CHROMAP_GRCH38_INDEX=/path/to/genome.index \
+ENCODE_SKIP_PREPARE=1 \
+make test-encode-cbq-cross-assay-smoke
+```
+
+Use `ENCODE_CBQ_ASSAYS=hic` to run only Hi-C CBQ parity, and
+`ENCODE_CBQ_COMPRESSION_LEVEL=0` to store uncompressed CBQs.
+
 ## MCP Recipe Registry Tests
 
 The MCP/Launchpad hardening work adds recipe metadata under
