@@ -14,6 +14,65 @@ Run it with:
 make test-libchromap-core-smoke
 ```
 
+## Input Format Smoke
+
+`run_input_format_smoke.sh` verifies the read-input surface independently of
+production fixtures. It generates synthetic FASTA/FASTQ inputs, builds a small
+Chromap index, and checks:
+
+- paired and single-end FASTQ plain vs `.gz` input parity;
+- Y/noY FASTQ sidecar output with `--emit-Y-noY-fastq-compression none` and
+  `gz`;
+- optional BINSEQ CBQ compatibility through `bqtools decode`, for both default
+  compressed and uncompressed (`-l 0`) CBQ files.
+
+Run it with:
+
+```bash
+make test-input-format-smoke
+```
+
+Set `BQTOOLS=/path/to/bqtools` to exercise the BINSEQ cases when `bqtools` is
+not on `PATH`. BINSEQ is currently validated as a decode-to-FASTQ compatibility
+path there; native ATAC CBQ ingestion is covered by the smoke below.
+
+## CBQ ATAC Smoke
+
+`run_cbq_atac_smoke.sh` verifies native ATAC CBQ ingestion. It generates a small
+paired-end scATAC fixture, encodes read-pair and barcode CBQ files with
+`bqtools`, compares CLI FASTQ vs CLI CBQ fragments, and compares CLI FASTQ vs
+`chromap_lib_runner` CBQ fragments.
+
+Run it with:
+
+```bash
+make test-cbq-atac-smoke
+```
+
+Set `BQTOOLS=/path/to/bqtools` when `bqtools` is not on `PATH`.
+
+## CBQ ATAC 100K Parity Gate
+
+`run_cbq_atac_100k.sh` is the pre-merge scale gate. It encodes the 100K PBMC
+ATAC fixture lanes to CBQ and checks that barcoded paired-end fragments are
+byte-identical (under `LC_ALL=C` sort) across FASTQ baseline, native CBQ via
+`chromap`, and native CBQ via `chromap_lib_runner`. It records per-run
+wall/user/sys/max-RSS and a manifest under
+`plans/artifacts/cbq_atac_100k/<timestamp>/`.
+
+Run it with:
+
+```bash
+make test-cbq-atac-100k
+```
+
+This gate uses the order-preserving `cbq_ordered_encoder` rather than `bqtools`:
+the barcoded path requires the read-pair and barcode CBQ lanes to stay
+record-aligned, and stock `bqtools` reorders records across blocks at scale.
+Set `CBQ_ORDERED_ENCODER=/path/to/cbq_ordered_encoder` if it is not at the
+default location. `LANES="1"` runs a faster single-lane variant. Missing the
+encoder or any fixture input is reported as a skip.
+
 ## ENCODE Downsample Smoke
 
 `prepare_encode_downsample_fixtures.sh` creates ignored real-data fixtures from

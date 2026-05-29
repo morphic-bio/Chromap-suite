@@ -1,6 +1,8 @@
 #include "sequence_batch.h"
 
 #include <tuple>
+#include <cstdlib>
+#include <cstring>
 
 #include "utils.h"
 
@@ -17,6 +19,58 @@ void SequenceBatch::InitializeLoading(const std::string &sequence_file_path) {
 void SequenceBatch::FinalizeLoading() {
   kseq_destroy(sequence_kseq_);
   gzclose(sequence_file_);
+}
+
+void SequenceBatch::ResetLoadedSequences() {
+  num_loaded_sequences_ = 0;
+  num_bases_ = 0;
+}
+
+void SequenceBatch::AssignKstring(kstring_t &dest, const char *data,
+                                  size_t len) {
+  if (dest.m < len + 1) {
+    dest.m = len + 1;
+    dest.s = static_cast<char *>(realloc(dest.s, dest.m));
+    if (dest.s == NULL) {
+      ExitWithMessage("Failed to allocate sequence storage");
+    }
+  }
+  if (len > 0 && data != NULL) {
+    memcpy(dest.s, data, len);
+  }
+  dest.s[len] = '\0';
+  dest.l = len;
+}
+
+void SequenceBatch::AssignLoadedSequence(uint32_t sequence_index,
+                                         const char *name, size_t name_len,
+                                         const char *comment,
+                                         size_t comment_len, const char *seq,
+                                         size_t seq_len, const char *qual,
+                                         size_t qual_len) {
+  if (sequence_index >= sequence_batch_.size()) {
+    ExitWithMessage("Sequence index exceeds batch capacity");
+  }
+  if (sequence_index > num_loaded_sequences_) {
+    ExitWithMessage("Sequence batches must be filled in order");
+  }
+
+  kseq_t *sequence = sequence_batch_[sequence_index];
+  AssignKstring(sequence->seq, seq, seq_len);
+  ReplaceByEffectiveRange(sequence->seq, /*is_seq=*/true);
+  AssignKstring(sequence->name, name, name_len);
+  AssignKstring(sequence->comment, comment, comment_len);
+  if (qual != NULL && qual_len > 0) {
+    AssignKstring(sequence->qual, qual, qual_len);
+    ReplaceByEffectiveRange(sequence->qual, /*is_seq=*/false);
+  } else {
+    AssignKstring(sequence->qual, NULL, 0);
+  }
+  sequence->id = total_num_loaded_sequences_;
+  ++total_num_loaded_sequences_;
+  if (sequence_index == num_loaded_sequences_) {
+    ++num_loaded_sequences_;
+  }
 }
 
 bool SequenceBatch::LoadOneSequenceAndSaveAt(uint32_t sequence_index) {

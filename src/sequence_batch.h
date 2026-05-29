@@ -171,6 +171,14 @@ class SequenceBatch {
 
   void FinalizeLoading();
 
+  void ResetLoadedSequences();
+
+  void AssignLoadedSequence(uint32_t sequence_index, const char *name,
+                            size_t name_len, const char *comment,
+                            size_t comment_len, const char *seq,
+                            size_t seq_len, const char *qual,
+                            size_t qual_len);
+
   // The func should never override other sequences rather than the last, which
   // means 'sequence_index' cannot be smaller than 'num_loaded_sequences_' - 1.
   // Return true when reaching the end of the file.
@@ -219,6 +227,8 @@ class SequenceBatch {
   // When 'is_seq' is set to true, this func will complement the base when
   // necessary. Otherwise, it will just reverse the sequence.
   void ReplaceByEffectiveRange(kstring_t &seq, bool is_seq);
+
+  void AssignKstring(kstring_t &dest, const char *data, size_t len);
 
   // This is the accumulated number of sequences that have ever been loaded into
   // the batch. It is useful for tracking read ids.

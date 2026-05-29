@@ -44,7 +44,11 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
   try {
     Chromap chromap_for_mapping(mapping_parameters);
 
-    if (mapping_parameters.read_file2_paths.empty()) {
+    if (!mapping_parameters.HasPairedEndInput()) {
+      if (mapping_parameters.UsesCbqInput()) {
+        return MakeFailure(mapping_parameters,
+                           "CBQ input currently requires paired-end ATAC reads");
+      }
       switch (mapping_parameters.mapping_output_format) {
         case MAPPINGFORMAT_PAF:
           chromap_for_mapping.MapSingleEndReads<PAFMapping>();
@@ -59,7 +63,7 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
                              "single-end PAIRS output is not supported");
         case MAPPINGFORMAT_BED:
         case MAPPINGFORMAT_TAGALIGN:
-          if (!mapping_parameters.barcode_file_paths.empty()) {
+          if (mapping_parameters.HasBarcodeInput()) {
             chromap_for_mapping.MapSingleEndReads<MappingWithBarcode>();
           } else {
             chromap_for_mapping.MapSingleEndReads<MappingWithoutBarcode>();
@@ -77,7 +81,7 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
                       MAPPINGFORMAT_BED ||
                   mapping_parameters.mapping_output_format ==
                       MAPPINGFORMAT_TAGALIGN) &&
-                 !mapping_parameters.barcode_file_paths.empty()) {
+                 mapping_parameters.HasBarcodeInput()) {
         chromap_for_mapping.MapPairedEndReads<AtacSpillRecord>();
       } else {
         switch (mapping_parameters.mapping_output_format) {
@@ -94,7 +98,7 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
             break;
           case MAPPINGFORMAT_BED:
           case MAPPINGFORMAT_TAGALIGN:
-            if (!mapping_parameters.barcode_file_paths.empty()) {
+            if (mapping_parameters.HasBarcodeInput()) {
               chromap_for_mapping
                   .MapPairedEndReads<PairedEndMappingWithBarcode>();
             } else {
@@ -124,8 +128,8 @@ ChromapRunResult RunMacs3FragPeaksFromMappingParameters(
   const bool be_dual = mapping_parameters.AtacDualFragmentAndBam();
   const bool be_bed_pe =
       (mapping_parameters.mapping_output_format == MAPPINGFORMAT_BED &&
-       !mapping_parameters.read_file2_paths.empty());
-  const bool has_barcode = !mapping_parameters.barcode_file_paths.empty();
+       mapping_parameters.HasPairedEndInput());
+  const bool has_barcode = mapping_parameters.HasBarcodeInput();
   const bool memory_source =
       mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory;
   if (!be_dual && !be_bed_pe) {
@@ -246,10 +250,10 @@ ChromapRunResult RunMacs3FragPeaksFromMappingParameters(
 }  // namespace
 
 ChromapRunResult RunAtacMapping(const MappingParameters &mapping_parameters) {
-  if (mapping_parameters.read_file1_paths.empty()) {
+  if (mapping_parameters.NumInputLanes() == 0) {
     return MakeFailure(mapping_parameters, "ATAC mapping requires read 1 input");
   }
-  if (mapping_parameters.read_file2_paths.empty()) {
+  if (!mapping_parameters.HasPairedEndInput()) {
     return MakeFailure(mapping_parameters, "ATAC mapping requires read 2 input");
   }
   if (mapping_parameters.mapping_output_format != MAPPINGFORMAT_BED &&
