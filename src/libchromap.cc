@@ -47,7 +47,7 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
     if (!mapping_parameters.HasPairedEndInput()) {
       if (mapping_parameters.UsesCbqInput()) {
         return MakeFailure(mapping_parameters,
-                           "CBQ input currently requires paired-end ATAC reads");
+                           "CBQ input currently requires paired-end reads");
       }
       switch (mapping_parameters.mapping_output_format) {
         case MAPPINGFORMAT_PAF:
