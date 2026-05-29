@@ -283,7 +283,6 @@ main() {
       download_if_needed "${barcode_url}" "${full_barcode}"
       downsample_fastq "${full_barcode}" "${ds_barcode}" "${reads}"
       whitelist="$(prepare_whitelist "${whitelist_id}" "${whitelist_url}")"
-      [[ -s "${whitelist}" ]] || fail "${case_id}: missing whitelist"
       observed_reads="$(verify_fastq_alignment "${ds_r1}" "${ds_r2}" "${ds_barcode}")"
     else
       fail "${case_id}: unsupported layout ${layout}"

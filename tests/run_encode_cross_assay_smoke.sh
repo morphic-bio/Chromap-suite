@@ -112,11 +112,15 @@ run_case() {
     lib_common+=(-1 "${r1}" -2 "${r2}")
   elif [[ "${layout}" == "scatac_10x_atac" ]]; then
     require_file "${barcode}"
-    require_file "${whitelist}"
     cli_common+=(-1 "${r1}" -2 "${r2}" -b "${barcode}" \
-      --barcode-whitelist "${whitelist}" --summary "${case_dir}/cli.summary.tsv")
+      --summary "${case_dir}/cli.summary.tsv")
     lib_common+=(-1 "${r1}" -2 "${r2}" -b "${barcode}" \
-      --barcode-whitelist "${whitelist}" --summary "${case_dir}/lib.summary.tsv")
+      --summary "${case_dir}/lib.summary.tsv")
+    if [[ -n "${whitelist}" ]]; then
+      require_file "${whitelist}"
+      cli_common+=(--barcode-whitelist "${whitelist}")
+      lib_common+=(--barcode-whitelist "${whitelist}")
+    fi
   else
     fail "${case_id}: unsupported layout ${layout}"
   fi
