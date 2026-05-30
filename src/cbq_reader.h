@@ -50,6 +50,10 @@ size_t CbqSegmentSequenceLength(const CbqSegmentView &segment);
 char CbqSegmentBaseAscii(const CbqSegmentView &segment, size_t index);
 void MaterializeCbqSegmentSequence(const CbqSegmentView &segment,
                                    std::string *sequence);
+bool MaterializeCbqSegmentSequenceToBuffer(const CbqSegmentView &segment,
+                                           char *dest, size_t capacity,
+                                           size_t *length_out,
+                                           std::string *error);
 
 class CbqLaneReader {
  public:

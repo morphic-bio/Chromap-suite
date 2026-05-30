@@ -3,6 +3,7 @@
 #include <tuple>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 #include "utils.h"
 
@@ -57,6 +58,62 @@ void SequenceBatch::AssignLoadedSequence(uint32_t sequence_index,
 
   kseq_t *sequence = sequence_batch_[sequence_index];
   AssignKstring(sequence->seq, seq, seq_len);
+  ReplaceByEffectiveRange(sequence->seq, /*is_seq=*/true);
+  AssignKstring(sequence->name, name, name_len);
+  AssignKstring(sequence->comment, comment, comment_len);
+  if (qual != NULL && qual_len > 0) {
+    AssignKstring(sequence->qual, qual, qual_len);
+    ReplaceByEffectiveRange(sequence->qual, /*is_seq=*/false);
+  } else {
+    AssignKstring(sequence->qual, NULL, 0);
+  }
+  sequence->id = total_num_loaded_sequences_;
+  ++total_num_loaded_sequences_;
+  if (sequence_index == num_loaded_sequences_) {
+    ++num_loaded_sequences_;
+  }
+}
+
+char *SequenceBatch::PrepareLoadedSequenceBuffer(uint32_t sequence_index,
+                                                 size_t seq_len) {
+  if (sequence_index >= sequence_batch_.size()) {
+    ExitWithMessage("Sequence index exceeds batch capacity");
+  }
+  if (sequence_index > num_loaded_sequences_) {
+    ExitWithMessage("Sequence batches must be filled in order");
+  }
+  if (seq_len == std::numeric_limits<size_t>::max()) {
+    ExitWithMessage("Sequence length exceeds platform size");
+  }
+
+  kseq_t *sequence = sequence_batch_[sequence_index];
+  if (sequence->seq.m < seq_len + 1) {
+    sequence->seq.m = seq_len + 1;
+    sequence->seq.s = static_cast<char *>(realloc(sequence->seq.s,
+                                                  sequence->seq.m));
+    if (sequence->seq.s == NULL) {
+      ExitWithMessage("Failed to allocate sequence storage");
+    }
+  }
+  sequence->seq.l = seq_len;
+  sequence->seq.s[seq_len] = '\0';
+  return sequence->seq.s;
+}
+
+void SequenceBatch::CommitLoadedSequenceBuffer(
+    uint32_t sequence_index, const char *name, size_t name_len,
+    const char *comment, size_t comment_len, size_t seq_len, const char *qual,
+    size_t qual_len) {
+  if (sequence_index >= sequence_batch_.size()) {
+    ExitWithMessage("Sequence index exceeds batch capacity");
+  }
+  if (sequence_index > num_loaded_sequences_) {
+    ExitWithMessage("Sequence batches must be filled in order");
+  }
+
+  kseq_t *sequence = sequence_batch_[sequence_index];
+  sequence->seq.l = seq_len;
+  sequence->seq.s[seq_len] = '\0';
   ReplaceByEffectiveRange(sequence->seq, /*is_seq=*/true);
   AssignKstring(sequence->name, name, name_len);
   AssignKstring(sequence->comment, comment, comment_len);
