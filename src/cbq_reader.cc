@@ -668,6 +668,25 @@ char NumberToAscii(unsigned char base) {
   return lookup[base < 5 ? base : 4];
 }
 
+struct CbqPackedByteDecode {
+  char ascii[4];
+};
+
+const std::array<CbqPackedByteDecode, 256> &CbqPackedAsciiLookup() {
+  static const std::array<CbqPackedByteDecode, 256> lookup = [] {
+    std::array<CbqPackedByteDecode, 256> table = {};
+    static const char ascii_lookup[4] = {'A', 'C', 'G', 'T'};
+    for (unsigned byte = 0; byte < table.size(); ++byte) {
+      for (unsigned base = 0; base < 4; ++base) {
+        const unsigned code = (byte >> (base * 2)) & 0x3U;
+        table[byte].ascii[base] = ascii_lookup[code];
+      }
+    }
+    return table;
+  }();
+  return lookup;
+}
+
 }  // namespace
 
 size_t CbqSegmentSequenceLength(const CbqSegmentView &segment) {
@@ -698,6 +717,89 @@ void MaterializeCbqSegmentSequence(const CbqSegmentView &segment,
   for (size_t i = 0; i < length; ++i) {
     (*sequence)[i] = CbqSegmentBaseAscii(segment, i);
   }
+}
+
+// Mirrors STAR-suite's CbqInputModule direct materializer so Chromap can fill
+// its existing SequenceBatch buffers without an intermediate sequence string.
+bool MaterializeCbqSegmentSequenceToBuffer(const CbqSegmentView &segment,
+                                           char *dest, size_t capacity,
+                                           size_t *length_out,
+                                           std::string *error) {
+  if (dest == nullptr) {
+    return SetError(error, "CBQ sequence materialization destination is null");
+  }
+  const size_t length = CbqSegmentSequenceLength(segment);
+  if (length >= capacity) {
+    std::ostringstream msg;
+    msg << "CBQ sequence length " << length
+        << " exceeds destination capacity " << capacity;
+    return SetError(error, msg.str());
+  }
+
+  if (segment.sequence.data != nullptr && segment.sequence.size == length) {
+    if (length != 0) {
+      std::memcpy(dest, segment.sequence.data, length);
+    }
+    dest[length] = '\0';
+    if (length_out != nullptr) {
+      *length_out = length;
+    }
+    return true;
+  }
+
+  if (!segment.packed_sequence.available) {
+    std::fill(dest, dest + length, 'N');
+    dest[length] = '\0';
+    if (length_out != nullptr) {
+      *length_out = length;
+    }
+    return true;
+  }
+
+  const CbqPackedSequenceView &packed = segment.packed_sequence;
+  const auto &lookup = CbqPackedAsciiLookup();
+  size_t i = 0;
+  while (i < length) {
+    const uint64_t global_offset = packed.base_offset + static_cast<uint64_t>(i);
+    const size_t byte_offset = static_cast<size_t>(global_offset >> 2);
+    const unsigned base_in_byte = static_cast<unsigned>(global_offset & 0x3ULL);
+    const size_t take =
+        std::min<size_t>(static_cast<size_t>(4U - base_in_byte), length - i);
+
+    if (packed.words == nullptr || byte_offset >= packed.word_bytes) {
+      std::fill(dest + i, dest + i + take, 'N');
+    } else if (base_in_byte == 0 && take == 4) {
+      const CbqPackedByteDecode &decoded = lookup[packed.words[byte_offset]];
+      std::memcpy(dest + i, decoded.ascii, 4);
+    } else {
+      const CbqPackedByteDecode &decoded = lookup[packed.words[byte_offset]];
+      for (size_t j = 0; j < take; ++j) {
+        dest[i + j] = decoded.ascii[base_in_byte + j];
+      }
+    }
+
+    i += take;
+  }
+
+  if (packed.n_positions != nullptr) {
+    for (size_t inpos = 0; inpos < packed.n_positions_count; ++inpos) {
+      const uint64_t npos = packed.n_positions[inpos];
+      if (npos < packed.base_offset) {
+        continue;
+      }
+      const uint64_t local = npos - packed.base_offset;
+      if (local >= length) {
+        break;
+      }
+      dest[local] = 'N';
+    }
+  }
+
+  dest[length] = '\0';
+  if (length_out != nullptr) {
+    *length_out = length;
+  }
+  return true;
 }
 
 struct CbqLaneReader::Impl {
