@@ -39,13 +39,24 @@ void AssignCbqSegmentToBatch(const CbqReadView &record,
                              const CbqSegmentView &segment,
                              uint32_t sequence_index,
                              SequenceBatch &sequence_batch) {
-  std::string sequence;
-  MaterializeCbqSegmentSequence(segment, &sequence);
-  sequence_batch.AssignLoadedSequence(
+  const size_t sequence_length = CbqSegmentSequenceLength(segment);
+  char *sequence_buffer =
+      sequence_batch.PrepareLoadedSequenceBuffer(sequence_index,
+                                                 sequence_length);
+  std::string error;
+  size_t written_length = 0;
+  if (!MaterializeCbqSegmentSequenceToBuffer(segment, sequence_buffer,
+                                             sequence_length + 1,
+                                             &written_length, &error)) {
+    ExitWithMessage("CBQ sequence materialization failed: " + error);
+  }
+  if (written_length != sequence_length) {
+    ExitWithMessage("CBQ sequence materialization length mismatch");
+  }
+  sequence_batch.CommitLoadedSequenceBuffer(
       sequence_index, record.read_name.data, record.read_name.size,
       record.read_name_extra.data, record.read_name_extra.size,
-      sequence.data(), sequence.size(), segment.quality.data,
-      segment.quality.size);
+      sequence_length, segment.quality.data, segment.quality.size);
 }
 
 }  // namespace

@@ -179,6 +179,13 @@ class SequenceBatch {
                             size_t seq_len, const char *qual,
                             size_t qual_len);
 
+  char *PrepareLoadedSequenceBuffer(uint32_t sequence_index, size_t seq_len);
+
+  void CommitLoadedSequenceBuffer(uint32_t sequence_index, const char *name,
+                                  size_t name_len, const char *comment,
+                                  size_t comment_len, size_t seq_len,
+                                  const char *qual, size_t qual_len);
+
   // The func should never override other sequences rather than the last, which
   // means 'sequence_index' cannot be smaller than 'num_loaded_sequences_' - 1.
   // Return true when reaching the end of the file.
