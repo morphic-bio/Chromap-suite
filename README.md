@@ -32,7 +32,7 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 
 - **ATAC fragment sidecar** (AEV1 format, `--atac-fragment-binary-output`). Compact binary file emitted alongside BAM/CRAM plus fragments TSV: a 32-byte header followed by 24-byte fragment records keyed by the run's barcode length, with `(size - 32) / 24 == record-count` parity. Chromosome ids are paired with names in `<sidecar>.chroms.tsv`. The runtime spill harness decodes sidecar records back to full `(chrom, start, end, barcode, count)` tuples and compares them with the fragments TSV/BED baseline. Lets STAR Suite's `libscrna` empty-cells function call cells without re-parsing the gzipped fragments TSV. On the 3K PBMC headline run the sidecar contains 53,969,811 records (md5 `a4251bbc…`). See [`src/mapping_writer.h`](src/mapping_writer.h) and [`docs/atac_runtime_spill_schema_runbook.md`](docs/atac_runtime_spill_schema_runbook.md).
 - **Multiomic integration with STAR Suite**. `libchromap.a` runs as a STAR Suite worker thread for concurrent ATAC + GEX processing in a single `STAR` invocation. STAR Suite's permit allocator partitions a shared thread budget across GEX mapping, feature processing, and ATAC mapping by observing per-domain drain rates and rebalancing toward simultaneous completion. End-to-end on 3K PBMC: 18:17 / 64.8 GB / 2.19× faster than Cell Ranger ARC v2.2.0. See [STAR Suite](https://github.com/morphic-bio/STAR-suite) for the integration entry point.
-- **Native CBQ input** (`--input-format cbq`, `--read-pair-cbq`, `--barcode-cbq`). Maps paired-end ATAC/scATAC reads straight from BINSEQ CBQ files with no intermediate FASTQ, producing fragments byte-identical (under canonical sort) to the FASTQ path. FASTQ remains the default. ATAC-only for this milestone; see the [Native CBQ input (ATAC)](#native-cbq-input-atac) sample command below.
+- **Native CBQ input** (`--input-format cbq`, `--read-pair-cbq`, `--barcode-cbq`). Maps paired-end ATAC/scATAC reads straight from BINSEQ CBQ files with no intermediate FASTQ, producing fragments byte-identical (under canonical sort) to the FASTQ path. CBQ sequence decode writes directly into Chromap's `SequenceBatch` buffers. FASTQ remains the default. ATAC-only for this milestone; see the [Native CBQ input (ATAC)](#native-cbq-input-atac) sample command below.
 
 ## Folder Structure
 
@@ -224,6 +224,12 @@ chromap --preset atac \
 Rules: `--input-format fastq` is the default; `--input-format cbq` requires `--read-pair-cbq`; `--barcode-cbq` count must match `--read-pair-cbq` count; `--barcode-whitelist` requires `--barcode-cbq`; FASTQ inputs (`-1/-2/-b`) cannot be mixed with CBQ; and PAIRS/Hi-C output and `--emit-Y-noY-fastq` are not yet supported in CBQ mode.
 
 Alignment contract: the read-pair and barcode CBQ lanes must be **record-aligned** — record *i* of each lane must be the same original read, in the same order. To make this verifiable, barcoded CBQ inputs must include read names (headers); both lanes are checked to carry headers at startup and read/barcode names are compared per record (re-encode without `--skip-headers`). Encode with an order-preserving encoder: encoders that reorder records across blocks under parallelism (e.g. `bqtools` at scale) break this alignment.
+
+Full 3K PBMC ATAC timing on the 4-lane fixture, 8 threads, warmed cache, and
+BED output directed to `/dev/null`: FASTQ.gz took `3:08.74`, uncompressed CBQ
+took `2:56.36`, with identical read/mapping/output counts (`53,969,811`
+output mappings). The manifest is under
+`plans/artifacts/cbq_atac_full_timing/20260530T070035Z/`.
 
 ### ChIP-seq
 
