@@ -9,7 +9,6 @@
 #include <array>
 #include <cassert>
 #include <iomanip>
-#include <regex>
 #include <string>
 #include <vector>
 #include <memory>
@@ -20,6 +19,7 @@
 #include "libmacs3/frag_compact_store.h"
 #include "libmacs3/fragments.h"
 #include "libmacs3/macs3_frag_peak_pipeline.h"
+#include "y_noy_path_utils.h"
 
 namespace chromap {
 namespace {
@@ -180,6 +180,9 @@ void AddOutputOptions(cxxopts::Options &options) {
           "emit-Y-noY-fastq-compression",
           "Compression for Y/noY FASTQ files [gz|none, default: gz]",
           cxxopts::value<std::string>(), "STR")(
+          "Y-noY-fastq-output-dir",
+          "Directory for auto-named Y/noY FASTQ files [default: <output-dir>/y_separated]",
+          cxxopts::value<std::string>(), "DIR")(
           "Y-fastq-output-prefix",
           "Prefix for Y FASTQ output files (overrides auto-naming)",
           cxxopts::value<std::string>(), "PREFIX")(
@@ -419,129 +422,6 @@ std::string DeriveSecondaryOutputPath(const std::string &primary_path,
   
   // No extension: output -> output.noY.sam
   return primary_path + suffix + ".sam";
-}
-
-// Extract directory from a file path
-std::string GetDirectoryFromPath(const std::string &path) {
-  size_t slash_pos = path.rfind('/');
-  if (slash_pos == std::string::npos) {
-    return ".";
-  }
-  return path.substr(0, slash_pos);
-}
-
-// Determine base read extension (.fastq/.fq/.fasta/.fa/.fna) from input filename
-std::string GetFastqBaseExtension(const std::string &input_path) {
-  size_t slash_pos = input_path.rfind('/');
-  std::string filename =
-      (slash_pos == std::string::npos) ? input_path : input_path.substr(slash_pos + 1);
-  std::string lower = filename;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-
-  if (lower.size() >= 9 && lower.substr(lower.size() - 9) == ".fastq.gz") {
-    return ".fastq";
-  }
-  if (lower.size() >= 9 && lower.substr(lower.size() - 9) == ".fasta.gz") {
-    return ".fasta";
-  }
-  if (lower.size() >= 7 && lower.substr(lower.size() - 7) == ".fna.gz") {
-    return ".fna";
-  }
-  if (lower.size() >= 6 && lower.substr(lower.size() - 6) == ".fq.gz") {
-    return ".fq";
-  }
-  if (lower.size() >= 6 && lower.substr(lower.size() - 6) == ".fa.gz") {
-    return ".fa";
-  }
-  if (lower.size() >= 6 && lower.substr(lower.size() - 6) == ".fastq") {
-    return ".fastq";
-  }
-  if (lower.size() >= 6 && lower.substr(lower.size() - 6) == ".fasta") {
-    return ".fasta";
-  }
-  if (lower.size() >= 4 && lower.substr(lower.size() - 4) == ".fna") {
-    return ".fna";
-  }
-  if (lower.size() >= 3 && lower.substr(lower.size() - 3) == ".fq") {
-    return ".fq";
-  }
-  if (lower.size() >= 3 && lower.substr(lower.size() - 3) == ".fa") {
-    return ".fa";
-  }
-  if (lower.size() >= 3 && lower.substr(lower.size() - 3) == ".gz") {
-    return ".fastq";
-  }
-  return ".fastq";
-}
-
-std::string BuildFastqExtension(const std::string &base_ext,
-                                const std::string &compression) {
-  if (compression == "gz") {
-    return base_ext + ".gz";
-  }
-  return base_ext;
-}
-
-// Derive FASTQ output path from input filename
-// Inserts _Y or _noY before the last _R[0-9]+ token
-// Preserves base read extension; applies compression setting
-// file_index: 1-based index for multiple input files (0 = no index)
-// mate_index: 1 or 2 (used for fallback naming)
-std::string DeriveFastqOutputPath(const std::string &input_path,
-                                   const std::string &output_dir,
-                                   const std::string &suffix,  // "_Y" or "_noY"
-                                   const std::string &compression,
-                                   int file_index,
-                                   int mate_index) {
-  size_t slash_pos = input_path.rfind('/');
-  std::string filename =
-      (slash_pos == std::string::npos) ? input_path : input_path.substr(slash_pos + 1);
-
-  std::string base_ext = GetFastqBaseExtension(filename);
-  std::string output_ext = BuildFastqExtension(base_ext, compression);
-
-  // Strip extension (including optional .gz) to get stem
-  std::string lower = filename;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-  std::string stem = filename;
-  if (lower.size() >= 3 && lower.substr(lower.size() - 3) == ".gz") {
-    stem = filename.substr(0, filename.size() - 3);
-    lower = lower.substr(0, lower.size() - 3);
-  }
-  std::string base_ext_lower = base_ext;
-  std::transform(base_ext_lower.begin(), base_ext_lower.end(),
-                 base_ext_lower.begin(), ::tolower);
-  if (lower.size() >= base_ext_lower.size() &&
-      lower.substr(lower.size() - base_ext_lower.size()) == base_ext_lower) {
-    stem = stem.substr(0, stem.size() - base_ext.size());
-  }
-
-  std::string base_name;
-  std::regex r_token(R"(_R(\d+))");
-  std::sregex_iterator it(stem.begin(), stem.end(), r_token);
-  std::sregex_iterator end;
-  if (it != end) {
-    std::sregex_iterator last = it;
-    for (; it != end; ++it) {
-      last = it;
-    }
-    size_t pos = last->position(0);
-    base_name = stem;
-    base_name.insert(pos, suffix);
-  } else {
-    base_name = (suffix == "_Y" ? "Y_reads" : "noY_reads") + std::string(".mate") +
-                std::to_string(mate_index);
-  }
-
-  std::string index_suffix = (file_index > 0) ? (".f" + std::to_string(file_index)) : "";
-
-  std::string result = output_dir;
-  if (!result.empty() && result.back() != '/') {
-    result += "/";
-  }
-  result += base_name + index_suffix + output_ext;
-
-  return result;
 }
 
 void WriteMacs3FragPeakSidecar(
@@ -1295,17 +1175,16 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     if (result.count("emit-Y-noY-fastq")) {
       mapping_parameters.emit_y_noy_fastq = true;
     }
-    if (mapping_parameters.UsesCbqInput() &&
-        mapping_parameters.emit_y_noy_fastq) {
-      chromap::ExitWithMessage(
-          "--emit-Y-noY-fastq is not supported with --input-format cbq yet");
-    }
     if (result.count("emit-Y-noY-fastq-compression")) {
       std::string compression = result["emit-Y-noY-fastq-compression"].as<std::string>();
       if (compression != "gz" && compression != "none") {
         chromap::ExitWithMessage("--emit-Y-noY-fastq-compression must be 'gz' or 'none'");
       }
       mapping_parameters.y_noy_fastq_compression = compression;
+    }
+    if (result.count("Y-noY-fastq-output-dir")) {
+      mapping_parameters.y_noy_fastq_output_dir =
+          result["Y-noY-fastq-output-dir"].as<std::string>();
     }
     if (result.count("Y-fastq-output-prefix")) {
       mapping_parameters.y_fastq_output_prefix = result["Y-fastq-output-prefix"].as<std::string>();
@@ -1314,116 +1193,23 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       mapping_parameters.noy_fastq_output_prefix = result["noY-fastq-output-prefix"].as<std::string>();
     }
     
-    // Validate: FASTQ emission with stdout requires explicit prefixes
-    if (mapping_parameters.emit_y_noy_fastq &&
-        (mapping_parameters.mapping_output_file_path == "-" ||
-         mapping_parameters.mapping_output_file_path == "/dev/stdout" ||
-         mapping_parameters.mapping_output_file_path == "/dev/stderr")) {
-      if (mapping_parameters.y_fastq_output_prefix.empty() ||
-          mapping_parameters.noy_fastq_output_prefix.empty()) {
-        chromap::ExitWithMessage("--emit-Y-noY-fastq requires --Y-fastq-output-prefix and --noY-fastq-output-prefix when primary output is stdout");
-      }
-    }
-    
     // Derive FASTQ output paths if FASTQ emission is enabled
     if (mapping_parameters.emit_y_noy_fastq) {
-      std::string output_dir =
-          GetDirectoryFromPath(mapping_parameters.mapping_output_file_path);
-      const std::string compression = mapping_parameters.y_noy_fastq_compression;
-
-      const bool is_paired = !mapping_parameters.read_file2_paths.empty();
-      const size_t num_files = mapping_parameters.read_file1_paths.size();
-
-      if (num_files > 1) {
+      if (mapping_parameters.NumInputLanes() > 1) {
         std::cerr << "WARNING: Multiple input files detected. FASTQ outputs will include file index suffixes.\n";
       }
-
-      mapping_parameters.y_fastq_output_paths_per_file.resize(num_files);
-      mapping_parameters.noy_fastq_output_paths_per_file.resize(num_files);
-
-      for (size_t file_index = 0; file_index < num_files; ++file_index) {
-        const int output_file_index = (num_files > 1) ? static_cast<int>(file_index + 1) : 0;
-
-        if (is_paired) {
-          mapping_parameters.y_fastq_output_paths_per_file[file_index].resize(2);
-          mapping_parameters.noy_fastq_output_paths_per_file[file_index].resize(2);
-
-          const std::string read1_ext =
-              BuildFastqExtension(GetFastqBaseExtension(mapping_parameters.read_file1_paths[file_index]),
-                                  compression);
-          const std::string read2_ext =
-              BuildFastqExtension(GetFastqBaseExtension(mapping_parameters.read_file2_paths[file_index]),
-                                  compression);
-
-          if (!mapping_parameters.y_fastq_output_prefix.empty()) {
-            const std::string index_suffix =
-                (output_file_index > 0) ? (".f" + std::to_string(output_file_index)) : "";
-            mapping_parameters.y_fastq_output_paths_per_file[file_index][0] =
-                mapping_parameters.y_fastq_output_prefix + "mate1" + index_suffix + read1_ext;
-            mapping_parameters.y_fastq_output_paths_per_file[file_index][1] =
-                mapping_parameters.y_fastq_output_prefix + "mate2" + index_suffix + read2_ext;
-          } else {
-            mapping_parameters.y_fastq_output_paths_per_file[file_index][0] =
-                DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
-                                      output_dir, "_Y", compression, output_file_index, 1);
-            mapping_parameters.y_fastq_output_paths_per_file[file_index][1] =
-                DeriveFastqOutputPath(mapping_parameters.read_file2_paths[file_index],
-                                      output_dir, "_Y", compression, output_file_index, 2);
-          }
-
-          if (!mapping_parameters.noy_fastq_output_prefix.empty()) {
-            const std::string index_suffix =
-                (output_file_index > 0) ? (".f" + std::to_string(output_file_index)) : "";
-            mapping_parameters.noy_fastq_output_paths_per_file[file_index][0] =
-                mapping_parameters.noy_fastq_output_prefix + "mate1" + index_suffix + read1_ext;
-            mapping_parameters.noy_fastq_output_paths_per_file[file_index][1] =
-                mapping_parameters.noy_fastq_output_prefix + "mate2" + index_suffix + read2_ext;
-          } else {
-            mapping_parameters.noy_fastq_output_paths_per_file[file_index][0] =
-                DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
-                                      output_dir, "_noY", compression, output_file_index, 1);
-            mapping_parameters.noy_fastq_output_paths_per_file[file_index][1] =
-                DeriveFastqOutputPath(mapping_parameters.read_file2_paths[file_index],
-                                      output_dir, "_noY", compression, output_file_index, 2);
-          }
-        } else {
-          mapping_parameters.y_fastq_output_paths_per_file[file_index].resize(1);
-          mapping_parameters.noy_fastq_output_paths_per_file[file_index].resize(1);
-
-          const std::string read_ext =
-              BuildFastqExtension(GetFastqBaseExtension(mapping_parameters.read_file1_paths[file_index]),
-                                  compression);
-
-          if (!mapping_parameters.y_fastq_output_prefix.empty()) {
-            const std::string index_suffix =
-                (output_file_index > 0) ? (".f" + std::to_string(output_file_index)) : "";
-            mapping_parameters.y_fastq_output_paths_per_file[file_index][0] =
-                mapping_parameters.y_fastq_output_prefix + "reads" + index_suffix + read_ext;
-          } else {
-            mapping_parameters.y_fastq_output_paths_per_file[file_index][0] =
-                DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
-                                      output_dir, "_Y", compression, output_file_index, 1);
-          }
-
-          if (!mapping_parameters.noy_fastq_output_prefix.empty()) {
-            const std::string index_suffix =
-                (output_file_index > 0) ? (".f" + std::to_string(output_file_index)) : "";
-            mapping_parameters.noy_fastq_output_paths_per_file[file_index][0] =
-                mapping_parameters.noy_fastq_output_prefix + "reads" + index_suffix + read_ext;
-          } else {
-            mapping_parameters.noy_fastq_output_paths_per_file[file_index][0] =
-                DeriveFastqOutputPath(mapping_parameters.read_file1_paths[file_index],
-                                      output_dir, "_noY", compression, output_file_index, 1);
-          }
-        }
-      }
+      InitializeYNoYFastqOutputPaths(&mapping_parameters);
 
       std::cerr << "Y FASTQ output files:\n";
-      for (size_t file_index = 0; file_index < num_files; ++file_index) {
+      for (size_t file_index = 0;
+           file_index < mapping_parameters.y_fastq_output_paths_per_file.size();
+           ++file_index) {
         const auto &paths = mapping_parameters.y_fastq_output_paths_per_file[file_index];
         const std::string file_label =
-            (num_files > 1) ? ("  file" + std::to_string(file_index + 1) + ": ") : "  ";
-        if (is_paired) {
+            (mapping_parameters.y_fastq_output_paths_per_file.size() > 1)
+                ? ("  file" + std::to_string(file_index + 1) + ": ")
+                : "  ";
+        if (paths.size() == 2) {
           std::cerr << file_label << "mate1: " << paths[0] << "\n";
           std::cerr << file_label << "mate2: " << paths[1] << "\n";
         } else {
@@ -1431,11 +1217,15 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         }
       }
       std::cerr << "noY FASTQ output files:\n";
-      for (size_t file_index = 0; file_index < num_files; ++file_index) {
+      for (size_t file_index = 0;
+           file_index < mapping_parameters.noy_fastq_output_paths_per_file.size();
+           ++file_index) {
         const auto &paths = mapping_parameters.noy_fastq_output_paths_per_file[file_index];
         const std::string file_label =
-            (num_files > 1) ? ("  file" + std::to_string(file_index + 1) + ": ") : "  ";
-        if (is_paired) {
+            (mapping_parameters.noy_fastq_output_paths_per_file.size() > 1)
+                ? ("  file" + std::to_string(file_index + 1) + ": ")
+                : "  ";
+        if (paths.size() == 2) {
           std::cerr << file_label << "mate1: " << paths[0] << "\n";
           std::cerr << file_label << "mate2: " << paths[1] << "\n";
         } else {

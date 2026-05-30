@@ -19,7 +19,7 @@ CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(LIBMACS3_DIR
 DEPFLAGS=-MMD -MP
 LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -ldl -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
-core_cpp_source=sequence_batch.cc cbq_reader.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc chromap.cc
+core_cpp_source=sequence_batch.cc cbq_reader.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
 driver_cpp_source=chromap_driver.cc
 libchromap_cpp_source=libchromap.cc
 runner_cpp_source=chromap_lib_runner.cc

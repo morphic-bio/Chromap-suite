@@ -112,6 +112,15 @@ assert_fragment_parity() {
   log "PASS: ${label}"
 }
 
+count_fastq_reads() {
+  local path="$1"
+  if [[ ! -f "${path}" ]]; then
+    printf '0\n'
+    return
+  fi
+  grep -c '^@' "${path}" || true
+}
+
 [[ -x "${CHROMAP}" ]] || {
   echo "ERROR: chromap binary not found; run make chromap or set CHROMAP" >&2
   exit 1
@@ -209,6 +218,15 @@ common_args=(
   -o "${RUN_DIR}/cbq.lib.fragments.bed" \
   > "${RUN_DIR}/cbq.lib.stdout" 2> "${RUN_DIR}/cbq.lib.stderr"
 
+"${CHROMAP}" "${common_args[@]}" \
+  --input-format cbq \
+  --read-pair-cbq "${read_pair_cbq}" \
+  --barcode-cbq "${barcode_cbq}" \
+  --emit-Y-noY-fastq \
+  --emit-Y-noY-fastq-compression none \
+  -o "${RUN_DIR}/cbq.split.fragments.bed" \
+  > "${RUN_DIR}/cbq.split.stdout" 2> "${RUN_DIR}/cbq.split.stderr"
+
 [[ -s "${RUN_DIR}/fastq.fragments.bed" ]] || {
   echo "ERROR: FASTQ baseline produced no fragments" >&2
   exit 1
@@ -221,11 +239,35 @@ common_args=(
   echo "ERROR: CBQ lib runner produced no fragments" >&2
   exit 1
 }
+[[ -s "${RUN_DIR}/cbq.split.fragments.bed" ]] || {
+  echo "ERROR: CBQ CLI Y/noY FASTQ run produced no fragments" >&2
+  exit 1
+}
 
 assert_fragment_parity "${RUN_DIR}/fastq.fragments.bed" \
   "${RUN_DIR}/cbq.fragments.bed" "CLI FASTQ vs CLI CBQ"
 assert_fragment_parity "${RUN_DIR}/fastq.fragments.bed" \
   "${RUN_DIR}/cbq.lib.fragments.bed" "CLI FASTQ vs libchromap CBQ"
+assert_fragment_parity "${RUN_DIR}/fastq.fragments.bed" \
+  "${RUN_DIR}/cbq.split.fragments.bed" "CLI FASTQ vs CLI CBQ Y/noY sidecar"
+
+for mate in 1 2; do
+  y_fastq="${RUN_DIR}/y_separated/Y_reads.mate${mate}.fastq"
+  noy_fastq="${RUN_DIR}/y_separated/noY_reads.mate${mate}.fastq"
+  [[ -f "${y_fastq}" && -f "${noy_fastq}" ]] || {
+    echo "ERROR: missing CBQ Y/noY FASTQ sidecars for mate ${mate}" >&2
+    exit 1
+  }
+  [[ "$(count_fastq_reads "${y_fastq}")" == "0" ]] || {
+    echo "ERROR: expected empty Y FASTQ sidecar for no-Y synthetic reference: ${y_fastq}" >&2
+    exit 1
+  }
+  [[ "$(count_fastq_reads "${noy_fastq}")" == "4" ]] || {
+    echo "ERROR: expected four noY FASTQ records for mate ${mate}: ${noy_fastq}" >&2
+    exit 1
+  }
+done
+log "PASS: CBQ Y/noY FASTQ sidecars"
 
 cat > "${OUT_ROOT}/SUMMARY.txt" <<EOF
 chromap=${CHROMAP}
@@ -234,6 +276,7 @@ bqtools=${bqtools_bin}
 out_root=${OUT_ROOT}
 cbq_cli=pass
 cbq_lib_runner=pass
+cbq_y_noy_fastq=pass
 EOF
 
 log "PASS: CBQ ATAC smoke completed at ${OUT_ROOT}"
