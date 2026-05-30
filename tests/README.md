@@ -73,6 +73,14 @@ Set `CBQ_ORDERED_ENCODER=/path/to/cbq_ordered_encoder` if it is not at the
 default location. `LANES="1"` runs a faster single-lane variant. Missing the
 encoder or any fixture input is reported as a skip.
 
+The current CBQ reader decodes sequence bases directly into Chromap
+`SequenceBatch` buffers, matching the FASTQ path's buffer shape and avoiding a
+per-record temporary sequence string. A full 4-lane PBMC 3K ATAC timing run
+with warmed cache, 8 threads, and output directed to `/dev/null` is recorded at
+`plans/artifacts/cbq_atac_full_timing/20260530T070035Z/`: FASTQ.gz took
+`3:08.74`, uncompressed CBQ took `2:56.36`, and both produced `53,969,811`
+output mappings with matching core summary totals.
+
 ## ENCODE Downsample Smoke
 
 `prepare_encode_downsample_fixtures.sh` creates ignored real-data fixtures from
