@@ -241,6 +241,28 @@ rows, FASTQ == CLI CBQ == libchromap CBQ):
 plans/artifacts/cbq_atac_100k/20260529T202040Z/
 ```
 
+### Direct SequenceBatch buffer fill and full-set timing
+
+Chromap's CBQ path should mirror the FASTQ loader's hot path as closely as
+possible. CBQ sequence materialization now writes directly into the existing
+`SequenceBatch`/`kseq_t` sequence buffer and then commits name, comment, and
+quality fields through the same effective-range trimming path. This keeps the
+ASCII buffer contract used by minimizer and alignment code while removing the
+per-record temporary sequence string used by the first CBQ implementation.
+
+Full 3K PBMC ATAC timing, 4 lanes, 8 threads, warmed cache, BED output directed
+to `/dev/null`:
+
+```text
+plans/artifacts/cbq_atac_full_timing/20260530T070035Z/
+```
+
+- FASTQ.gz measured wall: `3:08.74`
+- uncompressed CBQ measured wall: `2:56.36`
+- delta: `12.38s` faster for CBQ (`6.56%`)
+- peak RSS: `24.67 GB` FASTQ.gz vs `23.33 GB` CBQ
+- read/mapping/output counts match, including `53,969,811` output mappings
+
 ## ENCODE Cross-Assay CBQ Gate
 
 Run:
