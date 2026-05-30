@@ -13,6 +13,7 @@
 #include "libmacs3/fragments.h"
 #include "libmacs3/macs3_frag_peak_pipeline.h"
 #include "utils.h"
+#include "y_noy_path_utils.h"
 
 namespace chromap {
 namespace {
@@ -42,14 +43,21 @@ ChromapRunResult MakeFailure(const MappingParameters &mapping_parameters,
 
 ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
   try {
-    Chromap chromap_for_mapping(mapping_parameters);
+    MappingParameters params = mapping_parameters;
+    if (params.emit_y_noy_fastq &&
+        (params.y_fastq_output_paths_per_file.empty() ||
+         params.noy_fastq_output_paths_per_file.empty())) {
+      InitializeYNoYFastqOutputPaths(&params);
+    }
 
-    if (!mapping_parameters.HasPairedEndInput()) {
-      if (mapping_parameters.UsesCbqInput()) {
-        return MakeFailure(mapping_parameters,
+    Chromap chromap_for_mapping(params);
+
+    if (!params.HasPairedEndInput()) {
+      if (params.UsesCbqInput()) {
+        return MakeFailure(params,
                            "CBQ input currently requires paired-end reads");
       }
-      switch (mapping_parameters.mapping_output_format) {
+      switch (params.mapping_output_format) {
         case MAPPINGFORMAT_PAF:
           chromap_for_mapping.MapSingleEndReads<PAFMapping>();
           break;
@@ -59,32 +67,32 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
           chromap_for_mapping.MapSingleEndReads<SAMMapping>();
           break;
         case MAPPINGFORMAT_PAIRS:
-          return MakeFailure(mapping_parameters,
+          return MakeFailure(params,
                              "single-end PAIRS output is not supported");
         case MAPPINGFORMAT_BED:
         case MAPPINGFORMAT_TAGALIGN:
-          if (mapping_parameters.HasBarcodeInput()) {
+          if (params.HasBarcodeInput()) {
             chromap_for_mapping.MapSingleEndReads<MappingWithBarcode>();
           } else {
             chromap_for_mapping.MapSingleEndReads<MappingWithoutBarcode>();
           }
           break;
         default:
-          return MakeFailure(mapping_parameters, "unknown mapping output format");
+          return MakeFailure(params, "unknown mapping output format");
       }
     } else {
-      if (mapping_parameters.AtacDualFragmentAndBam()) {
+      if (params.AtacDualFragmentAndBam()) {
         chromap_for_mapping.MapPairedEndReads<AtacSpillRecord>();
-      } else if (mapping_parameters.low_memory_mode &&
-                 !mapping_parameters.is_bulk_data &&
-                 (mapping_parameters.mapping_output_format ==
+      } else if (params.low_memory_mode &&
+                 !params.is_bulk_data &&
+                 (params.mapping_output_format ==
                       MAPPINGFORMAT_BED ||
-                  mapping_parameters.mapping_output_format ==
+                  params.mapping_output_format ==
                       MAPPINGFORMAT_TAGALIGN) &&
-                 mapping_parameters.HasBarcodeInput()) {
+                 params.HasBarcodeInput()) {
         chromap_for_mapping.MapPairedEndReads<AtacSpillRecord>();
       } else {
-        switch (mapping_parameters.mapping_output_format) {
+        switch (params.mapping_output_format) {
           case MAPPINGFORMAT_PAF:
             chromap_for_mapping.MapPairedEndReads<PairedPAFMapping>();
             break;
@@ -98,7 +106,7 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
             break;
           case MAPPINGFORMAT_BED:
           case MAPPINGFORMAT_TAGALIGN:
-            if (mapping_parameters.HasBarcodeInput()) {
+            if (params.HasBarcodeInput()) {
               chromap_for_mapping
                   .MapPairedEndReads<PairedEndMappingWithBarcode>();
             } else {
@@ -107,7 +115,7 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
             }
             break;
           default:
-            return MakeFailure(mapping_parameters,
+            return MakeFailure(params,
                                "unknown mapping output format");
         }
       }

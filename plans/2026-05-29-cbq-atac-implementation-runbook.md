@@ -64,7 +64,8 @@ Validation rules:
 - `--barcode-cbq` count must match `--read-pair-cbq` count.
 - `--barcode-whitelist` with CBQ requires `--barcode-cbq`.
 - FASTQ inputs (`-1`, `-2`, `-b`) cannot be mixed with CBQ inputs.
-- CBQ currently rejects `--emit-Y-noY-fastq`.
+- CBQ supports `--emit-Y-noY-fastq` by writing FASTQ sidecars from decoded
+  `SequenceBatch` sequence/quality buffers.
 
 ## Implementation Shape
 
@@ -119,7 +120,8 @@ These are intentional for the first milestone:
 
 - Paired-end CBQ only.
 - No CBQ support for single-end mapping.
-- No `--emit-Y-noY-fastq` support in CBQ mode.
+- `--emit-Y-noY-fastq` writes decoded FASTQ sidecars in CBQ mode. Native
+  Y/noY CBQ sidecar output is still a separate future extension.
 - The first reader materializes ASCII sequences into `SequenceBatch`; packed
   CBQ-to-minimizer optimization is deferred.
 - Test CBQ generation uses external `bqtools`; released Chromap-suite does not

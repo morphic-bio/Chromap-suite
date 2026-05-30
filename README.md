@@ -32,7 +32,7 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 
 - **ATAC fragment sidecar** (AEV1 format, `--atac-fragment-binary-output`). Compact binary file emitted alongside BAM/CRAM plus fragments TSV: a 32-byte header followed by 24-byte fragment records keyed by the run's barcode length, with `(size - 32) / 24 == record-count` parity. Chromosome ids are paired with names in `<sidecar>.chroms.tsv`. The runtime spill harness decodes sidecar records back to full `(chrom, start, end, barcode, count)` tuples and compares them with the fragments TSV/BED baseline. Lets STAR Suite's `libscrna` empty-cells function call cells without re-parsing the gzipped fragments TSV. On the 3K PBMC headline run the sidecar contains 53,969,811 records (md5 `a4251bbc…`). See [`src/mapping_writer.h`](src/mapping_writer.h) and [`docs/atac_runtime_spill_schema_runbook.md`](docs/atac_runtime_spill_schema_runbook.md).
 - **Multiomic integration with STAR Suite**. `libchromap.a` runs as a STAR Suite worker thread for concurrent ATAC + GEX processing in a single `STAR` invocation. STAR Suite's permit allocator partitions a shared thread budget across GEX mapping, feature processing, and ATAC mapping by observing per-domain drain rates and rebalancing toward simultaneous completion. End-to-end on 3K PBMC: 18:17 / 64.8 GB / 2.19× faster than Cell Ranger ARC v2.2.0. See [STAR Suite](https://github.com/morphic-bio/STAR-suite) for the integration entry point.
-- **Native CBQ input** (`--input-format cbq`, `--read-pair-cbq`, `--barcode-cbq`). Maps paired-end ATAC/scATAC reads straight from BINSEQ CBQ files with no intermediate FASTQ, producing fragments byte-identical (under canonical sort) to the FASTQ path. CBQ sequence decode writes directly into Chromap's `SequenceBatch` buffers. FASTQ remains the default. ATAC-only for this milestone; see the [Native CBQ input (ATAC)](#native-cbq-input-atac) sample command below.
+- **Native CBQ input** (`--input-format cbq`, `--read-pair-cbq`, `--barcode-cbq`). Maps paired-end ATAC/scATAC reads straight from BINSEQ CBQ files with no intermediate FASTQ, producing fragments byte-identical (under canonical sort) to the FASTQ path. CBQ sequence decode writes directly into Chromap's `SequenceBatch` buffers, including Y/noY FASTQ sidecar emission. FASTQ remains the default. ATAC-only for this milestone; see the [Native CBQ input (ATAC)](#native-cbq-input-atac) sample command below.
 
 ## Folder Structure
 
@@ -221,7 +221,7 @@ chromap --preset atac \
   -o fragments.bed --BED
 ```
 
-Rules: `--input-format fastq` is the default; `--input-format cbq` requires `--read-pair-cbq`; `--barcode-cbq` count must match `--read-pair-cbq` count; `--barcode-whitelist` requires `--barcode-cbq`; FASTQ inputs (`-1/-2/-b`) cannot be mixed with CBQ; and PAIRS/Hi-C output and `--emit-Y-noY-fastq` are not yet supported in CBQ mode.
+Rules: `--input-format fastq` is the default; `--input-format cbq` requires `--read-pair-cbq`; `--barcode-cbq` count must match `--read-pair-cbq` count; `--barcode-whitelist` requires `--barcode-cbq`; FASTQ inputs (`-1/-2/-b`) cannot be mixed with CBQ; and PAIRS/Hi-C output is not yet supported in CBQ mode. `--emit-Y-noY-fastq` is supported for CBQ inputs and writes FASTQ sidecars from the decoded sequence/quality buffers.
 
 Alignment contract: the read-pair and barcode CBQ lanes must be **record-aligned** — record *i* of each lane must be the same original read, in the same order. To make this verifiable, barcoded CBQ inputs must include read names (headers); both lanes are checked to carry headers at startup and read/barcode names are compared per record (re-encode without `--skip-headers`). Encode with an order-preserving encoder: encoders that reorder records across blocks under parallelism (e.g. `bqtools` at scale) break this alignment.
 
@@ -301,12 +301,13 @@ chromap --SAM --emit-Y-read-names --emit-Y-noY-fastq \
 Read-name list: `<output>.Y.names.txt` by default, normalised (strip leading `@`, stop at first whitespace, strip trailing `/1` or `/2`); no ordering guarantees.
 
 FASTQ split naming:
+- Auto-named FASTQ sidecars are written under `y_separated/` next to the primary output path, matching STAR Suite's Y-removal layout. Override this with `--Y-noY-fastq-output-dir`.
 - Inserts `_Y` / `_noY` before the last `_R[0-9]+` token if present (e.g., `sample_R1.fastq.gz` → `sample_Y_R1.fastq.gz`).
 - Falls back to `Y_reads.mateN.<ext>(.gz)` / `noY_reads.mateN.<ext>(.gz)` otherwise.
 - Compression: `gz` (default) or `none`.
 - Paired-end routing: if either mate hits Y, both mates go to Y outputs.
 
-Related flags: `--emit-Y-read-names`, `--Y-read-names-output`, `--emit-Y-noY-fastq`, `--emit-Y-noY-fastq-compression {gz|none}`, `--Y-fastq-output-prefix`, `--noY-fastq-output-prefix`.
+Related flags: `--emit-Y-read-names`, `--Y-read-names-output`, `--emit-Y-noY-fastq`, `--emit-Y-noY-fastq-compression {gz|none}`, `--Y-noY-fastq-output-dir`, `--Y-fastq-output-prefix`, `--noY-fastq-output-prefix`.
 
 ## Chromap Launchpad (Recipe Builder)
 

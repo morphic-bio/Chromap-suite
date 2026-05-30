@@ -112,9 +112,9 @@ Validation rules:
   is used.
 - `--barcode-whitelist` with CBQ still requires barcode CBQ input.
 - Reject mixed FASTQ and CBQ inputs in one command.
-- Initially reject `--emit-Y-noY-fastq` in CBQ mode, or require explicit output
-  prefixes and test it separately. The first production milestone should not
-  depend on Y/noY FASTQ sidecar behavior.
+- CBQ mode supports `--emit-Y-noY-fastq` by writing FASTQ sidecars from decoded
+  Chromap buffers. Native Y/noY CBQ sidecars remain out of scope for this
+  milestone.
 
 ## Reader Strategy
 
