@@ -124,6 +124,7 @@ struct MappingParameters {
   std::string y_read_names_output_path;
   bool emit_y_noy_fastq = false;
   std::string y_noy_fastq_compression = "gz";  // "gz" or "none"
+  std::string y_noy_fastq_output_dir;
   std::string y_fastq_output_prefix;
   std::string noy_fastq_output_prefix;
   std::vector<std::vector<std::string>> y_fastq_output_paths_per_file;  // [file][mate]

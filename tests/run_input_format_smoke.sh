@@ -238,8 +238,8 @@ assert_sam_parity "${se_plain}" "${se_gzip}" "single-end FASTQ plain vs gzip inp
 
 for stream in Y noY; do
   for mate in R1 R2; do
-    none_path="${RUN_DIR}/test_pe_${stream}_${mate}.fq"
-    gz_path="${RUN_DIR}/test_pe_${stream}_${mate}.fq.gz"
+    none_path="${RUN_DIR}/y_separated/test_pe_${stream}_${mate}.fq"
+    gz_path="${RUN_DIR}/y_separated/test_pe_${stream}_${mate}.fq.gz"
     [[ -f "${none_path}" && -f "${gz_path}" ]] || {
       echo "ERROR: missing Y/noY FASTQ split output ${none_path} or ${gz_path}" >&2
       exit 1

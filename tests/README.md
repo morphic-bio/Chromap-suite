@@ -21,8 +21,8 @@ production fixtures. It generates synthetic FASTA/FASTQ inputs, builds a small
 Chromap index, and checks:
 
 - paired and single-end FASTQ plain vs `.gz` input parity;
-- Y/noY FASTQ sidecar output with `--emit-Y-noY-fastq-compression none` and
-  `gz`;
+- Y/noY FASTQ sidecar output under `y_separated/` with
+  `--emit-Y-noY-fastq-compression none` and `gz`;
 - optional BINSEQ CBQ compatibility through `bqtools decode`, for both default
   compressed and uncompressed (`-l 0`) CBQ files.
 
@@ -41,7 +41,9 @@ path there; native ATAC CBQ ingestion is covered by the smoke below.
 `run_cbq_atac_smoke.sh` verifies native ATAC CBQ ingestion. It generates a small
 paired-end scATAC fixture, encodes read-pair and barcode CBQ files with
 `bqtools`, compares CLI FASTQ vs CLI CBQ fragments, and compares CLI FASTQ vs
-`chromap_lib_runner` CBQ fragments.
+`chromap_lib_runner` CBQ fragments. It also exercises `--emit-Y-noY-fastq` in
+CBQ mode and checks that decoded FASTQ sidecars are written under
+`y_separated/`.
 
 Run it with:
 
@@ -270,7 +272,8 @@ The script creates a temporary directory, runs chromap with various configuratio
 Tests the Y read names list and Y/noY FASTQ splitting:
 - Single-end Y/noY FASTQ emission and name normalization
 - Paired-end routing when either mate hits Y
-- Multiple input files naming with `.fN` suffixes
+- Multiple input files naming with `.fN` suffixes under `y_separated/`
+- Explicit `--Y-noY-fastq-output-dir` routing
 
 ### Running End-to-End FASTQ Tests
 

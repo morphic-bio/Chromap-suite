@@ -86,13 +86,13 @@ if [ ! -f "single.Y.names.txt" ]; then
   echo -e "${RED}FAIL: Y read names output missing${NC}"
   exit 1
 fi
-if [ ! -f "single_Y_R1.fq" ] || [ ! -f "single_noY_R1.fq" ]; then
+if [ ! -f "y_separated/single_Y_R1.fq" ] || [ ! -f "y_separated/single_noY_R1.fq" ]; then
   echo -e "${RED}FAIL: Y/noY FASTQ outputs missing${NC}"
   exit 1
 fi
 
-Y_COUNT=$(count_fastq_reads "single_Y_R1.fq")
-NOY_COUNT=$(count_fastq_reads "single_noY_R1.fq")
+Y_COUNT=$(count_fastq_reads "y_separated/single_Y_R1.fq")
+NOY_COUNT=$(count_fastq_reads "y_separated/single_noY_R1.fq")
 if [ "$Y_COUNT" -ne "$SE_Y" ] || [ "$NOY_COUNT" -ne "$SE_NOY" ]; then
   echo -e "${RED}FAIL: FASTQ counts mismatch in Test 1 (Y=$Y_COUNT, noY=$NOY_COUNT)${NC}"
   exit 1
@@ -121,16 +121,16 @@ $CHROMAP --SAM --emit-Y-read-names --emit-Y-noY-fastq \
   exit 1
 }
 
-if [ ! -f "paired_Y_R1.fq" ] || [ ! -f "paired_Y_R2.fq" ] || \
-   [ ! -f "paired_noY_R1.fq" ] || [ ! -f "paired_noY_R2.fq" ]; then
+if [ ! -f "y_separated/paired_Y_R1.fq" ] || [ ! -f "y_separated/paired_Y_R2.fq" ] || \
+   [ ! -f "y_separated/paired_noY_R1.fq" ] || [ ! -f "y_separated/paired_noY_R2.fq" ]; then
   echo -e "${RED}FAIL: Paired-end FASTQ outputs missing${NC}"
   exit 1
 fi
 
-Y_R1=$(count_fastq_reads "paired_Y_R1.fq")
-Y_R2=$(count_fastq_reads "paired_Y_R2.fq")
-NOY_R1=$(count_fastq_reads "paired_noY_R1.fq")
-NOY_R2=$(count_fastq_reads "paired_noY_R2.fq")
+Y_R1=$(count_fastq_reads "y_separated/paired_Y_R1.fq")
+Y_R2=$(count_fastq_reads "y_separated/paired_Y_R2.fq")
+NOY_R1=$(count_fastq_reads "y_separated/paired_noY_R1.fq")
+NOY_R2=$(count_fastq_reads "y_separated/paired_noY_R2.fq")
 
 if [ "$Y_R1" -ne "$PE_Y" ] || [ "$Y_R2" -ne "$PE_Y" ] || \
    [ "$NOY_R1" -ne "$PE_NOY" ] || [ "$NOY_R2" -ne "$PE_NOY" ]; then
@@ -166,16 +166,16 @@ $CHROMAP --SAM --emit-Y-noY-fastq \
   exit 1
 }
 
-if [ ! -f "multiA_Y_R1.f1.fq" ] || [ ! -f "multiA_noY_R1.f1.fq" ] || \
-   [ ! -f "multiB_Y_R1.f2.fq" ] || [ ! -f "multiB_noY_R1.f2.fq" ]; then
+if [ ! -f "y_separated/multiA_Y_R1.f1.fq" ] || [ ! -f "y_separated/multiA_noY_R1.f1.fq" ] || \
+   [ ! -f "y_separated/multiB_Y_R1.f2.fq" ] || [ ! -f "y_separated/multiB_noY_R1.f2.fq" ]; then
   echo -e "${RED}FAIL: Multi-input FASTQ outputs missing${NC}"
   exit 1
 fi
 
-Y_F1=$(count_fastq_reads "multiA_Y_R1.f1.fq")
-NOY_F1=$(count_fastq_reads "multiA_noY_R1.f1.fq")
-Y_F2=$(count_fastq_reads "multiB_Y_R1.f2.fq")
-NOY_F2=$(count_fastq_reads "multiB_noY_R1.f2.fq")
+Y_F1=$(count_fastq_reads "y_separated/multiA_Y_R1.f1.fq")
+NOY_F1=$(count_fastq_reads "y_separated/multiA_noY_R1.f1.fq")
+Y_F2=$(count_fastq_reads "y_separated/multiB_Y_R1.f2.fq")
+NOY_F2=$(count_fastq_reads "y_separated/multiB_noY_R1.f2.fq")
 
 if [ "$Y_F1" -ne "$SE_Y" ] || [ "$NOY_F1" -ne "$SE_NOY" ] || \
    [ "$Y_F2" -ne "$SE_Y" ] || [ "$NOY_F2" -ne "$SE_NOY" ]; then
@@ -184,6 +184,27 @@ if [ "$Y_F1" -ne "$SE_Y" ] || [ "$NOY_F1" -ne "$SE_NOY" ] || \
 fi
 
 echo -e "${GREEN}Test 3 PASSED${NC}"
+
+echo ""
+echo -e "${GREEN}Test 4: Explicit Y/noY FASTQ output directory${NC}"
+
+$CHROMAP --SAM --emit-Y-noY-fastq \
+  --emit-Y-noY-fastq-compression none \
+  --Y-noY-fastq-output-dir custom_split \
+  -r "$DATA_DIR/test_ref.fa" -x "$DATA_DIR/test_ref.idx" \
+  -1 single_R1.fq -o custom_dir.sam \
+  --min-num-seeds 1 --error-threshold 10 -t 1 \
+  > /dev/null 2>&1 || {
+  echo -e "${RED}FAIL: Mapping failed in Test 4${NC}"
+  exit 1
+}
+
+if [ ! -f "custom_split/single_Y_R1.fq" ] || [ ! -f "custom_split/single_noY_R1.fq" ]; then
+  echo -e "${RED}FAIL: Explicit output directory was not used${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}Test 4 PASSED${NC}"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
