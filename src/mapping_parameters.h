@@ -2,6 +2,7 @@
 #define MAPPING_PARAMETERS_H_
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,6 +22,8 @@ enum MappingOutputFormat {
   MAPPINGFORMAT_BAM,
   MAPPINGFORMAT_CRAM
 };
+
+enum class ReadInputFormat { kFastq, kCbq };
 
 // Source for --call-macs3-frag-peaks fragment rows (file reread vs in-memory).
 enum class Macs3FragPeaksSource { kFile, kMemory };
@@ -79,9 +82,12 @@ struct MappingParameters {
   int peak_merge_max_length = 30;
   std::string reference_file_path;
   std::string index_file_path;
+  ReadInputFormat read_input_format = ReadInputFormat::kFastq;
   std::vector<std::string> read_file1_paths;
   std::vector<std::string> read_file2_paths;
   std::vector<std::string> barcode_file_paths;
+  std::vector<std::string> read_pair_cbq_paths;
+  std::vector<std::string> barcode_cbq_paths;
   std::string barcode_whitelist_file_path;
   std::string read_format;
   std::string mapping_output_file_path;
@@ -189,10 +195,37 @@ struct MappingParameters {
   // atac_fragment_output_file_path in one mapping pass. Works for scATAC
   // (barcode files present) and bulk ATAC (no barcode files).
   bool AtacDualFragmentAndBam() const {
-    return !read_file2_paths.empty() &&
+    return HasPairedEndInput() &&
            !atac_fragment_output_file_path.empty() &&
            (mapping_output_format == MAPPINGFORMAT_BAM ||
             mapping_output_format == MAPPINGFORMAT_CRAM);
+  }
+
+  bool UsesCbqInput() const {
+    return read_input_format == ReadInputFormat::kCbq;
+  }
+
+  bool HasPairedEndInput() const {
+    return UsesCbqInput() ? !read_pair_cbq_paths.empty()
+                          : !read_file2_paths.empty();
+  }
+
+  bool HasBarcodeInput() const {
+    return UsesCbqInput() ? !barcode_cbq_paths.empty()
+                          : !barcode_file_paths.empty();
+  }
+
+  size_t NumInputLanes() const {
+    return UsesCbqInput() ? read_pair_cbq_paths.size()
+                          : read_file1_paths.size();
+  }
+
+  const std::string &ReadGroupSourcePath() const {
+    if (UsesCbqInput() && !read_pair_cbq_paths.empty()) {
+      return read_pair_cbq_paths[0];
+    }
+    static const std::string kEmpty;
+    return read_file1_paths.empty() ? kEmpty : read_file1_paths[0];
   }
 
   int GetNumVPULanes() const {

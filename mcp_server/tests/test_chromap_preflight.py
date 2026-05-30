@@ -72,6 +72,45 @@ def test_recipe_preflight_reports_output_collision(loaded_default_config, temp_d
     assert collision.status == "fail"
 
 
+def test_recipe_preflight_passes_for_atac_bam_fragments_sidecar(
+    loaded_default_config, temp_dir
+):
+    params = {
+        **_base_params(temp_dir),
+        "barcode": str(temp_dir / "bc.fastq.gz"),
+        "output": str(temp_dir / "out.bam"),
+        "atac_fragments": str(temp_dir / "fragments.tsv.gz"),
+        "atac_fragment_binary_output": str(temp_dir / "fragments.bin"),
+    }
+
+    result = preflight_recipe("chromap_atac_bam_fragments", params)
+
+    assert result.valid
+    statuses = {check.rule_id: check.status for check in result.checks}
+    assert statuses["secondary_output_not_primary"] == "pass"
+    assert statuses["output_parent_trusted_or_creatable"] == "pass"
+
+
+def test_recipe_preflight_reports_sidecar_output_collision(
+    loaded_default_config, temp_dir
+):
+    params = {
+        **_base_params(temp_dir),
+        "barcode": str(temp_dir / "bc.fastq.gz"),
+        "output": str(temp_dir / "out.bam"),
+        "atac_fragments": str(temp_dir / "fragments.tsv.gz"),
+        "atac_fragment_binary_output": str(temp_dir / "fragments.tsv.gz"),
+    }
+
+    result = preflight_recipe("chromap_atac_bam_fragments", params)
+
+    assert not result.valid
+    collision = [c for c in result.checks if c.rule_id == "secondary_output_not_primary"][0]
+    assert collision.status == "fail"
+    assert "atac_fragments" in collision.message
+    assert "atac_fragment_binary_output" in collision.message
+
+
 def test_recipe_preflight_reports_barcode_lane_mismatch(loaded_default_config, temp_dir):
     params = {
         **_base_params(temp_dir),

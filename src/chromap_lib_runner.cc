@@ -155,20 +155,49 @@ void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
   if (mapping_parameters.mapping_output_file_path.empty()) {
     chromap::ExitWithMessage("No output specified");
   }
-  if (mapping_parameters.read_file1_paths.empty()) {
+  if (!mapping_parameters.UsesCbqInput() &&
+      mapping_parameters.NumInputLanes() == 0) {
     chromap::ExitWithMessage("No read 1 input specified");
   }
-  if (!mapping_parameters.read_file2_paths.empty() &&
+  if (mapping_parameters.UsesCbqInput()) {
+    if (mapping_parameters.read_pair_cbq_paths.empty()) {
+      chromap::ExitWithMessage("--input-format cbq requires --read-pair-cbq");
+    }
+    if (!mapping_parameters.read_file1_paths.empty() ||
+        !mapping_parameters.read_file2_paths.empty() ||
+        !mapping_parameters.barcode_file_paths.empty()) {
+      chromap::ExitWithMessage(
+          "FASTQ inputs cannot be mixed with --input-format cbq");
+    }
+    if (!mapping_parameters.barcode_cbq_paths.empty() &&
+        mapping_parameters.barcode_cbq_paths.size() !=
+            mapping_parameters.read_pair_cbq_paths.size()) {
+      chromap::ExitWithMessage(
+          "--barcode-cbq count must match --read-pair-cbq count");
+    }
+    if (!mapping_parameters.barcode_whitelist_file_path.empty() &&
+        mapping_parameters.barcode_cbq_paths.empty()) {
+      chromap::ExitWithMessage(
+          "--barcode-whitelist with CBQ input requires --barcode-cbq");
+    }
+    if (mapping_parameters.emit_y_noy_fastq) {
+      chromap::ExitWithMessage(
+          "--emit-Y-noY-fastq is not supported with --input-format cbq yet");
+    }
+  }
+  if (!mapping_parameters.UsesCbqInput() &&
+      !mapping_parameters.read_file2_paths.empty() &&
       mapping_parameters.read_file1_paths.size() !=
           mapping_parameters.read_file2_paths.size()) {
     chromap::ExitWithMessage("Read 1 and read 2 input counts differ");
   }
-  if (!mapping_parameters.barcode_file_paths.empty() &&
+  if (!mapping_parameters.UsesCbqInput() &&
+      !mapping_parameters.barcode_file_paths.empty() &&
       mapping_parameters.read_file1_paths.size() !=
           mapping_parameters.barcode_file_paths.size()) {
     chromap::ExitWithMessage("Read 1 and barcode input counts differ");
   }
-  if (mapping_parameters.barcode_file_paths.empty() &&
+  if (!mapping_parameters.HasBarcodeInput() &&
       !mapping_parameters.barcode_whitelist_file_path.empty()) {
     chromap::ExitWithMessage(
         "Barcode whitelist was supplied without barcode reads");
@@ -216,6 +245,9 @@ void PrintRunSummary(const chromap::MappingParameters &mapping_parameters) {
   std::cerr << "Index file: " << mapping_parameters.index_file_path << "\n";
   std::cerr << "Output file: " << mapping_parameters.mapping_output_file_path
             << "\n";
+  std::cerr << "Input format: "
+            << (mapping_parameters.UsesCbqInput() ? "cbq" : "fastq")
+            << "\n";
   if (!mapping_parameters.summary_metadata_file_path.empty()) {
     std::cerr << "Summary file: "
               << mapping_parameters.summary_metadata_file_path << "\n";
@@ -241,11 +273,17 @@ int main(int argc, char **argv) {
        cxxopts::value<std::string>(), "FILE")
       ("r,ref", "Reference FASTA",
        cxxopts::value<std::string>(), "FILE")
+      ("input-format", "Read input format: fastq or cbq [fastq]",
+       cxxopts::value<std::string>(), "STR")
       ("1,read1", "Read 1 FASTQ file(s), comma separated",
        cxxopts::value<std::vector<std::string>>(), "FILE[,FILE]")
       ("2,read2", "Read 2 FASTQ file(s), comma separated",
        cxxopts::value<std::vector<std::string>>(), "FILE[,FILE]")
       ("b,barcode", "Barcode FASTQ file(s), comma separated",
+       cxxopts::value<std::vector<std::string>>(), "FILE[,FILE]")
+      ("read-pair-cbq", "Paired read CBQ file(s), comma separated",
+       cxxopts::value<std::vector<std::string>>(), "FILE[,FILE]")
+      ("barcode-cbq", "Barcode CBQ file(s), comma separated",
        cxxopts::value<std::vector<std::string>>(), "FILE[,FILE]")
       ("barcode-whitelist", "Barcode whitelist file",
        cxxopts::value<std::string>(), "FILE")
@@ -366,15 +404,46 @@ int main(int argc, char **argv) {
     if (result.count("ref")) {
       mapping_parameters.reference_file_path = result["ref"].as<std::string>();
     }
-    if (result.count("read1")) {
+    if (result.count("input-format")) {
+      const std::string input_format =
+          result["input-format"].as<std::string>();
+      if (input_format == "fastq") {
+        mapping_parameters.read_input_format = chromap::ReadInputFormat::kFastq;
+      } else if (input_format == "cbq") {
+        mapping_parameters.read_input_format = chromap::ReadInputFormat::kCbq;
+      } else {
+        chromap::ExitWithMessage(
+            "--input-format must be \"fastq\" or \"cbq\"");
+      }
+    }
+    if (mapping_parameters.UsesCbqInput()) {
+      if (result.count("read1") || result.count("read2") ||
+          result.count("barcode")) {
+        chromap::ExitWithMessage(
+            "FASTQ inputs cannot be mixed with --input-format cbq");
+      }
+      if (result.count("read-pair-cbq")) {
+        mapping_parameters.read_pair_cbq_paths =
+            result["read-pair-cbq"].as<std::vector<std::string>>();
+      }
+      if (result.count("barcode-cbq")) {
+        mapping_parameters.is_bulk_data = false;
+        mapping_parameters.barcode_cbq_paths =
+            result["barcode-cbq"].as<std::vector<std::string>>();
+      }
+    } else if (result.count("read-pair-cbq") ||
+               result.count("barcode-cbq")) {
+      chromap::ExitWithMessage(
+          "CBQ inputs require --input-format cbq");
+    } else if (result.count("read1")) {
       mapping_parameters.read_file1_paths =
           result["read1"].as<std::vector<std::string>>();
     }
-    if (result.count("read2")) {
+    if (!mapping_parameters.UsesCbqInput() && result.count("read2")) {
       mapping_parameters.read_file2_paths =
           result["read2"].as<std::vector<std::string>>();
     }
-    if (result.count("barcode")) {
+    if (!mapping_parameters.UsesCbqInput() && result.count("barcode")) {
       mapping_parameters.is_bulk_data = false;
       mapping_parameters.barcode_file_paths =
           result["barcode"].as<std::vector<std::string>>();

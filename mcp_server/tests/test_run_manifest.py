@@ -55,6 +55,53 @@ def test_manifest_tool_writes_dry_run_manifest(loaded_default_config, temp_dir):
     assert result["manifest"]["recipe_id"] == "chromap_atac_bed"
 
 
+def test_dry_run_manifest_records_atac_sidecar_outputs(loaded_default_config, temp_dir):
+    loaded_default_config.paths.artifact_log_root = temp_dir / "artifacts"
+    params = {
+        "reference": _touch(temp_dir / "ref.fa"),
+        "index": _touch(temp_dir / "ref.index"),
+        "read1": str(temp_dir / "r1.fastq.gz"),
+        "read2": str(temp_dir / "r2.fastq.gz"),
+        "barcode": str(temp_dir / "bc.fastq.gz"),
+        "output": str(temp_dir / "out.bam"),
+        "atac_fragments": str(temp_dir / "fragments.tsv.gz"),
+        "atac_fragment_binary_output": str(temp_dir / "fragments.bin"),
+    }
+
+    result = write_run_manifest("chromap_atac_bam_fragments", params)
+    manifest = result["manifest"]
+
+    assert "--atac-fragment-binary-output" in manifest["argv"]
+    assert manifest["output_paths"] == [
+        str(temp_dir / "out.bam"),
+        str(temp_dir / "fragments.tsv.gz"),
+        str(temp_dir / "fragments.bin"),
+        str(temp_dir / "fragments.bin.chroms.tsv"),
+    ]
+
+
+def test_dry_run_manifest_omits_unset_atac_sidecar_outputs(
+    loaded_default_config, temp_dir
+):
+    loaded_default_config.paths.artifact_log_root = temp_dir / "artifacts"
+    params = {
+        "reference": _touch(temp_dir / "ref.fa"),
+        "index": _touch(temp_dir / "ref.index"),
+        "read1": str(temp_dir / "r1.fastq.gz"),
+        "read2": str(temp_dir / "r2.fastq.gz"),
+        "barcode": str(temp_dir / "bc.fastq.gz"),
+        "output": str(temp_dir / "out.bam"),
+        "atac_fragments": str(temp_dir / "fragments.tsv.gz"),
+    }
+
+    result = write_run_manifest("chromap_atac_bam_fragments", params)
+
+    assert result["manifest"]["output_paths"] == [
+        str(temp_dir / "out.bam"),
+        str(temp_dir / "fragments.tsv.gz"),
+    ]
+
+
 def test_run_manifest_records_serial_benchmark_policy(loaded_default_config, temp_dir):
     loaded_default_config.paths.artifact_log_root = temp_dir / "artifacts"
 
