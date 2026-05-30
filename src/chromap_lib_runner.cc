@@ -10,6 +10,7 @@
 #include "cxxopts.hpp"
 #include "libchromap.h"
 #include "utils.h"
+#include "y_noy_path_utils.h"
 
 namespace {
 
@@ -179,10 +180,6 @@ void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
         mapping_parameters.barcode_cbq_paths.empty()) {
       chromap::ExitWithMessage(
           "--barcode-whitelist with CBQ input requires --barcode-cbq");
-    }
-    if (mapping_parameters.emit_y_noy_fastq) {
-      chromap::ExitWithMessage(
-          "--emit-Y-noY-fastq is not supported with --input-format cbq yet");
     }
   }
   if (!mapping_parameters.UsesCbqInput() &&
@@ -372,6 +369,8 @@ int main(int argc, char **argv) {
       ("emit-Y-noY-fastq", "Emit Y/noY FASTQ files")
       ("emit-Y-noY-fastq-compression", "Y/noY FASTQ compression: gz or none",
        cxxopts::value<std::string>(), "STR")
+      ("Y-noY-fastq-output-dir", "Directory for auto-named Y/noY FASTQ outputs",
+       cxxopts::value<std::string>(), "DIR")
       ("Y-fastq-output-prefix", "Prefix for Y FASTQ outputs",
        cxxopts::value<std::string>(), "PREFIX")
       ("noY-fastq-output-prefix", "Prefix for noY FASTQ outputs",
@@ -653,6 +652,10 @@ int main(int argc, char **argv) {
       mapping_parameters.y_noy_fastq_compression =
           result["emit-Y-noY-fastq-compression"].as<std::string>();
     }
+    if (result.count("Y-noY-fastq-output-dir")) {
+      mapping_parameters.y_noy_fastq_output_dir =
+          result["Y-noY-fastq-output-dir"].as<std::string>();
+    }
     if (result.count("Y-fastq-output-prefix")) {
       mapping_parameters.y_fastq_output_prefix =
           result["Y-fastq-output-prefix"].as<std::string>();
@@ -663,6 +666,10 @@ int main(int argc, char **argv) {
     }
     if (result.count("skip-barcode-check")) {
       mapping_parameters.skip_barcode_check = true;
+    }
+
+    if (mapping_parameters.emit_y_noy_fastq) {
+      chromap::InitializeYNoYFastqOutputPaths(&mapping_parameters);
     }
 
     ValidateInputs(mapping_parameters);
