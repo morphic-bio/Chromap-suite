@@ -25,6 +25,11 @@ argv through the linked workflow. It can launch the command only from a loopback
 browser on the same host as the server. Remote browsers stay in planning mode
 unless a trusted local path check is available.
 
+The `chromap_atac_bam_fragments` recipe exposes `atac_fragment_binary_output`
+for the optional AEV1 sidecar. When supplied, the rendered argv includes
+`--atac-fragment-binary-output`, and manifests list both the sidecar file and
+its generated `<sidecar>.chroms.tsv` chromosome metadata.
+
 The recipe API starts at:
 
 ```text

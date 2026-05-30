@@ -17,7 +17,7 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 - **Native BAM output + coordinate sort** (`--BAM --sort-bam --write-index`). Replaces the conventional `chromap | samtools sort | samtools index` chain via htslib + a *k*-way disk-merge spillover. Produces `@HD VN:1.6 SO:coordinate` headers and `.bam.bai` indexes in one process. Sort key: `(tid, pos, flag, mtid, mpos, isize)` with `read_id` tie-break (note: differs from `samtools sort` QNAME tie-break). See [`docs/sort_spec.md`](docs/sort_spec.md). Compatible with `--low-mem`.
 - **In-process libMACS3 narrow peak calling** (`--call-macs3-frag-peaks`). Fragments are handed to `libMACS3` through the `FragmentIterator` API without an intermediate `fragments.tsv.gz` write, so a single chromap invocation produces sorted-and-indexed BAM, fragments, and MACS3-equivalent narrowPeak and summit outputs. Bulk ATAC supported via `--macs3-frag-peaks-source memory` (no barcode required); scATAC/multiomic via barcoded fragments. Output is byte-identical to standalone MACS3 v3.0.3 (50,274 peaks, md5 `34f9f991…` on the 3K PBMC ATAC channel).
 - **Y-chromosome filtering** (`--emit-Y-bam`, `--emit-noY-bam`, `--emit-Y-noY-fastq`, `--emit-Y-read-names`). Three-stream output (all / Y-only / noY) for sex-aware analyses. Works with `--sort-bam`. Detection is case-insensitive and matches `Y`, `chrY`, `CHR_Y`, `chr_y`; decoy/random/alt contigs (`chrY_random`, etc.) are intentionally excluded. See the [Y-chromosome filtering](#y-chromosome-filtering) section below.
-- **`libchromap.a` callable library**. The full Chromap Suite ATAC pipeline is exposed through the `libchromap_contract` API (`RunAtacMapping()`, `ChromapAtacConfig`, `ChromapPermitHooks`). The same library backs the `chromap` CLI binary and is the integration point used by STAR Suite for multiomic processing. See [`include/libchromap_contract.h`](include/libchromap_contract.h) and [`src/libchromap.cc`](src/libchromap.cc).
+- **`libchromap.a` callable library**. The full Chromap Suite ATAC pipeline is exposed through the `libchromap` API (`RunAtacMapping()`, `ChromapAtacConfig`, `ChromapPermitHooks`). The same library backs the `chromap` CLI binary and is the integration point used by STAR Suite for multiomic processing. See [`src/libchromap.h`](src/libchromap.h) and [`src/libchromap.cc`](src/libchromap.cc).
 - **`--Tn5-shift-mode {classical|symmetric}`** picks the Tn5 cut-site offset convention on BED/BEDPE/PAF. `classical` (`+4 / -5`; Buenrostro 2013 / Cell Ranger ARC) is the default; `symmetric` (`+4 / -4`; ChromBPNet) is the alternative. Implies `--Tn5-shift`. Active offsets are echoed at startup. SAM/BAM output remains intentionally unshifted (shifting would require coordinated edits to `POS`, `MPOS`, `TLEN`, `CIGAR`, `NM`, `MD`).
 - **`--temp-dir DIR`** for custom temporary directory (helpful in Docker/container environments).
 
@@ -30,15 +30,15 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 
 ### ATAC-multiomic
 
-- **ATAC fragment sidecar** (AEV1 format). Compact binary file emitted alongside the BAM and fragments TSV: a 32-byte header followed by 24-byte fragment records keyed by 16-byte barcode, with a `(size − 32) / 24 == record-count` parity check. Lets STAR Suite's `libscrna` empty-cells function call cells without re-parsing the gzipped fragments TSV. On the 3K PBMC headline run the sidecar contains 53,969,811 records (md5 `a4251bbc…`). See [`include/atac_fragment_sidecar.h`](include/atac_fragment_sidecar.h).
+- **ATAC fragment sidecar** (AEV1 format, `--atac-fragment-binary-output`). Compact binary file emitted alongside BAM/CRAM plus fragments TSV: a 32-byte header followed by 24-byte fragment records keyed by the run's barcode length, with `(size - 32) / 24 == record-count` parity. Chromosome ids are paired with names in `<sidecar>.chroms.tsv`. The runtime spill harness decodes sidecar records back to full `(chrom, start, end, barcode, count)` tuples and compares them with the fragments TSV/BED baseline. Lets STAR Suite's `libscrna` empty-cells function call cells without re-parsing the gzipped fragments TSV. On the 3K PBMC headline run the sidecar contains 53,969,811 records (md5 `a4251bbc…`). See [`src/mapping_writer.h`](src/mapping_writer.h) and [`docs/atac_runtime_spill_schema_runbook.md`](docs/atac_runtime_spill_schema_runbook.md).
 - **Multiomic integration with STAR Suite**. `libchromap.a` runs as a STAR Suite worker thread for concurrent ATAC + GEX processing in a single `STAR` invocation. STAR Suite's permit allocator partitions a shared thread budget across GEX mapping, feature processing, and ATAC mapping by observing per-domain drain rates and rebalancing toward simultaneous completion. End-to-end on 3K PBMC: 18:17 / 64.8 GB / 2.19× faster than Cell Ranger ARC v2.2.0. See [STAR Suite](https://github.com/morphic-bio/STAR-suite) for the integration entry point.
+- **Native CBQ input** (`--input-format cbq`, `--read-pair-cbq`, `--barcode-cbq`). Maps paired-end ATAC/scATAC reads straight from BINSEQ CBQ files with no intermediate FASTQ, producing fragments byte-identical (under canonical sort) to the FASTQ path. FASTQ remains the default. ATAC-only for this milestone; see the [Native CBQ input (ATAC)](#native-cbq-input-atac) sample command below.
 
 ## Folder Structure
 
 ```
-src/                  # Chromap Suite C++ sources (chromap CLI + libchromap)
-include/              # Public headers (libchromap_contract.h, atac_fragment_sidecar.h)
-lib/                  # Built static libraries (libchromap.a)
+src/                  # Chromap Suite C++ sources and public libchromap header
+libchromap.a          # Built static library
 bin/                  # CLI binaries (chromap, chromap_callpeaks)
 third_party/
   htslib/             # Vendored htslib (BAM read/write/sort/index)
@@ -56,7 +56,7 @@ scripts/              # Helper scripts (validators, launchpad runner, ...)
 ## Modules
 
 - **chromap** (`src/`, `bin/chromap`) — the CLI binary covering bulk ATAC, scATAC, ChIP-seq, and Hi-C. Supports the standard ATAC, ChIP, scATAC, and Hi-C flag surfaces, plus the Chromap Suite additions above (BAM, sort, peak-call, sidecar, Y-filtering). Build: `make`.
-- **libchromap** (`lib/libchromap.a`, `include/libchromap_contract.h`) — the same code as a callable C++ library. The `RunAtacMapping()` entry point + `ChromapAtacConfig` + `ChromapPermitHooks` structs let a host process embed Chromap Suite's ATAC pipeline directly with shared thread coordination. Build: produced as a side effect of `make`.
+- **libchromap** (`libchromap.a`, `src/libchromap.h`) — the same code as a callable C++ library. The `RunAtacMapping()` entry point + `ChromapAtacConfig` + `ChromapPermitHooks` structs let a host process embed Chromap Suite's ATAC pipeline directly with shared thread coordination. Build: produced as a side effect of `make`.
 - **libMACS3** (`third_party/libMACS3/lib/libmacs3.a`) — vendored submodule providing a portable C++ implementation of MACS3's narrow peak-calling capability. Standalone CLI `macs3frag` reads a fragments TSV and produces byte-identical narrowPeak. Build: `make libmacs3` (or transitively via `make`). See [the libMACS3 repo](https://github.com/morphic-bio/libMACS3).
 - **chromap_callpeaks** (`bin/chromap_callpeaks`) — alias for libMACS3's `macs3frag` binary, kept for harness compatibility. Reads standard fragments files and produces narrowPeak; **7.8× faster** than Cython MACS3 single-threaded, **10.3× faster at 4 threads**.
 - **MCP server + Launchpad** (`mcp_server/`) — agent automation service plus browser recipe UI. Initial recipes: `chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_fragments`, `chromap_hic_pairs`. See [`mcp_server/README.md`](mcp_server/README.md).
@@ -74,7 +74,7 @@ Chromap Suite command from the established Chromap + samtools + MACS3 workflow.
 | Multiome (RNA + ATAC) | Single `STAR` invocation: alignment + Solo + GEX `EmptyDrops_CR` + concurrent libchromap + libMACS3 narrow peaks + ATAC `evidence-from-peaks` (T=32, lease=256, pool=48) | Cell Ranger ARC v2.2.0 (`cellranger-arc count --create-bam=true --nosecondary --disable-cell-annotation --localcores=32`); **40:04 / 79.07 GB peak RSS** | **18:17.52 / 64.80 GB; 2.19× faster, ~18% lower memory** | Apples-to-apples scope: alignment + GEX UMI counting + GEX `EmptyDrops_CR` + ATAC mapping + narrow peak calling + ATAC per-barcode cell call. ARC RSS read from cellranger's own `_perf` JSON (ARC forks 252 child processes at peak, so parent-process `/usr/bin/time -v` is misleading). |
 | Narrow peaks vs MACS3 | Same multiomic pipeline output | MACS3 v3.0.3 standalone on the same input | **50,274 peaks, byte-identical** (md5 `34f9f991…`); summits also byte-identical (md5 `b54a556…`) | The pipeline delivers the MACS3 narrow peaks downstream ATAC analyses already use; ARC produces 81,157 peaks via its own custom wide caller, which is not a parameterisation of MACS. |
 | libMACS3 standalone | Fragments TSV in → narrowPeak out | MACS3 v3.0.3 single-threaded (721 s, 2.50 GB) | **92 s / 2.77 GB at 1 thread (7.8×)**; **70 s at 4 threads (10.3×)**; 64 s at 24 threads (11.3×) | All thread counts produce byte-identical narrowPeak. Memory parity at the practical 4-thread budget; sublinear scaling beyond 4 threads because the per-chromosome serial sweep dominates the remaining wall time. |
-| ATAC fragment sidecar | AEV1 binary, 32-byte header + 24-byte records | gzipped fragments TSV re-parse | 53,969,811 records, 1,295,275,496 B (md5 `a4251bbc…`) | Consumed by `libscrna::atac::RunAtacEvidenceFromBinary` for ATAC cell calling; integration guard fires when `atacAcquire=0` after `--chromapAtacEnable 1 --dynamicThreadInterface 1`. |
+| ATAC fragment sidecar | AEV1 binary, 32-byte header + 24-byte records + `.chroms.tsv` metadata | gzipped fragments TSV re-parse | 53,969,811 records, 1,295,275,496 B (md5 `a4251bbc…`) | Consumed by `libscrna::atac::RunAtacEvidenceFromBinary` for ATAC cell calling; integration guard fires when `atacAcquire=0` after `--chromapAtacEnable 1 --dynamicThreadInterface 1`. |
 
 The end-to-end multiomic comparison anchors on a fully public dataset for direct reproducibility.
 
@@ -202,9 +202,28 @@ chromap --preset atac \
   -b barcode.fq.gz --barcode-whitelist whitelist.txt \
   --BAM --sort-bam --write-index \
   --atac-fragments fragments.tsv.gz \
+  --atac-fragment-binary-output fragments.bin \
   --call-macs3-frag-peaks \
   -o aln.bam
 ```
+
+### Native CBQ input (ATAC)
+
+Maps paired-end ATAC/scATAC directly from BINSEQ CBQ without writing intermediate FASTQ. The same options work with `chromap_lib_runner`.
+
+```sh
+chromap --preset atac \
+  --input-format cbq \
+  --read-pair-cbq lane1.reads.cbq,lane2.reads.cbq \
+  --barcode-cbq lane1.barcode.cbq,lane2.barcode.cbq \
+  --barcode-whitelist whitelist.txt \
+  -x ref.index -r ref.fa \
+  -o fragments.bed --BED
+```
+
+Rules: `--input-format fastq` is the default; `--input-format cbq` requires `--read-pair-cbq`; `--barcode-cbq` count must match `--read-pair-cbq` count; `--barcode-whitelist` requires `--barcode-cbq`; FASTQ inputs (`-1/-2/-b`) cannot be mixed with CBQ; and PAIRS/Hi-C output and `--emit-Y-noY-fastq` are not yet supported in CBQ mode.
+
+Alignment contract: the read-pair and barcode CBQ lanes must be **record-aligned** — record *i* of each lane must be the same original read, in the same order. To make this verifiable, barcoded CBQ inputs must include read names (headers); both lanes are checked to carry headers at startup and read/barcode names are compared per record (re-encode without `--skip-headers`). Encode with an order-preserving encoder: encoders that reorder records across blocks under parallelism (e.g. `bqtools` at scale) break this alignment.
 
 ### ChIP-seq
 

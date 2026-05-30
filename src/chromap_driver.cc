@@ -107,12 +107,18 @@ void AddInputOptions(cxxopts::Options &options) {
   options.add_options("Input")("r,ref", "Reference file",
                                cxxopts::value<std::string>(), "FILE")(
       "x,index", "Index file", cxxopts::value<std::string>(), "FILE")(
+      "input-format", "Read input format: fastq or cbq [fastq]",
+      cxxopts::value<std::string>(), "STR")(
       "1,read1", "Single-end read files or paired-end read files 1",
       cxxopts::value<std::vector<std::string>>(),
       "FILE")("2,read2", "Paired-end read files 2",
               cxxopts::value<std::vector<std::string>>(),
               "FILE")("b,barcode", "Cell barcode files",
                       cxxopts::value<std::vector<std::string>>(), "FILE")(
+      "read-pair-cbq", "Paired read CBQ files",
+      cxxopts::value<std::vector<std::string>>(), "FILE")(
+      "barcode-cbq", "Cell barcode CBQ files",
+      cxxopts::value<std::vector<std::string>>(), "FILE")(
       "barcode-whitelist", "Cell barcode whitelist file",
       cxxopts::value<std::string>(),
       "FILE")("read-format",
@@ -889,7 +895,8 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
               << "\n";
     chromap::Chromap chromap_for_indexing(index_parameters);
     chromap_for_indexing.ConstructIndex();
-  } else if (result.count("1")) {
+  } else if (result.count("1") || result.count("read-pair-cbq") ||
+             result.count("input-format")) {
     std::cerr << "Start to map reads.\n";
     if (result.count("r")) {
       mapping_parameters.reference_file_path = result["ref"].as<std::string>();
@@ -907,18 +914,50 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     } else {
       chromap::ExitWithMessage("No index file specified!");
     }
-    if (result.count("1")) {
+    if (result.count("input-format")) {
+      const std::string input_format =
+          result["input-format"].as<std::string>();
+      if (input_format == "fastq") {
+        mapping_parameters.read_input_format = ReadInputFormat::kFastq;
+      } else if (input_format == "cbq") {
+        mapping_parameters.read_input_format = ReadInputFormat::kCbq;
+      } else {
+        chromap::ExitWithMessage(
+            "--input-format must be \"fastq\" or \"cbq\"");
+      }
+    }
+
+    if (mapping_parameters.UsesCbqInput()) {
+      if (result.count("1") || result.count("2") || result.count("b")) {
+        chromap::ExitWithMessage(
+            "FASTQ inputs (-1/-2/-b) cannot be mixed with --input-format cbq");
+      }
+      if (!result.count("read-pair-cbq")) {
+        chromap::ExitWithMessage(
+            "--input-format cbq requires --read-pair-cbq");
+      }
+      mapping_parameters.read_pair_cbq_paths = GetMatchedFilePaths(
+          result["read-pair-cbq"].as<std::vector<std::string>>());
+      if (result.count("barcode-cbq")) {
+        mapping_parameters.is_bulk_data = false;
+        mapping_parameters.barcode_cbq_paths = GetMatchedFilePaths(
+            result["barcode-cbq"].as<std::vector<std::string>>());
+      }
+    } else if (result.count("read-pair-cbq") || result.count("barcode-cbq")) {
+      chromap::ExitWithMessage(
+          "CBQ inputs require --input-format cbq");
+    } else if (result.count("1")) {
       mapping_parameters.read_file1_paths =
           GetMatchedFilePaths(result["read1"].as<std::vector<std::string>>());
     } else {
       chromap::ExitWithMessage("No read file specified!");
     }
-    if (result.count("2")) {
+    if (!mapping_parameters.UsesCbqInput() && result.count("2")) {
       mapping_parameters.read_file2_paths =
           GetMatchedFilePaths(result["read2"].as<std::vector<std::string>>());
     }
 
-    if (result.count("b")) {
+    if (!mapping_parameters.UsesCbqInput() && result.count("b")) {
       mapping_parameters.is_bulk_data = false;
       mapping_parameters.barcode_file_paths =
           GetMatchedFilePaths(result["barcode"].as<std::vector<std::string>>());
@@ -930,12 +969,31 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
 
     if (result.count("barcode-whitelist")) {
       if (mapping_parameters.is_bulk_data) {
-        chromap::ExitWithMessage(
-            "No barcode file specified but the barcode whitelist file is "
-            "given!");
+        if (mapping_parameters.UsesCbqInput()) {
+          chromap::ExitWithMessage(
+              "--barcode-whitelist with CBQ input requires --barcode-cbq");
+        } else {
+          chromap::ExitWithMessage(
+              "No barcode file specified but the barcode whitelist file is "
+              "given!");
+        }
       }
       mapping_parameters.barcode_whitelist_file_path =
           result["barcode-whitelist"].as<std::string>();
+    }
+
+    if (mapping_parameters.UsesCbqInput()) {
+      if (!mapping_parameters.barcode_cbq_paths.empty() &&
+          mapping_parameters.barcode_cbq_paths.size() !=
+              mapping_parameters.read_pair_cbq_paths.size()) {
+        chromap::ExitWithMessage(
+            "--barcode-cbq count must match --read-pair-cbq count");
+      }
+      if (!mapping_parameters.barcode_whitelist_file_path.empty() &&
+          mapping_parameters.barcode_cbq_paths.empty()) {
+        chromap::ExitWithMessage(
+            "--barcode-whitelist with CBQ input requires --barcode-cbq");
+      }
     }
 
     if (result.count("p")) {
@@ -1087,7 +1145,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     }
 
     if (!mapping_parameters.atac_fragment_output_file_path.empty()) {
-      if (mapping_parameters.read_file2_paths.empty()) {
+      if (!mapping_parameters.HasPairedEndInput()) {
         chromap::ExitWithMessage(
             "--atac-fragments requires paired-end reads (-2)");
       }
@@ -1135,8 +1193,8 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       const bool be_dual = mapping_parameters.AtacDualFragmentAndBam();
       const bool be_bed_pe = (mapping_parameters.mapping_output_format ==
                                   MAPPINGFORMAT_BED &&
-                              !mapping_parameters.read_file2_paths.empty());
-      const bool has_barcode = !mapping_parameters.barcode_file_paths.empty();
+                              mapping_parameters.HasPairedEndInput());
+      const bool has_barcode = mapping_parameters.HasBarcodeInput();
       const bool memory_source =
           mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory;
       if (!be_dual && !be_bed_pe) {
@@ -1236,6 +1294,11 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     // Y/noY FASTQ emission
     if (result.count("emit-Y-noY-fastq")) {
       mapping_parameters.emit_y_noy_fastq = true;
+    }
+    if (mapping_parameters.UsesCbqInput() &&
+        mapping_parameters.emit_y_noy_fastq) {
+      chromap::ExitWithMessage(
+          "--emit-Y-noY-fastq is not supported with --input-format cbq yet");
     }
     if (result.count("emit-Y-noY-fastq-compression")) {
       std::string compression = result["emit-Y-noY-fastq-compression"].as<std::string>();
@@ -1505,22 +1568,38 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     std::cerr << "Reference file: " << mapping_parameters.reference_file_path
               << "\n";
     std::cerr << "Index file: " << mapping_parameters.index_file_path << "\n";
-    for (size_t i = 0; i < mapping_parameters.read_file1_paths.size(); ++i) {
-      std::cerr << i + 1
-                << "th read 1 file: " << mapping_parameters.read_file1_paths[i]
-                << "\n";
-    }
-    if (result.count("2") != 0) {
-      for (size_t i = 0; i < mapping_parameters.read_file2_paths.size(); ++i) {
-        std::cerr << i + 1 << "th read 2 file: "
-                  << mapping_parameters.read_file2_paths[i] << "\n";
-      }
-    }
-    if (result.count("b") != 0) {
-      for (size_t i = 0; i < mapping_parameters.barcode_file_paths.size();
+    std::cerr << "Input format: "
+              << (mapping_parameters.UsesCbqInput() ? "cbq" : "fastq")
+              << "\n";
+    if (mapping_parameters.UsesCbqInput()) {
+      for (size_t i = 0; i < mapping_parameters.read_pair_cbq_paths.size();
            ++i) {
-        std::cerr << i + 1 << "th cell barcode file: "
-                  << mapping_parameters.barcode_file_paths[i] << "\n";
+        std::cerr << i + 1 << "th read-pair CBQ file: "
+                  << mapping_parameters.read_pair_cbq_paths[i] << "\n";
+      }
+      for (size_t i = 0; i < mapping_parameters.barcode_cbq_paths.size();
+           ++i) {
+        std::cerr << i + 1 << "th cell barcode CBQ file: "
+                  << mapping_parameters.barcode_cbq_paths[i] << "\n";
+      }
+    } else {
+      for (size_t i = 0; i < mapping_parameters.read_file1_paths.size(); ++i) {
+        std::cerr << i + 1 << "th read 1 file: "
+                  << mapping_parameters.read_file1_paths[i] << "\n";
+      }
+      if (result.count("2") != 0) {
+        for (size_t i = 0; i < mapping_parameters.read_file2_paths.size();
+             ++i) {
+          std::cerr << i + 1 << "th read 2 file: "
+                    << mapping_parameters.read_file2_paths[i] << "\n";
+        }
+      }
+      if (result.count("b") != 0) {
+        for (size_t i = 0; i < mapping_parameters.barcode_file_paths.size();
+             ++i) {
+          std::cerr << i + 1 << "th cell barcode file: "
+                    << mapping_parameters.barcode_file_paths[i] << "\n";
+        }
       }
     }
     if (result.count("barcode-whitelist") != 0) {
@@ -1548,7 +1627,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
 
     chromap::Chromap chromap_for_mapping(mapping_parameters);
 
-    if (result.count("2") == 0) {
+    if (!mapping_parameters.HasPairedEndInput()) {
       // Single-end reads.
       switch (mapping_parameters.mapping_output_format) {
         case MAPPINGFORMAT_PAF: {
@@ -1566,7 +1645,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
           break;
         case MAPPINGFORMAT_BED:
         case MAPPINGFORMAT_TAGALIGN:
-          if (result.count("b") != 0) {
+          if (mapping_parameters.HasBarcodeInput()) {
             chromap_for_mapping
                 .MapSingleEndReads<chromap::MappingWithBarcode>();
           } else {
@@ -1588,7 +1667,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
                       MAPPINGFORMAT_BED ||
                   mapping_parameters.mapping_output_format ==
                       MAPPINGFORMAT_TAGALIGN) &&
-                 result.count("b") != 0) {
+                 mapping_parameters.HasBarcodeInput()) {
         chromap_for_mapping.MapPairedEndReads<chromap::AtacSpillRecord>();
       } else
       switch (mapping_parameters.mapping_output_format) {
@@ -1608,7 +1687,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         }
         case MAPPINGFORMAT_BED:
         case MAPPINGFORMAT_TAGALIGN:
-          if (result.count("b") != 0) {
+          if (mapping_parameters.HasBarcodeInput()) {
             chromap_for_mapping
                 .MapPairedEndReads<chromap::PairedEndMappingWithBarcode>();
           } else {

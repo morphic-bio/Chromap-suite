@@ -17,6 +17,21 @@ The Y/noY path is not the root cause of this issue. Y routing can add output
 streams, but the observed memory growth came from the ATAC low-memory mapping
 buffer holding large dual records before spill.
 
+## Chromap-Side Status
+
+The Chromap-side runtime spill schema is implemented in `src/atac_spill_record.h`
+and consumed by the low-memory overflow writer/reader. Overflow files carry a
+file-level schema header; the reader rejects unsupported `format_version` and
+`record_codec_version` values before decoding payloads. Dual BAM plus fragments
+uses the same spill record as fragment/sidecar output, with the BAM pair section
+selected by the per-run schema mask.
+
+The AEV1 sidecar remains an output adapter, not a replacement for BAM. It is
+written only when `--atac-fragment-binary-output <path>` is supplied together
+with paired-end BAM/CRAM and `--atac-fragments`; Chromap also writes
+`<path>.chroms.tsv` so sidecar `chrom_id` values can be decoded without relying
+on external chromosome order assumptions.
+
 ## Goals
 
 - Keep one internal source of truth for ATAC mappings regardless of requested
@@ -140,6 +155,10 @@ schema_mask
 record_codec_version
 ```
 
+Current readers must accept only the supported v1/v1 file and record codec
+pair. Treating unknown versions as fatal is intentional; otherwise a future
+payload layout could be silently decoded as the current schema.
+
 Each record should be length-prefixed:
 
 ```text
@@ -257,12 +276,20 @@ BAM checks:
   mate-pair validator passes
 
 sidecar checks:
+  binary header magic == AEV1
+  format_version == 1
+  record_size == 24
+  barcode_length is supported
   binary header record_count > 0
   chroms TSV exists and matches reference sequence count/name order
   decoded record count matches emitted fragment count after dedup
+  decoded 5-column tuples (chrom,start,end,barcode,count) match the baseline
+  fragments table, using barcode_length to decode barcode_key
 
 memory checks:
   forced-spill stderr includes "Processing N overflow files"
+  forced-spill mid-batch flush count is >= 1
+  final-drain-only mid-batch flush count is 0
   measured max RSS is recorded for each case
   dual BAM plus sidecar RSS stays within the configured low-memory envelope
 ```
@@ -277,6 +304,7 @@ plans/artifacts/atac_runtime_spill_schema/<timestamp>/HARNESS_SUMMARY.txt
 
 Chromap-side acceptance:
 
+- `make test-atac-spill-record-roundtrip` succeeds.
 - `make libchromap.a` succeeds.
 - Existing low-memory BED smoke still passes.
 - Existing ATAC dual output regression still passes.
@@ -293,4 +321,3 @@ STAR-suite acceptance after Chromap integration:
   - GEX GeneFull and Velocyto MEX,
   - Y-removal artifacts for the JAX KOLF2 production line.
 - Only after the smoke passes should production be restarted.
-
