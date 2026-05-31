@@ -117,7 +117,6 @@ class SequenceEffectiveRange {
     return len;
   }
 
- private:
   bool IsFullRangeAndPositiveStrand() const {
     if (strand == '+' && starts[0] == 0 && ends[0] == -1) {
       return true;
@@ -126,6 +125,7 @@ class SequenceEffectiveRange {
     return false;
   }
 
+ private:
   std::vector<int> starts = {0};
   std::vector<int> ends = {-1};
   // Strand is either '+' or '-'. The barcode will be reverse-complemented after

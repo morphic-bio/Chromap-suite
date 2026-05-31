@@ -46,6 +46,16 @@ struct CbqReadView {
   const CbqSegmentView *segments = nullptr;
 };
 
+// Borrowed view over decoded CBQ records. The backing shared_ptr keeps the
+// decoded block alive while callers consume records after the reader advances.
+struct CbqReadBatchView {
+  const CbqReadView *records = nullptr;
+  uint32_t record_count = 0;
+  bool preserves_source_order = true;
+  bool backing_storage_owned_by_reader = true;
+  std::shared_ptr<const void> backing;
+};
+
 size_t CbqSegmentSequenceLength(const CbqSegmentView &segment);
 char CbqSegmentBaseAscii(const CbqSegmentView &segment, size_t index);
 void MaterializeCbqSegmentSequence(const CbqSegmentView &segment,
@@ -54,6 +64,10 @@ bool MaterializeCbqSegmentSequenceToBuffer(const CbqSegmentView &segment,
                                            char *dest, size_t capacity,
                                            size_t *length_out,
                                            std::string *error);
+bool MaterializeCbqSegmentSequenceAndReverseComplementToBuffers(
+    const CbqSegmentView &segment, char *dest, size_t capacity,
+    char *reverse_complement_dest, size_t reverse_complement_capacity,
+    size_t *length_out, std::string *error);
 
 class CbqLaneReader {
  public:
@@ -63,7 +77,11 @@ class CbqLaneReader {
   ~CbqLaneReader();
 
   bool Open(std::string *error);
+  bool OpenRange(uint64_t first_record, uint64_t record_count,
+                 std::string *error);
   CbqReadStatus Next(CbqReadView *record, std::string *error);
+  CbqReadStatus NextBatch(uint32_t max_records, CbqReadBatchView *batch,
+                          std::string *error);
   void Close();
 
   const std::string &path() const { return path_; }
@@ -73,6 +91,10 @@ class CbqLaneReader {
   // successful Open(). Barcoded ATAC requires this on both lanes so the
   // read/barcode record-alignment check has names to compare.
   bool HasHeaders() const;
+
+  // Total records in the current lane, populated after OpenRange() has parsed
+  // the CBQINDEX footer. Sequential Open() does not require or populate it.
+  uint64_t CurrentLaneRecordCount() const;
 
  private:
   struct Impl;

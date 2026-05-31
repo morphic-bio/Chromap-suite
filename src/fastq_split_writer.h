@@ -1,6 +1,7 @@
 #ifndef FASTQ_SPLIT_WRITER_H_
 #define FASTQ_SPLIT_WRITER_H_
 
+#include <cstring>
 #include <cstdint>
 #include <fstream>
 #include <memory>
@@ -23,12 +24,17 @@ class FastqSplitWriter {
     // Open Y output files
     for (const auto &path : y_output_paths) {
       if (compression_ == "gz") {
-        y_files_.push_back(gzopen(path.c_str(), "wb"));
-        if (!y_files_.back()) {
+        gzFile file = gzopen(path.c_str(), "wb");
+        if (!file) {
           ExitWithMessage("Failed to open Y FASTQ output file: " + path);
         }
+        if (gzbuffer(file, 1 << 20) != 0) {
+          gzclose(file);
+          ExitWithMessage("Failed to set gzip buffer for Y FASTQ output file: " + path);
+        }
+        y_files_.push_back(file);
       } else {
-        y_file_streams_.emplace_back(new std::ofstream(path));
+        y_file_streams_.emplace_back(new std::ofstream(path, std::ios::out | std::ios::binary));
         if (!y_file_streams_.back()->is_open()) {
           ExitWithMessage("Failed to open Y FASTQ output file: " + path);
         }
@@ -38,12 +44,17 @@ class FastqSplitWriter {
     // Open noY output files
     for (const auto &path : noy_output_paths) {
       if (compression_ == "gz") {
-        noy_files_.push_back(gzopen(path.c_str(), "wb"));
-        if (!noy_files_.back()) {
+        gzFile file = gzopen(path.c_str(), "wb");
+        if (!file) {
           ExitWithMessage("Failed to open noY FASTQ output file: " + path);
         }
+        if (gzbuffer(file, 1 << 20) != 0) {
+          gzclose(file);
+          ExitWithMessage("Failed to set gzip buffer for noY FASTQ output file: " + path);
+        }
+        noy_files_.push_back(file);
       } else {
-        noy_file_streams_.emplace_back(new std::ofstream(path));
+        noy_file_streams_.emplace_back(new std::ofstream(path, std::ios::out | std::ios::binary));
         if (!noy_file_streams_.back()->is_open()) {
           ExitWithMessage("Failed to open noY FASTQ output file: " + path);
         }
@@ -106,44 +117,37 @@ class FastqSplitWriter {
     }
     
     if (!gz_file && !file_stream) return;
-    
-    // Build header: name + comment
-    std::string header;
-    header += (has_qual ? "@" : ">");
-    header += name;
+
+    record_buffer_.clear();
+    record_buffer_.reserve(1 + std::strlen(name) + comment_len + seq_len +
+                           qual_len + 8);
+    record_buffer_ += (has_qual ? "@" : ">");
+    record_buffer_ += name;
     if (comment_len > 0) {
-      header += " ";
-      header.append(comment, comment_len);
+      record_buffer_ += " ";
+      record_buffer_.append(comment, comment_len);
     }
-    header += "\n";
-    
-    // Write header
-    if (gz_file) {
-      gzwrite(gz_file, header.c_str(), header.length());
-    } else {
-      *file_stream << header;
-    }
-    
-    // Write sequence
-    if (gz_file) {
-      gzwrite(gz_file, seq, seq_len);
-      gzputc(gz_file, '\n');
-    } else {
-      file_stream->write(seq, seq_len);
-      *file_stream << "\n";
-    }
-    
-    // Write quality if present
+    record_buffer_ += "\n";
+    record_buffer_.append(seq, seq_len);
+    record_buffer_ += "\n";
+
     if (has_qual) {
-      if (gz_file) {
-        gzputc(gz_file, '+');
-        gzputc(gz_file, '\n');
-        gzwrite(gz_file, qual, qual_len);
-        gzputc(gz_file, '\n');
-      } else {
-        *file_stream << "+\n";
-        file_stream->write(qual, qual_len);
-        *file_stream << "\n";
+      record_buffer_ += "+\n";
+      record_buffer_.append(qual, qual_len);
+      record_buffer_ += "\n";
+    }
+
+    if (gz_file) {
+      const int written = gzwrite(gz_file, record_buffer_.data(),
+                                  static_cast<unsigned int>(record_buffer_.size()));
+      if (written != static_cast<int>(record_buffer_.size())) {
+        ExitWithMessage("Failed to write Y/noY FASTQ gzip record");
+      }
+    } else {
+      file_stream->write(record_buffer_.data(),
+                         static_cast<std::streamsize>(record_buffer_.size()));
+      if (!file_stream->good()) {
+        ExitWithMessage("Failed to write Y/noY FASTQ record");
       }
     }
     
@@ -172,6 +176,7 @@ class FastqSplitWriter {
   std::vector<gzFile> noy_files_;
   std::vector<std::unique_ptr<std::ofstream>> y_file_streams_;
   std::vector<std::unique_ptr<std::ofstream>> noy_file_streams_;
+  std::string record_buffer_;
   uint64_t num_written_y_;
   uint64_t num_written_noy_;
 };

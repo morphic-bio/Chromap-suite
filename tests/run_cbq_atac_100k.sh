@@ -261,7 +261,7 @@ timed_run fastq_baseline \
   -o "${fastq_bed}"
 
 timed_run cbq_cli \
-  "${CHROMAP}" "${common_args[@]}" \
+  env CHROMAP_REQUIRE_CBQ_INDEX=1 "${CHROMAP}" "${common_args[@]}" \
   --input-format cbq \
   --read-pair-cbq "${PAIR_CBQ_CSV}" \
   --barcode-cbq "${BC_CBQ_CSV}" \
@@ -269,7 +269,7 @@ timed_run cbq_cli \
   -o "${cbq_bed}"
 
 timed_run cbq_lib_runner \
-  "${CHROMAP_LIB_RUNNER}" "${common_args[@]}" \
+  env CHROMAP_REQUIRE_CBQ_INDEX=1 "${CHROMAP_LIB_RUNNER}" "${common_args[@]}" \
   --input-format cbq \
   --read-pair-cbq "${PAIR_CBQ_CSV}" \
   --barcode-cbq "${BC_CBQ_CSV}" \

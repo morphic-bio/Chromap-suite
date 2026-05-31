@@ -204,21 +204,21 @@ common_args=(
   -o "${RUN_DIR}/fastq.fragments.bed" \
   > "${RUN_DIR}/fastq.stdout" 2> "${RUN_DIR}/fastq.stderr"
 
-"${CHROMAP}" "${common_args[@]}" \
+env CHROMAP_REQUIRE_CBQ_INDEX=1 "${CHROMAP}" "${common_args[@]}" \
   --input-format cbq \
   --read-pair-cbq "${read_pair_cbq}" \
   --barcode-cbq "${barcode_cbq}" \
   -o "${RUN_DIR}/cbq.fragments.bed" \
   > "${RUN_DIR}/cbq.stdout" 2> "${RUN_DIR}/cbq.stderr"
 
-"${CHROMAP_LIB_RUNNER}" "${common_args[@]}" \
+env CHROMAP_REQUIRE_CBQ_INDEX=1 "${CHROMAP_LIB_RUNNER}" "${common_args[@]}" \
   --input-format cbq \
   --read-pair-cbq "${read_pair_cbq}" \
   --barcode-cbq "${barcode_cbq}" \
   -o "${RUN_DIR}/cbq.lib.fragments.bed" \
   > "${RUN_DIR}/cbq.lib.stdout" 2> "${RUN_DIR}/cbq.lib.stderr"
 
-"${CHROMAP}" "${common_args[@]}" \
+env CHROMAP_REQUIRE_CBQ_INDEX=1 "${CHROMAP}" "${common_args[@]}" \
   --input-format cbq \
   --read-pair-cbq "${read_pair_cbq}" \
   --barcode-cbq "${barcode_cbq}" \
@@ -243,6 +243,14 @@ common_args=(
   echo "ERROR: CBQ CLI Y/noY FASTQ run produced no fragments" >&2
   exit 1
 }
+
+for log_file in "${RUN_DIR}/cbq.stderr" "${RUN_DIR}/cbq.lib.stderr" \
+                "${RUN_DIR}/cbq.split.stderr"; do
+  if ! grep -q "Using indexed CBQ range producer" "${log_file}"; then
+    echo "ERROR: indexed CBQ range producer was not reported in ${log_file}" >&2
+    exit 1
+  fi
+done
 
 assert_fragment_parity "${RUN_DIR}/fastq.fragments.bed" \
   "${RUN_DIR}/cbq.fragments.bed" "CLI FASTQ vs CLI CBQ"

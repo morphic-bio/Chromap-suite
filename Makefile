@@ -19,7 +19,7 @@ CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(LIBMACS3_DIR
 DEPFLAGS=-MMD -MP
 LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -ldl -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
-core_cpp_source=sequence_batch.cc cbq_reader.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
+core_cpp_source=sequence_batch.cc cbq_reader.cc cbq_batch_producer.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
 driver_cpp_source=chromap_driver.cc
 libchromap_cpp_source=libchromap.cc
 runner_cpp_source=chromap_lib_runner.cc
@@ -82,7 +82,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 
 -include $(deps)
 
-.PHONY: clean test-unit test-atac-spill-record-roundtrip test-atac-runtime-spill-schema-harness test-frag-compact-store test-input-format-smoke test-cbq-atac-smoke test-cbq-atac-100k test-libchromap-core-smoke \
+.PHONY: clean test-unit test-atac-spill-record-roundtrip test-atac-runtime-spill-schema-harness test-frag-compact-store test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-atac-100k test-libchromap-core-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
 	 test-encode-cbq-cross-assay-smoke \
@@ -187,6 +187,16 @@ test-frag-compact-store: dir $(LIBMACS3_LIB)
 # bqtools is available, CBQ default/uncompressed decode-to-FASTQ compatibility.
 test-input-format-smoke: chromap
 	./tests/run_input_format_smoke.sh
+
+# CBQ range reader direct-decode smoke. Uses an existing CBQ fixture when
+# present and synthesizes compressed/uncompressed CBQ fixtures when bqtools is
+# available.
+tests/cbq_range_reader_harness: dir $(objs_dir)/cbq_reader.o
+	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/cbq_range_reader_harness.cc \
+		$(objs_dir)/cbq_reader.o -o tests/cbq_range_reader_harness $(LDFLAGS)
+
+test-cbq-range-reader: tests/cbq_range_reader_harness
+	./tests/run_cbq_range_reader_smoke.sh
 
 # Synthetic ATAC CBQ parity smoke. Requires bqtools (or BQTOOLS=/path/to/bqtools).
 test-cbq-atac-smoke: chromap chromap_lib_runner
