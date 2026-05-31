@@ -96,8 +96,10 @@ The current CBQ reader decodes sequence bases directly into Chromap
 `SequenceBatch` buffers, matching the FASTQ path's buffer shape and avoiding a
 per-record temporary sequence string. Indexed CBQs use an ordered range
 producer in paired-end mapping: worker-owned readers pull independent record
-ranges and completed batches are consumed in source order. Legacy CBQs without
-a `CBQINDEX` footer fall back to the sequential CBQ loader. Set
+ranges and completed batches are consumed in source order. The `CBQINDEX`
+footer is parsed and validated once per lane, then reused by worker-owned range
+readers. Legacy CBQs without a `CBQINDEX` footer fall back to the sequential CBQ
+loader. Set
 `CHROMAP_REQUIRE_CBQ_INDEX=1` to make a CBQ run fail instead of falling back;
 the CBQ parity gates use this to prove the indexed range producer is active.
 A full 4-lane PBMC 3K ATAC timing run with warmed cache, 8 threads, and output

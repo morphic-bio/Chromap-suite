@@ -42,18 +42,21 @@ uint64_t CbqRecordGlobalId(const CbqReadView &record,
 
 bool ReadCbqRangeMetadata(const std::string &path, uint32_t mate_count,
                           uint64_t *record_count, bool *has_headers,
-                          std::string *error) {
+                          CbqLaneIndex *lane_index, std::string *error) {
   CbqLaneReader reader(path, mate_count);
-  if (!reader.OpenRange(0, std::numeric_limits<uint64_t>::max(), error)) {
+  CbqLaneIndex local_index;
+  if (lane_index == nullptr) {
+    lane_index = &local_index;
+  }
+  if (!reader.LoadIndex(lane_index, error)) {
     return false;
   }
   if (record_count != nullptr) {
-    *record_count = reader.CurrentLaneRecordCount();
+    *record_count = lane_index->total_records;
   }
   if (has_headers != nullptr) {
-    *has_headers = reader.HasHeaders();
+    *has_headers = lane_index->has_headers;
   }
-  reader.Close();
   return true;
 }
 
@@ -457,18 +460,24 @@ uint32_t Chromap::LoadPairedEndReadsFromCbq(CbqLaneReader &read_reader,
 
 bool Chromap::GetPairedEndCbqRangeMetadata(
     const std::string &read_cbq_path, const std::string *barcode_cbq_path,
+    CbqLaneIndex &read_cbq_index, CbqLaneIndex *barcode_cbq_index,
     uint64_t &record_count, std::string &error) {
   bool read_has_headers = false;
   if (!ReadCbqRangeMetadata(read_cbq_path, 2, &record_count,
-                            &read_has_headers, &error)) {
+                            &read_has_headers, &read_cbq_index, &error)) {
     return false;
   }
 
   if (barcode_cbq_path != nullptr) {
+    if (barcode_cbq_index == nullptr) {
+      error = "CBQ barcode index output is null";
+      return false;
+    }
     uint64_t barcode_record_count = 0;
     bool barcode_has_headers = false;
     if (!ReadCbqRangeMetadata(*barcode_cbq_path, 1, &barcode_record_count,
-                              &barcode_has_headers, &error)) {
+                              &barcode_has_headers, barcode_cbq_index,
+                              &error)) {
       return false;
     }
     if (!read_has_headers || !barcode_has_headers) {
@@ -492,18 +501,25 @@ bool Chromap::GetPairedEndCbqRangeMetadata(
 
 uint32_t Chromap::LoadPairedEndCbqRange(
     const std::string &read_cbq_path, const std::string *barcode_cbq_path,
+    const CbqLaneIndex &read_cbq_index,
+    const CbqLaneIndex *barcode_cbq_index,
     uint64_t first_record, uint32_t record_count,
     uint64_t global_record_offset, CbqPairedEndBatch *batch) {
   std::string error;
   CbqLaneReader read_reader(read_cbq_path, 2);
-  if (!read_reader.OpenRange(first_record, record_count, &error)) {
+  if (!read_reader.OpenRangeWithIndex(read_cbq_index, first_record,
+                                      record_count, &error)) {
     ExitWithMessage("Cannot open CBQ read-pair range: " + error);
   }
 
   std::unique_ptr<CbqLaneReader> barcode_reader;
   if (barcode_cbq_path != nullptr) {
+    if (barcode_cbq_index == nullptr) {
+      ExitWithMessage("Cannot open CBQ barcode range: missing cached index");
+    }
     barcode_reader.reset(new CbqLaneReader(*barcode_cbq_path, 1));
-    if (!barcode_reader->OpenRange(first_record, record_count, &error)) {
+    if (!barcode_reader->OpenRangeWithIndex(*barcode_cbq_index, first_record,
+                                            record_count, &error)) {
       ExitWithMessage("Cannot open CBQ barcode range: " + error);
     }
   }

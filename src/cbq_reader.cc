@@ -631,11 +631,6 @@ bool MakeOffsets(const std::vector<uint64_t> &lengths, uint64_t expected_total,
 
 enum class BlockLoadStatus { kBlock, kEnd, kError };
 
-struct CbqBlockIndexEntry {
-  uint64_t offset = 0;
-  uint64_t cumulative_records = 0;
-};
-
 struct CbqBlockBacking {
   DecodedBlock block;
   std::vector<std::string> synthetic_read_names;
@@ -1644,6 +1639,102 @@ bool CbqLaneReader::OpenRange(uint64_t first_record, uint64_t record_count,
     Close();
     return false;
   }
+  if (first_record > impl_->current_lane_records) {
+    std::ostringstream msg;
+    msg << "CBQ range starts at record " << first_record
+        << " but lane has only " << impl_->current_lane_records
+        << " records";
+    Close();
+    return SetError(error, msg.str());
+  }
+
+  uint64_t end_record = impl_->current_lane_records;
+  if (record_count != std::numeric_limits<uint64_t>::max()) {
+    const uint64_t remaining = impl_->current_lane_records - first_record;
+    end_record =
+        record_count <= remaining ? first_record + record_count
+                                  : impl_->current_lane_records;
+  }
+
+  impl_->read_ordinal = 0;
+  impl_->lane_record_index = 0;
+  impl_->batch_first_record = 0;
+  impl_->range_mode = true;
+  impl_->range_first_record = first_record;
+  impl_->range_end_record = end_record;
+  impl_->batch.reset();
+  if (!impl_->SeekToRangeStart(first_record, error)) {
+    Close();
+    return false;
+  }
+  impl_->opened = true;
+  impl_->exhausted = false;
+  return true;
+}
+
+bool CbqLaneReader::LoadIndex(CbqLaneIndex *index, std::string *error) {
+  if (index == nullptr) {
+    return SetError(error, "CBQ LoadIndex requires a non-null index");
+  }
+  if (mate_count_ != 1 && mate_count_ != 2) {
+    return SetError(error, "CBQ reader supports mate_count 1 or 2");
+  }
+  Close();
+  if (!impl_->OpenStreamAndReadHeader(path_, mate_count_, error)) {
+    Close();
+    return false;
+  }
+  if (!impl_->ReadCurrentLaneIndex(path_, error)) {
+    Close();
+    return false;
+  }
+
+  index->has_headers = impl_->file_header.HasHeaders();
+  index->total_records = impl_->current_lane_records;
+  index->blocks = impl_->block_index;
+  Close();
+  return true;
+}
+
+bool CbqLaneReader::OpenRangeWithIndex(const CbqLaneIndex &index,
+                                       uint64_t first_record,
+                                       uint64_t record_count,
+                                       std::string *error) {
+  if (mate_count_ != 1 && mate_count_ != 2) {
+    return SetError(error, "CBQ reader supports mate_count 1 or 2");
+  }
+  if (index.total_records != 0 && index.blocks.empty()) {
+    return SetError(error, "CBQ cached index has records but no blocks");
+  }
+  if (!index.blocks.empty() &&
+      index.blocks.back().cumulative_records != index.total_records) {
+    return SetError(error,
+                    "CBQ cached index total does not match last block total");
+  }
+  uint64_t previous_cumulative_records = 0;
+  for (size_t i = 0; i < index.blocks.size(); ++i) {
+    if (index.blocks[i].offset < 64U) {
+      return SetError(error, "CBQ cached index contains an invalid offset");
+    }
+    if (index.blocks[i].cumulative_records < previous_cumulative_records) {
+      return SetError(error,
+                      "CBQ cached index cumulative records are not monotonic");
+    }
+    previous_cumulative_records = index.blocks[i].cumulative_records;
+  }
+
+  Close();
+  if (!impl_->OpenStreamAndReadHeader(path_, mate_count_, error)) {
+    Close();
+    return false;
+  }
+  if (impl_->file_header.HasHeaders() != index.has_headers) {
+    Close();
+    return SetError(error,
+                    "CBQ cached index header metadata does not match file");
+  }
+  impl_->block_index = index.blocks;
+  impl_->current_lane_records = index.total_records;
   if (first_record > impl_->current_lane_records) {
     std::ostringstream msg;
     msg << "CBQ range starts at record " << first_record

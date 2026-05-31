@@ -56,6 +56,17 @@ struct CbqReadBatchView {
   std::shared_ptr<const void> backing;
 };
 
+struct CbqBlockIndexEntry {
+  uint64_t offset = 0;
+  uint64_t cumulative_records = 0;
+};
+
+struct CbqLaneIndex {
+  bool has_headers = false;
+  uint64_t total_records = 0;
+  std::vector<CbqBlockIndexEntry> blocks;
+};
+
 size_t CbqSegmentSequenceLength(const CbqSegmentView &segment);
 char CbqSegmentBaseAscii(const CbqSegmentView &segment, size_t index);
 void MaterializeCbqSegmentSequence(const CbqSegmentView &segment,
@@ -79,6 +90,9 @@ class CbqLaneReader {
   bool Open(std::string *error);
   bool OpenRange(uint64_t first_record, uint64_t record_count,
                  std::string *error);
+  bool LoadIndex(CbqLaneIndex *index, std::string *error);
+  bool OpenRangeWithIndex(const CbqLaneIndex &index, uint64_t first_record,
+                          uint64_t record_count, std::string *error);
   CbqReadStatus Next(CbqReadView *record, std::string *error);
   CbqReadStatus NextBatch(uint32_t max_records, CbqReadBatchView *batch,
                           std::string *error);
@@ -93,7 +107,8 @@ class CbqLaneReader {
   bool HasHeaders() const;
 
   // Total records in the current lane, populated after OpenRange() has parsed
-  // the CBQINDEX footer. Sequential Open() does not require or populate it.
+  // the CBQINDEX footer or after OpenRangeWithIndex() receives cached metadata.
+  // Sequential Open() does not require or populate it.
   uint64_t CurrentLaneRecordCount() const;
 
  private:

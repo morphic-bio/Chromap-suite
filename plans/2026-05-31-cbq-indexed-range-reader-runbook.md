@@ -292,6 +292,10 @@ Implementation status:
   producer.
 - `CHROMAP_REQUIRE_CBQ_INDEX=1` disables that fallback and makes Chromap fail
   loudly if an indexed range producer cannot be initialized.
+- The read-pair and barcode lane `CBQINDEX` metadata is parsed once during lane
+  setup and passed as immutable cached metadata to worker-owned range readers.
+  This avoids rereading and decompressing the tail index for every
+  mapper-sized range batch.
 
 Verification run on 2026-05-31:
 
@@ -407,6 +411,32 @@ Once range-pull passes parity and timing gates:
 - document the indexed reader in the CBQ implementation runbook;
 - ensure `libchromap.a` includes the same source of truth as the CLI;
 - update STAR-suite integration notes if the libchromap ATAC entrypoint changes.
+
+## Future Optimization Notes
+
+If CBQ adoption becomes broad enough to justify deeper Chromap internals work,
+the obvious but higher-blast-radius target is a packed/base-view path for the
+mapper. CBQ already carries packed sequence words and N positions; consumers
+such as seed generation and N checks could use those directly instead of always
+reading ASCII. Do not treat this as a CBQ integration cleanup task: ASCII
+materialization into `SequenceBatch` is currently cheap, and changing the mapper
+base representation would be a Chromap optimization project touching FASTQ,
+CBQ, trimming, barcode, mapping, and writer assumptions.
+
+The first simple CBQ-specific optimization has been implemented: Chromap now
+parses and validates each lane's `CBQINDEX` once, then passes the cached
+metadata to worker-owned readers through `OpenRangeWithIndex()`. Two possible
+follow-ups remain if timing shows index/open setup is still visible:
+
+- keep one read-pair and barcode range reader open per producer worker and reset
+  it across adjacent assigned ranges;
+- schedule coarser worker-owned lane ranges and split them into mapper-sized
+  `SequenceBatch` batches inside the worker, matching STAR-suite's direct PF
+  range-counting shape more closely.
+
+Acceptance for either should be the existing CBQ range reader smoke, ATAC
+smoke, 100K parity, ENCODE CBQ cross-assay smoke, libchromap core smoke, and a
+small timing fixture showing the setup cost is actually visible.
 
 ## Test Matrix
 

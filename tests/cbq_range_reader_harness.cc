@@ -300,6 +300,39 @@ bool RunIndexedRange(const Args &args, uint64_t first_record,
   return true;
 }
 
+bool RunCachedIndexedRange(const Args &args, const chromap::CbqLaneIndex &index,
+                           uint64_t first_record, uint64_t record_count,
+                           Stats *stats, std::string *error) {
+  chromap::CbqLaneReader reader(args.cbq_path, args.mate_count);
+  if (!reader.OpenRangeWithIndex(index, first_record, record_count, error)) {
+    return false;
+  }
+
+  std::vector<char> scratch;
+  for (;;) {
+    chromap::CbqReadBatchView batch;
+    const chromap::CbqReadStatus status =
+        reader.NextBatch(args.batch_size, &batch, error);
+    if (status == chromap::CbqReadStatus::kError) {
+      reader.Close();
+      return false;
+    }
+    if (status == chromap::CbqReadStatus::kEnd) {
+      break;
+    }
+    ++stats->batches;
+    for (uint32_t i = 0; i < batch.record_count; ++i) {
+      if (!AccumulateRecord(batch.records[i], args.materialize_sequence, stats,
+                            &scratch, error)) {
+        reader.Close();
+        return false;
+      }
+    }
+  }
+  reader.Close();
+  return true;
+}
+
 bool SameStats(const Stats &a, const Stats &b) {
   return a.records == b.records && a.segments == b.segments &&
          a.bases == b.bases && a.read_ordinal_sum == b.read_ordinal_sum &&
@@ -320,9 +353,11 @@ void PrintStats(const char *label, const Stats &stats) {
             << "hash_xor=" << stats.record_hash_xor << "\n";
 }
 
-bool CheckRange(const Args &args, uint64_t first_record, uint64_t record_count,
+bool CheckRange(const Args &args, const chromap::CbqLaneIndex &index,
+                uint64_t first_record, uint64_t record_count,
                 const std::string &label) {
   Stats sequential;
+  Stats uncached_indexed;
   Stats indexed;
   std::string error;
   if (!RunSequentialRange(args, first_record, record_count, &sequential,
@@ -331,14 +366,23 @@ bool CheckRange(const Args &args, uint64_t first_record, uint64_t record_count,
               << "\n";
     return false;
   }
-  if (!RunIndexedRange(args, first_record, record_count, &indexed, &error)) {
+  if (!RunIndexedRange(args, first_record, record_count, &uncached_indexed,
+                       &error)) {
     std::cerr << "Indexed range failed for " << label << ": " << error << "\n";
     return false;
   }
-  if (!SameStats(sequential, indexed)) {
+  if (!RunCachedIndexedRange(args, index, first_record, record_count,
+                             &indexed, &error)) {
+    std::cerr << "Cached indexed range failed for " << label << ": " << error
+              << "\n";
+    return false;
+  }
+  if (!SameStats(sequential, uncached_indexed) ||
+      !SameStats(sequential, indexed)) {
     std::cerr << "Range stats mismatch for " << label << "\n";
     PrintStats("sequential", sequential);
-    PrintStats("indexed", indexed);
+    PrintStats("indexed", uncached_indexed);
+    PrintStats("cached_indexed", indexed);
     return false;
   }
   PrintStats(label.c_str(), indexed);
@@ -355,14 +399,13 @@ int main(int argc, char **argv) {
   }
 
   chromap::CbqLaneReader metadata_reader(args.cbq_path, args.mate_count);
+  chromap::CbqLaneIndex lane_index;
   std::string error;
-  if (!metadata_reader.OpenRange(
-          0, std::numeric_limits<uint64_t>::max(), &error)) {
-    std::cerr << "Failed to open CBQ range metadata: " << error << "\n";
+  if (!metadata_reader.LoadIndex(&lane_index, &error)) {
+    std::cerr << "Failed to load CBQ range metadata: " << error << "\n";
     return 1;
   }
-  const uint64_t total_records = metadata_reader.CurrentLaneRecordCount();
-  metadata_reader.Close();
+  const uint64_t total_records = lane_index.total_records;
   std::cout << "metadata\ttotal_records=" << total_records << "\tthreads="
             << args.threads << "\tbatch_size=" << args.batch_size
             << "\tmaterialize="
@@ -397,9 +440,10 @@ int main(int argc, char **argv) {
     const uint64_t count =
         first >= total_records ? 0 : std::min(chunk_size, total_records - first);
     workers.push_back(std::thread([&, ithread, first, count]() {
-      if (!RunIndexedRange(args, first, count,
-                           &thread_stats[static_cast<size_t>(ithread)],
-                           &thread_errors[static_cast<size_t>(ithread)])) {
+      if (!RunCachedIndexedRange(
+              args, lane_index, first, count,
+              &thread_stats[static_cast<size_t>(ithread)],
+              &thread_errors[static_cast<size_t>(ithread)])) {
         thread_ok[static_cast<size_t>(ithread)] = 0;
       }
     }));
@@ -426,25 +470,28 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (!CheckRange(args, 0, 0, "range_empty_start")) return 1;
-  if (!CheckRange(args, total_records, 0, "range_empty_end")) return 1;
-  if (!CheckRange(args, 0, std::min<uint64_t>(13, total_records),
+  if (!CheckRange(args, lane_index, 0, 0, "range_empty_start")) return 1;
+  if (!CheckRange(args, lane_index, total_records, 0, "range_empty_end")) {
+    return 1;
+  }
+  if (!CheckRange(args, lane_index, 0, std::min<uint64_t>(13, total_records),
                   "range_prefix")) {
     return 1;
   }
   if (total_records > 1 &&
-      !CheckRange(args, 1, std::min<uint64_t>(17, total_records - 1),
+      !CheckRange(args, lane_index, 1,
+                  std::min<uint64_t>(17, total_records - 1),
                   "range_offset_one")) {
     return 1;
   }
   if (total_records > 0 &&
-      !CheckRange(args, total_records / 2,
+      !CheckRange(args, lane_index, total_records / 2,
                   std::min<uint64_t>(31, total_records - total_records / 2),
                   "range_middle")) {
     return 1;
   }
   if (total_records > 17 &&
-      !CheckRange(args, total_records - 17, 17, "range_suffix")) {
+      !CheckRange(args, lane_index, total_records - 17, 17, "range_suffix")) {
     return 1;
   }
 
