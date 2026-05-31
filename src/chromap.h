@@ -151,11 +151,15 @@ class Chromap {
 
   bool GetPairedEndCbqRangeMetadata(const std::string &read_cbq_path,
                                     const std::string *barcode_cbq_path,
+                                    CbqLaneIndex &read_cbq_index,
+                                    CbqLaneIndex *barcode_cbq_index,
                                     uint64_t &record_count,
                                     std::string &error);
 
   uint32_t LoadPairedEndCbqRange(
       const std::string &read_cbq_path, const std::string *barcode_cbq_path,
+      const CbqLaneIndex &read_cbq_index,
+      const CbqLaneIndex *barcode_cbq_index,
       uint64_t first_record, uint32_t record_count,
       uint64_t global_record_offset, CbqPairedEndBatch *batch);
 
@@ -1081,7 +1085,13 @@ void Chromap::MapPairedEndReads() {
               : std::string();
       const std::string *barcode_cbq_path_ptr =
           has_barcode_cbq ? &barcode_cbq_path : nullptr;
+      std::shared_ptr<CbqLaneIndex> read_cbq_index(new CbqLaneIndex());
+      std::shared_ptr<CbqLaneIndex> barcode_cbq_index =
+          has_barcode_cbq ? std::shared_ptr<CbqLaneIndex>(new CbqLaneIndex())
+                          : std::shared_ptr<CbqLaneIndex>();
       if (GetPairedEndCbqRangeMetadata(read_cbq_path, barcode_cbq_path_ptr,
+                                       *read_cbq_index,
+                                       barcode_cbq_index.get(),
                                        cbq_lane_record_count, error)) {
         if (cbq_lane_record_count > 0 &&
             cbq_lane_global_record_offset >
@@ -1105,14 +1115,18 @@ void Chromap::MapPairedEndReads() {
             read2_effective_range_, barcode_effective_range_,
             cbq_range_workers, cbq_queue_depth,
             [this, read_cbq_path, barcode_cbq_path, has_barcode_cbq,
+             read_cbq_index, barcode_cbq_index,
              cbq_lane_global_record_offset](uint64_t first_record,
                                             uint32_t record_count,
                                             CbqPairedEndBatch *batch) {
               const std::string *barcode_path =
                   has_barcode_cbq ? &barcode_cbq_path : nullptr;
+              const CbqLaneIndex *barcode_index =
+                  has_barcode_cbq ? barcode_cbq_index.get() : nullptr;
               return LoadPairedEndCbqRange(
-                  read_cbq_path, barcode_path, first_record, record_count,
-                  cbq_lane_global_record_offset, batch);
+                  read_cbq_path, barcode_path, *read_cbq_index, barcode_index,
+                  first_record, record_count, cbq_lane_global_record_offset,
+                  batch);
             }));
         cbq_range_batch_producer->Start();
         use_cbq_range_batch_producer = true;
