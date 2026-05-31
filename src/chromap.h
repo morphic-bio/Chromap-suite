@@ -3,6 +3,10 @@
 
 #include <omp.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <memory>
 #include <random>
 #include <string>
@@ -16,6 +20,7 @@
 #include <type_traits>
 
 #include "candidate_processor.h"
+#include "cbq_batch_producer.h"
 #include "cbq_reader.h"
 #include "cxxopts.hpp"
 #include "draft_mapping_generator.h"
@@ -139,9 +144,20 @@ class Chromap {
 
   uint32_t LoadPairedEndReadsFromCbq(CbqLaneReader &read_reader,
                                      CbqLaneReader *barcode_reader,
+                                     uint64_t global_record_offset,
                                      SequenceBatch &read_batch1,
                                      SequenceBatch &read_batch2,
                                      SequenceBatch &barcode_batch);
+
+  bool GetPairedEndCbqRangeMetadata(const std::string &read_cbq_path,
+                                    const std::string *barcode_cbq_path,
+                                    uint64_t &record_count,
+                                    std::string &error);
+
+  uint32_t LoadPairedEndCbqRange(
+      const std::string &read_cbq_path, const std::string *barcode_cbq_path,
+      uint64_t first_record, uint32_t record_count,
+      uint64_t global_record_offset, CbqPairedEndBatch *batch);
 
   uint32_t LoadBarcodesFromCbq(CbqLaneReader &barcode_reader,
                                SequenceBatch &barcode_batch,
@@ -478,7 +494,9 @@ void Chromap::MapSingleEndReads() {
               continue;  // reads are too short, just drop.
             }
 
-            read_batch.PrepareNegativeSequenceAt(read_index);
+            if (!read_batch.IsNegativeSequencePreparedAt(read_index)) {
+              read_batch.PrepareNegativeSequenceAt(read_index);
+            }
 
             mapping_metadata.PrepareForMappingNextRead(
                 mapping_parameters_.max_seed_frequencies[0]);
@@ -1018,6 +1036,7 @@ void Chromap::MapPairedEndReads() {
     thread_num_uniquely_mapped_reads, thread_num_barcode_in_whitelist,   \
     thread_num_corrected_barcode)
   double real_start_mapping_time = GetRealTime();
+  uint64_t cbq_global_record_offset = 0;
   for (size_t read_file_index = 0;
        read_file_index < mapping_parameters_.NumInputLanes();
        ++read_file_index) {
@@ -1034,29 +1053,118 @@ void Chromap::MapPairedEndReads() {
     }
     std::unique_ptr<CbqLaneReader> read_cbq_reader;
     std::unique_ptr<CbqLaneReader> barcode_cbq_reader;
+    std::unique_ptr<CbqPairedEndBatchProducer> cbq_batch_producer;
+    std::unique_ptr<CbqPairedEndRangeBatchProducer>
+        cbq_range_batch_producer;
+    bool use_cbq_range_batch_producer = false;
+    uint64_t cbq_lane_record_count = 0;
+    uint64_t cbq_lane_records_processed = 0;
+    const uint64_t cbq_lane_global_record_offset = cbq_global_record_offset;
     if (mapping_parameters_.UsesCbqInput()) {
       std::string error;
-      read_cbq_reader.reset(new CbqLaneReader(
-          mapping_parameters_.read_pair_cbq_paths[read_file_index], 2));
-      if (!read_cbq_reader->Open(&error)) {
-        ExitWithMessage("Cannot open CBQ read-pair input: " + error);
-      }
-      if (!mapping_parameters_.is_bulk_data) {
-        barcode_cbq_reader.reset(new CbqLaneReader(
-            mapping_parameters_.barcode_cbq_paths[read_file_index], 1));
-        if (!barcode_cbq_reader->Open(&error)) {
-          ExitWithMessage("Cannot open CBQ barcode input: " + error);
-        }
-        // The read/barcode record-alignment guard compares read names, so both
-        // lanes must carry headers. Without names a reordered barcode lane
-        // would silently misassign barcodes; require headers and fail loudly.
-        if (!read_cbq_reader->HasHeaders() ||
-            !barcode_cbq_reader->HasHeaders()) {
+      const std::string read_cbq_path =
+          mapping_parameters_.read_pair_cbq_paths[read_file_index];
+      const bool has_barcode_cbq = !mapping_parameters_.is_bulk_data;
+      const char *require_cbq_index_env =
+          std::getenv("CHROMAP_REQUIRE_CBQ_INDEX");
+      const std::string require_cbq_index_value =
+          require_cbq_index_env == nullptr ? std::string()
+                                           : std::string(require_cbq_index_env);
+      const bool require_cbq_index =
+          !require_cbq_index_value.empty() &&
+          require_cbq_index_value != "0" &&
+          require_cbq_index_value != "false" &&
+          require_cbq_index_value != "FALSE";
+      const std::string barcode_cbq_path =
+          has_barcode_cbq
+              ? mapping_parameters_.barcode_cbq_paths[read_file_index]
+              : std::string();
+      const std::string *barcode_cbq_path_ptr =
+          has_barcode_cbq ? &barcode_cbq_path : nullptr;
+      if (GetPairedEndCbqRangeMetadata(read_cbq_path, barcode_cbq_path_ptr,
+                                       cbq_lane_record_count, error)) {
+        if (cbq_lane_record_count > 0 &&
+            cbq_lane_global_record_offset >
+                static_cast<uint64_t>(
+                    std::numeric_limits<uint32_t>::max()) -
+                    (cbq_lane_record_count - 1U)) {
           ExitWithMessage(
-              "Barcoded CBQ input requires read names (headers) in both the "
-              "read-pair and barcode CBQ so record alignment can be verified; "
-              "re-encode without --skip-headers");
+              "CBQ record ordinal exceeds Chromap's uint32 read-id limit");
         }
+        const size_t cbq_range_workers =
+            mapping_parameters_.num_threads < 4
+                ? 1
+                : std::min<size_t>(
+                      4, std::max<size_t>(
+                             1, static_cast<size_t>(
+                                    mapping_parameters_.num_threads) /
+                                    4U));
+        const size_t cbq_queue_depth = std::max<size_t>(2, cbq_range_workers);
+        cbq_range_batch_producer.reset(new CbqPairedEndRangeBatchProducer(
+            read_batch_size_, cbq_lane_record_count, read1_effective_range_,
+            read2_effective_range_, barcode_effective_range_,
+            cbq_range_workers, cbq_queue_depth,
+            [this, read_cbq_path, barcode_cbq_path, has_barcode_cbq,
+             cbq_lane_global_record_offset](uint64_t first_record,
+                                            uint32_t record_count,
+                                            CbqPairedEndBatch *batch) {
+              const std::string *barcode_path =
+                  has_barcode_cbq ? &barcode_cbq_path : nullptr;
+              return LoadPairedEndCbqRange(
+                  read_cbq_path, barcode_path, first_record, record_count,
+                  cbq_lane_global_record_offset, batch);
+            }));
+        cbq_range_batch_producer->Start();
+        use_cbq_range_batch_producer = true;
+        std::cerr << "Using indexed CBQ range producer with "
+                  << cbq_range_workers << " worker(s) for "
+                  << cbq_lane_record_count << " records.\n";
+      } else {
+        if (require_cbq_index) {
+          ExitWithMessage("CBQ indexed range input required but unavailable: " +
+                          error);
+        }
+        if (error.find("requires a CBQINDEX footer") == std::string::npos) {
+          ExitWithMessage("Cannot initialize CBQ indexed range input: " +
+                          error);
+        }
+        std::cerr << "CBQ indexed range input unavailable; falling back to "
+                     "sequential CBQ loading: "
+                  << error << "\n";
+        read_cbq_reader.reset(new CbqLaneReader(read_cbq_path, 2));
+        if (!read_cbq_reader->Open(&error)) {
+          ExitWithMessage("Cannot open CBQ read-pair input: " + error);
+        }
+        if (has_barcode_cbq) {
+          barcode_cbq_reader.reset(new CbqLaneReader(barcode_cbq_path, 1));
+          if (!barcode_cbq_reader->Open(&error)) {
+            ExitWithMessage("Cannot open CBQ barcode input: " + error);
+          }
+          // The read/barcode record-alignment guard compares read names, so
+          // both lanes must carry headers. Without names a reordered barcode
+          // lane would silently misassign barcodes; require headers and fail
+          // loudly.
+          if (!read_cbq_reader->HasHeaders() ||
+              !barcode_cbq_reader->HasHeaders()) {
+            ExitWithMessage(
+                "Barcoded CBQ input requires read names (headers) in both the "
+                "read-pair and barcode CBQ so record alignment can be "
+                "verified; re-encode without --skip-headers");
+          }
+        }
+        const size_t cbq_queue_depth =
+            mapping_parameters_.num_threads >= 4 ? 2 : 1;
+        cbq_batch_producer.reset(new CbqPairedEndBatchProducer(
+            read_batch_size_, read1_effective_range_, read2_effective_range_,
+            barcode_effective_range_, cbq_queue_depth,
+            [this, &read_cbq_reader, &barcode_cbq_reader,
+             cbq_lane_global_record_offset](CbqPairedEndBatch *batch) {
+              return LoadPairedEndReadsFromCbq(
+                  *read_cbq_reader, barcode_cbq_reader.get(),
+                  cbq_lane_global_record_offset, batch->read_batch1,
+                  batch->read_batch2, batch->barcode_batch);
+            }));
+        cbq_batch_producer->Start();
       }
     } else {
       // Set read batches to the current read files.
@@ -1074,18 +1182,23 @@ void Chromap::MapPairedEndReads() {
     uint32_t num_loaded_pairs_for_loading = 0;
     uint32_t num_loaded_pairs =
         mapping_parameters_.UsesCbqInput()
-            ? LoadPairedEndReadsFromCbq(
-                  *read_cbq_reader, barcode_cbq_reader.get(),
-                  read_batch1_for_loading, read_batch2_for_loading,
-                  barcode_batch_for_loading)
+            ? (use_cbq_range_batch_producer
+                   ? PopCbqBatchIntoSequenceBatches(
+                         cbq_range_batch_producer.get(), read_batch1,
+                         read_batch2, barcode_batch)
+                   : PopCbqBatchIntoSequenceBatches(
+                         cbq_batch_producer.get(), read_batch1, read_batch2,
+                         barcode_batch))
             : LoadPairedEndReadsWithBarcodes(
                   read_batch1_for_loading, read_batch2_for_loading,
                   barcode_batch_for_loading,
                   mapping_parameters_.num_threads >= 3 ? true : false);
-    read_batch1_for_loading.SwapSequenceBatch(read_batch1);
-    read_batch2_for_loading.SwapSequenceBatch(read_batch2);
-    if (!mapping_parameters_.is_bulk_data) {
-      barcode_batch_for_loading.SwapSequenceBatch(barcode_batch);
+    if (!mapping_parameters_.UsesCbqInput()) {
+      read_batch1_for_loading.SwapSequenceBatch(read_batch1);
+      read_batch2_for_loading.SwapSequenceBatch(read_batch2);
+      if (!mapping_parameters_.is_bulk_data) {
+        barcode_batch_for_loading.SwapSequenceBatch(barcode_batch);
+      }
     }
 
     // Setup thread private vectors to save mapping results.
@@ -1165,19 +1278,16 @@ void Chromap::MapPairedEndReads() {
           num_reads_ += num_loaded_pairs;
           num_reads_ += num_loaded_pairs;
 
+          if (!mapping_parameters_.UsesCbqInput()) {
 #pragma omp task
-          {
-            num_loaded_pairs_for_loading =
-                mapping_parameters_.UsesCbqInput()
-                    ? LoadPairedEndReadsFromCbq(
-                          *read_cbq_reader, barcode_cbq_reader.get(),
-                          read_batch1_for_loading, read_batch2_for_loading,
-                          barcode_batch_for_loading)
-                    : LoadPairedEndReadsWithBarcodes(
-                          read_batch1_for_loading, read_batch2_for_loading,
-                          barcode_batch_for_loading,
-                          mapping_parameters_.num_threads >= 12 ? true : false);
-          }  // end of openmp loading task
+            {
+              num_loaded_pairs_for_loading =
+                  LoadPairedEndReadsWithBarcodes(
+                      read_batch1_for_loading, read_batch2_for_loading,
+                      barcode_batch_for_loading,
+                      mapping_parameters_.num_threads >= 12 ? true : false);
+            }  // end of openmp loading task
+          }
 
           int grain_size = 5000;
           uint32_t history_update_threshold =
@@ -1228,8 +1338,12 @@ void Chromap::MapPairedEndReads() {
                 continue;  // reads are too short, just drop.
               }
 
-              read_batch1.PrepareNegativeSequenceAt(pair_index);
-              read_batch2.PrepareNegativeSequenceAt(pair_index);
+              if (!read_batch1.IsNegativeSequencePreparedAt(pair_index)) {
+                read_batch1.PrepareNegativeSequenceAt(pair_index);
+              }
+              if (!read_batch2.IsNegativeSequencePreparedAt(pair_index)) {
+                read_batch2.PrepareNegativeSequenceAt(pair_index);
+              }
 
               if (mapping_parameters_.trim_adapters) {
                 TrimAdapterForPairedEndRead(pair_index, read_batch1,
@@ -1596,10 +1710,22 @@ void Chromap::MapPairedEndReads() {
           real_batch_start_time = GetRealTime();
 
           // Swap to next batch
-          num_loaded_pairs = num_loaded_pairs_for_loading;
-          read_batch1_for_loading.SwapSequenceBatch(read_batch1);
-          read_batch2_for_loading.SwapSequenceBatch(read_batch2);
-          barcode_batch_for_loading.SwapSequenceBatch(barcode_batch);
+          if (mapping_parameters_.UsesCbqInput()) {
+            cbq_lane_records_processed += num_loaded_pairs;
+            num_loaded_pairs =
+                use_cbq_range_batch_producer
+                    ? PopCbqBatchIntoSequenceBatches(
+                          cbq_range_batch_producer.get(), read_batch1,
+                          read_batch2, barcode_batch)
+                    : PopCbqBatchIntoSequenceBatches(
+                          cbq_batch_producer.get(), read_batch1, read_batch2,
+                          barcode_batch);
+          } else {
+            num_loaded_pairs = num_loaded_pairs_for_loading;
+            read_batch1_for_loading.SwapSequenceBatch(read_batch1);
+            read_batch2_for_loading.SwapSequenceBatch(read_batch2);
+            barcode_batch_for_loading.SwapSequenceBatch(barcode_batch);
+          }
           mappings_on_diff_ref_seqs_for_diff_threads.swap(
               mappings_on_diff_ref_seqs_for_diff_threads_for_saving);
 
@@ -1697,6 +1823,8 @@ void Chromap::MapPairedEndReads() {
 #endif
 
     if (mapping_parameters_.UsesCbqInput()) {
+      cbq_range_batch_producer.reset();
+      cbq_batch_producer.reset();
       if (read_cbq_reader) {
         read_cbq_reader->Close();
       }
@@ -1710,6 +1838,9 @@ void Chromap::MapPairedEndReads() {
       if (!mapping_parameters_.is_bulk_data) {
         barcode_batch_for_loading.FinalizeLoading();
       }
+    }
+    if (mapping_parameters_.UsesCbqInput()) {
+      cbq_global_record_offset += cbq_lane_records_processed;
     }
   }  // end of for read_file_index
 

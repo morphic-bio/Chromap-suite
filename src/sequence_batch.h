@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#include <array>
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -33,6 +35,7 @@ class SequenceBatch {
       sequence_batch_.back()->f = NULL;
     }
     negative_sequence_batch_.assign(max_num_sequences_, "");
+    negative_sequence_prepared_.assign(max_num_sequences_, 0);
   }
 
   ~SequenceBatch() {
@@ -53,6 +56,10 @@ class SequenceBatch {
 
   inline std::vector<std::string> &GetNegativeSequenceBatch() {
     return negative_sequence_batch_;
+  }
+
+  inline std::vector<uint8_t> &GetNegativeSequencePreparedBatch() {
+    return negative_sequence_prepared_;
   }
 
   inline const char *GetSequenceAt(uint32_t sequence_index) const {
@@ -93,6 +100,15 @@ class SequenceBatch {
   inline const std::string &GetNegativeSequenceAt(
       uint32_t sequence_index) const {
     return negative_sequence_batch_[sequence_index];
+  }
+
+  inline bool IsNegativeSequencePreparedAt(uint32_t sequence_index) const {
+    return sequence_index < negative_sequence_prepared_.size() &&
+           negative_sequence_prepared_[sequence_index] != 0;
+  }
+
+  inline bool HasFullPositiveEffectiveRange() const {
+    return effective_range_.IsFullRangeAndPositiveStrand();
   }
 
   // big_endian: N_pos is in the order of sequence
@@ -136,12 +152,50 @@ class SequenceBatch {
     kseq_t *sequence = sequence_batch_[sequence_index];
     uint32_t sequence_length = sequence->seq.l;
     std::string &negative_sequence = negative_sequence_batch_[sequence_index];
-    negative_sequence.clear();
-    negative_sequence.reserve(sequence_length);
+    static const std::array<char, 256> complement_lookup = [] {
+      std::array<char, 256> table = {};
+      table.fill('N');
+      table[static_cast<unsigned char>('A')] = 'T';
+      table[static_cast<unsigned char>('C')] = 'G';
+      table[static_cast<unsigned char>('G')] = 'C';
+      table[static_cast<unsigned char>('T')] = 'A';
+      table[static_cast<unsigned char>('N')] = 'N';
+      table[static_cast<unsigned char>('a')] = 'T';
+      table[static_cast<unsigned char>('c')] = 'G';
+      table[static_cast<unsigned char>('g')] = 'C';
+      table[static_cast<unsigned char>('t')] = 'A';
+      table[static_cast<unsigned char>('n')] = 'N';
+      return table;
+    }();
+    negative_sequence.resize(sequence_length);
     for (uint32_t i = 0; i < sequence_length; ++i) {
-      negative_sequence.push_back(Uint8ToChar(
-          ((uint8_t)3) ^
-          (CharToUint8((sequence->seq.s)[sequence_length - i - 1]))));
+      negative_sequence[i] = complement_lookup[static_cast<unsigned char>(
+          sequence->seq.s[sequence_length - i - 1])];
+    }
+    if (sequence_index < negative_sequence_prepared_.size()) {
+      negative_sequence_prepared_[sequence_index] = 1;
+    }
+  }
+
+  inline char *PrepareLoadedNegativeSequenceBuffer(uint32_t sequence_index,
+                                                   size_t seq_len) {
+    if (sequence_index >= negative_sequence_batch_.size()) {
+      ExitWithMessage("Sequence index exceeds batch capacity");
+    }
+    std::string &negative_sequence = negative_sequence_batch_[sequence_index];
+    negative_sequence.resize(seq_len);
+    if (sequence_index < negative_sequence_prepared_.size()) {
+      negative_sequence_prepared_[sequence_index] = 0;
+    }
+    return seq_len == 0 ? nullptr : &negative_sequence[0];
+  }
+
+  inline void CommitLoadedNegativeSequenceBuffer(uint32_t sequence_index) {
+    if (sequence_index >= negative_sequence_batch_.size()) {
+      ExitWithMessage("Sequence index exceeds batch capacity");
+    }
+    if (sequence_index < negative_sequence_prepared_.size()) {
+      negative_sequence_prepared_[sequence_index] = 1;
     }
   }
 
@@ -151,10 +205,12 @@ class SequenceBatch {
       return;
     }
 
-    negative_sequence_batch_[sequence_index].erase(
-        negative_sequence_batch_[sequence_index].begin(),
-        negative_sequence_batch_[sequence_index].begin() + sequence->seq.l -
-            length_after_trim);
+    if (IsNegativeSequencePreparedAt(sequence_index)) {
+      negative_sequence_batch_[sequence_index].erase(
+          negative_sequence_batch_[sequence_index].begin(),
+          negative_sequence_batch_[sequence_index].begin() + sequence->seq.l -
+              length_after_trim);
+    }
 
     sequence->seq.l = length_after_trim;
     sequence->seq.s[sequence->seq.l] = '\0';
@@ -165,6 +221,7 @@ class SequenceBatch {
   inline void SwapSequenceBatch(SequenceBatch &batch) {
     sequence_batch_.swap(batch.GetSequenceBatch());
     negative_sequence_batch_.swap(batch.GetNegativeSequenceBatch());
+    negative_sequence_prepared_.swap(batch.GetNegativeSequencePreparedBatch());
   }
 
   void InitializeLoading(const std::string &sequence_file_path);
@@ -186,6 +243,11 @@ class SequenceBatch {
                                   size_t comment_len, size_t seq_len,
                                   const char *qual, size_t qual_len);
 
+  void CommitLoadedSequenceBufferWithId(
+      uint32_t sequence_index, uint32_t sequence_id, const char *name,
+      size_t name_len, const char *comment, size_t comment_len, size_t seq_len,
+      const char *qual, size_t qual_len);
+
   // The func should never override other sequences rather than the last, which
   // means 'sequence_index' cannot be smaller than 'num_loaded_sequences_' - 1.
   // Return true when reaching the end of the file.
@@ -204,6 +266,9 @@ class SequenceBatch {
                             char correct_base) {
     kseq_t *sequence = sequence_batch_[sequence_index];
     sequence->seq.s[base_position] = correct_base;
+    if (sequence_index < negative_sequence_prepared_.size()) {
+      negative_sequence_prepared_[sequence_index] = 0;
+    }
   }
 
   inline uint64_t GenerateSeedFromSequenceAt(uint32_t sequence_index,
@@ -219,6 +284,8 @@ class SequenceBatch {
     std::vector<kseq_t *> tmp_sequence_batch_ = sequence_batch_;
     std::vector<std::string> tmp_negative_sequence_batch_ =
         negative_sequence_batch_;
+    std::vector<uint8_t> tmp_negative_sequence_prepared =
+        negative_sequence_prepared_;
     for (size_t i = 0; i < sequence_batch_.size(); ++i) {
       sequence_batch_[rid_rank[i]] = tmp_sequence_batch_[i];
     }
@@ -226,6 +293,12 @@ class SequenceBatch {
     if (negative_sequence_batch_.size() > 0) {
       for (size_t i = 0; i < sequence_batch_.size(); ++i) {
         negative_sequence_batch_[rid_rank[i]] = tmp_negative_sequence_batch_[i];
+      }
+    }
+    if (negative_sequence_prepared_.size() > 0) {
+      for (size_t i = 0; i < sequence_batch_.size(); ++i) {
+        negative_sequence_prepared_[rid_rank[i]] =
+            tmp_negative_sequence_prepared[i];
       }
     }
   }
@@ -258,6 +331,7 @@ class SequenceBatch {
 
   // TODO: avoid constructing the negative sequence batch.
   std::vector<std::string> negative_sequence_batch_;
+  std::vector<uint8_t> negative_sequence_prepared_;
 
   // Actual range within each sequence.
   const SequenceEffectiveRange effective_range_;

@@ -1,5 +1,6 @@
 #include "sequence_batch.h"
 
+#include <algorithm>
 #include <tuple>
 #include <cstdlib>
 #include <cstring>
@@ -25,6 +26,8 @@ void SequenceBatch::FinalizeLoading() {
 void SequenceBatch::ResetLoadedSequences() {
   num_loaded_sequences_ = 0;
   num_bases_ = 0;
+  std::fill(negative_sequence_prepared_.begin(),
+            negative_sequence_prepared_.end(), 0);
 }
 
 void SequenceBatch::AssignKstring(kstring_t &dest, const char *data,
@@ -57,6 +60,9 @@ void SequenceBatch::AssignLoadedSequence(uint32_t sequence_index,
   }
 
   kseq_t *sequence = sequence_batch_[sequence_index];
+  if (sequence_index < negative_sequence_prepared_.size()) {
+    negative_sequence_prepared_[sequence_index] = 0;
+  }
   AssignKstring(sequence->seq, seq, seq_len);
   ReplaceByEffectiveRange(sequence->seq, /*is_seq=*/true);
   AssignKstring(sequence->name, name, name_len);
@@ -87,6 +93,9 @@ char *SequenceBatch::PrepareLoadedSequenceBuffer(uint32_t sequence_index,
   }
 
   kseq_t *sequence = sequence_batch_[sequence_index];
+  if (sequence_index < negative_sequence_prepared_.size()) {
+    negative_sequence_prepared_[sequence_index] = 0;
+  }
   if (sequence->seq.m < seq_len + 1) {
     sequence->seq.m = seq_len + 1;
     sequence->seq.s = static_cast<char *>(realloc(sequence->seq.s,
@@ -104,6 +113,17 @@ void SequenceBatch::CommitLoadedSequenceBuffer(
     uint32_t sequence_index, const char *name, size_t name_len,
     const char *comment, size_t comment_len, size_t seq_len, const char *qual,
     size_t qual_len) {
+  const uint32_t sequence_id = total_num_loaded_sequences_;
+  CommitLoadedSequenceBufferWithId(sequence_index, sequence_id, name, name_len,
+                                   comment, comment_len, seq_len, qual,
+                                   qual_len);
+  ++total_num_loaded_sequences_;
+}
+
+void SequenceBatch::CommitLoadedSequenceBufferWithId(
+    uint32_t sequence_index, uint32_t sequence_id, const char *name,
+    size_t name_len, const char *comment, size_t comment_len, size_t seq_len,
+    const char *qual, size_t qual_len) {
   if (sequence_index >= sequence_batch_.size()) {
     ExitWithMessage("Sequence index exceeds batch capacity");
   }
@@ -112,6 +132,9 @@ void SequenceBatch::CommitLoadedSequenceBuffer(
   }
 
   kseq_t *sequence = sequence_batch_[sequence_index];
+  if (sequence_index < negative_sequence_prepared_.size()) {
+    negative_sequence_prepared_[sequence_index] = 0;
+  }
   sequence->seq.l = seq_len;
   sequence->seq.s[seq_len] = '\0';
   ReplaceByEffectiveRange(sequence->seq, /*is_seq=*/true);
@@ -123,8 +146,13 @@ void SequenceBatch::CommitLoadedSequenceBuffer(
   } else {
     AssignKstring(sequence->qual, NULL, 0);
   }
-  sequence->id = total_num_loaded_sequences_;
-  ++total_num_loaded_sequences_;
+  sequence->id = sequence_id;
+  if (sequence_id >= total_num_loaded_sequences_) {
+    total_num_loaded_sequences_ =
+        sequence_id == std::numeric_limits<uint32_t>::max()
+            ? sequence_id
+            : sequence_id + 1;
+  }
   if (sequence_index == num_loaded_sequences_) {
     ++num_loaded_sequences_;
   }
@@ -142,6 +170,9 @@ bool SequenceBatch::LoadOneSequenceAndSaveAt(uint32_t sequence_index) {
 
   if (length > 0) {
     kseq_t *sequence = sequence_batch_[sequence_index];
+    if (sequence_index < negative_sequence_prepared_.size()) {
+      negative_sequence_prepared_[sequence_index] = 0;
+    }
     std::swap(sequence_kseq_->seq, sequence->seq);
     ReplaceByEffectiveRange(sequence->seq, /*is_seq=*/true);
     std::swap(sequence_kseq_->name, sequence->name);
@@ -201,6 +232,7 @@ void SequenceBatch::LoadAllSequences() {
   while (length >= 0) {
     if (length > 0) {
       sequence_batch_.emplace_back((kseq_t *)calloc(1, sizeof(kseq_t)));
+      negative_sequence_prepared_.push_back(0);
       kseq_t *sequence = sequence_batch_.back();
       std::swap(sequence_kseq_->seq, sequence->seq);
       ReplaceByEffectiveRange(sequence->seq, /*is_seq=*/true);

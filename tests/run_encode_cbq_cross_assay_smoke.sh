@@ -203,14 +203,21 @@ run_case() {
 
   run_cmd "${case_id}.fastq" "${CHROMAP_BIN}" "${fastq_common[@]}" "${args[@]}" \
     -o "${case_dir}/fastq.out"
-  run_cmd "${case_id}.cbq.cli" "${CHROMAP_BIN}" "${cbq_common[@]}" "${args[@]}" \
-    -o "${case_dir}/cbq.out"
-  run_cmd "${case_id}.cbq.lib" "${LIBRUNNER_BIN}" "${lib_cbq_common[@]}" "${args[@]}" \
+  run_cmd "${case_id}.cbq.cli" env CHROMAP_REQUIRE_CBQ_INDEX=1 \
+    "${CHROMAP_BIN}" "${cbq_common[@]}" "${args[@]}" -o "${case_dir}/cbq.out"
+  run_cmd "${case_id}.cbq.lib" env CHROMAP_REQUIRE_CBQ_INDEX=1 \
+    "${LIBRUNNER_BIN}" "${lib_cbq_common[@]}" "${args[@]}" \
     -o "${case_dir}/cbq.lib.out"
 
   require_file "${case_dir}/fastq.out"
   require_file "${case_dir}/cbq.out"
   require_file "${case_dir}/cbq.lib.out"
+  for log_file in "${OUTROOT}/logs/${case_id}.cbq.cli.stderr" \
+                  "${OUTROOT}/logs/${case_id}.cbq.lib.stderr"; do
+    if ! grep -q "Using indexed CBQ range producer" "${log_file}"; then
+      fail "${case_id}: indexed CBQ range producer was not reported in ${log_file}"
+    fi
+  done
   assert_same_rows "${case_id}_${assay}_cli" "${case_dir}/fastq.out" \
     "${case_dir}/cbq.out" "${case_id}: FASTQ vs CBQ CLI"
   assert_same_rows "${case_id}_${assay}_lib" "${case_dir}/fastq.out" \

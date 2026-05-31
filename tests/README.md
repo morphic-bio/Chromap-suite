@@ -53,6 +53,23 @@ make test-cbq-atac-smoke
 
 Set `BQTOOLS=/path/to/bqtools` when `bqtools` is not on `PATH`.
 
+## CBQ Range Reader Smoke
+
+`run_cbq_range_reader_smoke.sh` validates the indexed CBQ range reader below the
+mapper. It compares sequential full-lane decode against multiple independent
+`OpenRange()` readers over the same CBQ, including partial first/last ranges
+and optional sequence materialization. When `bqtools` is available, it also
+synthesizes paired and barcode CBQs in both compressed and level-0 forms.
+
+Run it with:
+
+```bash
+make test-cbq-range-reader
+```
+
+Set `BQTOOLS=/path/to/bqtools` when `bqtools` is not on `PATH`. Outputs are
+written under `plans/artifacts/cbq_range_reader_smoke/<timestamp>/`.
+
 ## CBQ ATAC 100K Parity Gate
 
 `run_cbq_atac_100k.sh` is the pre-merge scale gate. It encodes the 100K PBMC
@@ -77,10 +94,16 @@ encoder or any fixture input is reported as a skip.
 
 The current CBQ reader decodes sequence bases directly into Chromap
 `SequenceBatch` buffers, matching the FASTQ path's buffer shape and avoiding a
-per-record temporary sequence string. A full 4-lane PBMC 3K ATAC timing run
-with warmed cache, 8 threads, and output directed to `/dev/null` is recorded at
-`plans/artifacts/cbq_atac_full_timing/20260530T070035Z/`: FASTQ.gz took
-`3:08.74`, uncompressed CBQ took `2:56.36`, and both produced `53,969,811`
+per-record temporary sequence string. Indexed CBQs use an ordered range
+producer in paired-end mapping: worker-owned readers pull independent record
+ranges and completed batches are consumed in source order. Legacy CBQs without
+a `CBQINDEX` footer fall back to the sequential CBQ loader. Set
+`CHROMAP_REQUIRE_CBQ_INDEX=1` to make a CBQ run fail instead of falling back;
+the CBQ parity gates use this to prove the indexed range producer is active.
+A full 4-lane PBMC 3K ATAC timing run with warmed cache, 8 threads, and output
+directed to `/dev/null` is recorded at
+`plans/artifacts/cbq_atac_full_timing/20260531T081906Z/`: FASTQ.gz took
+`3:04.47`, uncompressed CBQ took `2:52.27`, and both produced `53,969,811`
 output mappings with matching core summary totals.
 
 ## ENCODE Downsample Smoke
@@ -161,7 +184,9 @@ make test-encode-cbq-cross-assay-smoke
 ```
 
 Use `ENCODE_CBQ_ASSAYS=hic` to run only Hi-C CBQ parity, and
-`ENCODE_CBQ_COMPRESSION_LEVEL=0` to store uncompressed CBQs.
+`ENCODE_CBQ_COMPRESSION_LEVEL=0` to store uncompressed CBQs. CBQ runs are
+executed with `CHROMAP_REQUIRE_CBQ_INDEX=1`, so a legacy non-indexed CBQ cannot
+silently exercise the fallback reader in this gate.
 
 ## MCP Recipe Registry Tests
 
