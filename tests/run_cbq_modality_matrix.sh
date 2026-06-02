@@ -8,14 +8,11 @@
 #
 # Hermetic: generates a tiny synthetic genome + paired ATAC FASTQs + barcode
 # FASTQ + whitelist, builds a small index, and encodes CBQ from those FASTQs.
-# The fixture is small enough to fit one CBQ block, so even a record-reordering
-# encoder stays lane-aligned (multi-block ordering is exercised separately by
-# run_cbq_atac_100k.sh).
+# The vendored ordered encoder writes records in source FASTQ order and appends
+# a CBQINDEX footer, so this smoke also exercises the indexed range producer.
 #
-# Encoder resolution: CBQ_ORDERED_ENCODER (env or default STAR path), else
-# bqtools (BQTOOLS env, /tmp/star_suite_bqtools/bin/bqtools, or PATH). Missing
-# encoder => SKIP. BAM comparisons additionally require samtools (skipped if
-# absent). Artifacts under plans/artifacts/cbq_modality_matrix/<timestamp>/.
+# BAM comparisons additionally require samtools (skipped if absent). Artifacts
+# under plans/artifacts/cbq_modality_matrix/<timestamp>/.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,6 +21,7 @@ export LD_LIBRARY_PATH="${REPO_ROOT}/third_party/htslib${LD_LIBRARY_PATH:+:${LD_
 
 CHROMAP="${CHROMAP:-${REPO_ROOT}/chromap}"
 CHROMAP_LIB_RUNNER="${CHROMAP_LIB_RUNNER:-${REPO_ROOT}/chromap_lib_runner}"
+CBQ_ORDERED_ENCODER="${CBQ_ORDERED_ENCODER:-${REPO_ROOT}/tests/cbq_ordered_encoder}"
 ARTIFACT_ROOT="${CHROMAP_ARTIFACT_ROOT:-${REPO_ROOT}/plans/artifacts}"
 OUT_ROOT="${OUT_ROOT:-${ARTIFACT_ROOT}/cbq_modality_matrix/$(date -u +%Y%m%dT%H%M%SZ)}"
 DATA="${OUT_ROOT}/data"; RUN="${OUT_ROOT}/runs"; CBQ="${OUT_ROOT}/cbq"
@@ -37,31 +35,16 @@ bad()  { FAIL=$((FAIL+1)); log "FAIL: $*"; }
 
 [[ -x "${CHROMAP}" ]] || { echo "ERROR: chromap not built" >&2; exit 2; }
 [[ -x "${CHROMAP_LIB_RUNNER}" ]] || { echo "ERROR: chromap_lib_runner not built" >&2; exit 2; }
+[[ -x "${CBQ_ORDERED_ENCODER}" ]] || { echo "ERROR: CBQ encoder not built (${CBQ_ORDERED_ENCODER})" >&2; exit 2; }
 HAVE_SAMTOOLS=0; command -v samtools >/dev/null 2>&1 && HAVE_SAMTOOLS=1
 
-# ---- encoder resolution -----------------------------------------------------
-ORDERED=""; BQ=""
-if [[ -n "${CBQ_ORDERED_ENCODER:-}" && -x "${CBQ_ORDERED_ENCODER}" ]]; then
-  ORDERED="${CBQ_ORDERED_ENCODER}"
-elif [[ -x /mnt/pikachu/STAR-suite/core/legacy/source/cbq_ordered_encoder ]]; then
-  ORDERED=/mnt/pikachu/STAR-suite/core/legacy/source/cbq_ordered_encoder
-fi
-if [[ -z "${ORDERED}" ]]; then
-  if [[ -n "${BQTOOLS:-}" && -x "${BQTOOLS}" ]]; then BQ="${BQTOOLS}"
-  elif [[ -x /tmp/star_suite_bqtools/bin/bqtools ]]; then BQ=/tmp/star_suite_bqtools/bin/bqtools
-  elif command -v bqtools >/dev/null 2>&1; then BQ="$(command -v bqtools)"; fi
-fi
-[[ -n "${ORDERED}${BQ}" ]] || skip "no CBQ encoder (set CBQ_ORDERED_ENCODER or BQTOOLS)"
-
 encode_pair() { # r1 r2 out
-  if [[ -n "${ORDERED}" ]]; then "${ORDERED}" --readFilesIn "$1" "$2" --outFile "$3" >/dev/null 2>&1
-  else "${BQ}" encode "$1" "$2" --mode cbq -o "$3" -T 2 >/dev/null 2>&1 || "${BQ}" encode "$1" "$2" -o "$3" -T 2 >/dev/null 2>&1; fi
+  "${CBQ_ORDERED_ENCODER}" --readFilesIn "$1" "$2" --outFile "$3" >/dev/null 2>&1
   [[ -s "$3" ]]
 }
 encode_single() { # r1 out [extra...]
   local r1="$1" out="$2"; shift 2
-  if [[ -n "${ORDERED}" ]]; then "${ORDERED}" --readFilesIn "$r1" --outFile "$out" >/dev/null 2>&1
-  else "${BQ}" encode "$r1" --mode cbq -o "$out" -T 2 "$@" >/dev/null 2>&1 || "${BQ}" encode "$r1" -o "$out" -T 2 "$@" >/dev/null 2>&1; fi
+  "${CBQ_ORDERED_ENCODER}" --readFilesIn "$r1" --outFile "$out" "$@" >/dev/null 2>&1
   [[ -s "$out" ]]
 }
 
@@ -106,6 +89,84 @@ cmp_text() { # label  out_fastq out_cbqcli out_cbqlib
   else bad "$label: CBQ output differs from FASTQ"; fi
 }
 
+strip_comment_rows() { # input output
+  awk 'length($0) && substr($0, 1, 1) != "#" {print}' "$1" > "$2"
+}
+
+cmp_fastq_payload() { # label expected observed1 observed2
+  local label="$1" a="$2" b="$3" c="$4"
+  local ap="${a}.payload" bp="${b}.payload" cp="${c}.payload"
+  awk 'NR % 4 == 2 || NR % 4 == 0 {print}' "$a" > "$ap"
+  awk 'NR % 4 == 2 || NR % 4 == 0 {print}' "$b" > "$bp"
+  awk 'NR % 4 == 2 || NR % 4 == 0 {print}' "$c" > "$cp"
+  if cmp -s "$ap" "$bp" && cmp -s "$ap" "$cp"; then
+    ok "$label (FASTQ payload parity)"
+  else
+    bad "$label: emitted FASTQ payload differs"
+  fi
+}
+
+hts_view_rows() { # file output [normalize-rg]
+  local input="$1" output="$2" normalize_rg="${3:-0}"
+  if [[ "${input}" == *.cram ]]; then
+    samtools view -T "${DATA}/genome.fa" "${input}"
+  else
+    samtools view "${input}"
+  fi | {
+    if [[ "${normalize_rg}" == 1 ]]; then
+      sed -E $'s/(^|\t)RG:Z:[^\t]+/\\1RG:Z:<RG>/g'
+    else
+      cat
+    fi
+  } | LC_ALL=C sort > "${output}"
+}
+
+quickcheck_hts() { # file
+  local input="$1"
+  if [[ "${input}" == *.cram ]]; then
+    REF_PATH="${DATA}/genome.fa" samtools quickcheck "${input}" 2>/dev/null
+  else
+    samtools quickcheck "${input}" 2>/dev/null
+  fi
+}
+
+cmp_hts() { # label fastq_hts cbq_cli_hts cbq_lib_hts [normalize-rg]
+  local label="$1" a="$2" b="$3" c="$4" normalize_rg="${5:-0}"
+  local ar="${a}.rows" br="${b}.rows" cr="${c}.rows"
+  if ! quickcheck_hts "$a" || ! quickcheck_hts "$b" || ! quickcheck_hts "$c"; then
+    bad "$label: samtools quickcheck failed"
+    return
+  fi
+  hts_view_rows "$a" "$ar" "$normalize_rg"
+  hts_view_rows "$b" "$br" "$normalize_rg"
+  hts_view_rows "$c" "$cr" "$normalize_rg"
+  if [[ ! -s "$ar" ]]; then bad "$label: FASTQ baseline has no HTS rows"; return; fi
+  if cmp -s "$ar" "$br" && cmp -s "$ar" "$cr"; then
+    ok "$label ($(wc -l <"$ar") HTS rows, CLI+lib parity)"
+  else
+    bad "$label: HTS rows differ"
+  fi
+}
+
+extract_rg_ids() { # file
+  local input="$1"
+  if [[ "${input}" == *.cram ]]; then
+    samtools view -H -T "${DATA}/genome.fa" "${input}"
+  else
+    samtools view -H "${input}"
+  fi | awk -F'\t' '$1=="@RG"{for (i=2; i<=NF; ++i) if ($i ~ /^ID:/) print substr($i, 4)}'
+}
+
+assert_single_rg_id() { # label file expected
+  local label="$1" input="$2" expected="$3" ids
+  ids="$(extract_rg_ids "$input" | LC_ALL=C sort -u | tr '\n' ' ')"
+  if [[ "${ids}" == "${expected} " ]]; then
+    ok "$label RG=${expected}"
+  else
+    bad "$label: expected RG ${expected}, observed '${ids}'"
+  fi
+}
+
 run3() { # label  outext  cbq-needs-barcode(0/1)  extra-flags...
   local label="$1" ext="$2" bc_on="$3"; shift 3
   local fq="${RUN}/${label}.fastq.${ext}" cc="${RUN}/${label}.cbqcli.${ext}" cl="${RUN}/${label}.cbqlib.${ext}"
@@ -122,6 +183,9 @@ IFS='|' read -r a b c _ < <(run3 pe_bc_bed     bed 1 "${ATAC[@]}" --BED);       
 IFS='|' read -r a b c _ < <(run3 pe_bulk_bed   bed 0 --preset atac --BED);       cmp_text pe_bulk_bed "$a" "$b" "$c"
 IFS='|' read -r a b c _ < <(run3 pe_bc_tag     ta  1 "${ATAC[@]}" --TagAlign);   cmp_text pe_bc_tag   "$a" "$b" "$c"
 IFS='|' read -r a b c _ < <(run3 chip_bed      bed 0 --preset chip --BED);       cmp_text chip_bed    "$a" "$b" "$c"
+IFS='|' read -r a b c _ < <(run3 hic_pairs     pairs 0 --split-alignment --pairs --MAPQ-threshold 1)
+strip_comment_rows "$a" "${a}.rows"; strip_comment_rows "$b" "${b}.rows"; strip_comment_rows "$c" "${c}.rows"
+cmp_text hic_pairs "${a}.rows" "${b}.rows" "${c}.rows"
 
 # SAM: compare alignment rows only (drop @ header / @PG)
 samf="${RUN}/sam.fastq.sam"; samc="${RUN}/sam.cbqcli.sam"; saml="${RUN}/sam.cbqlib.sam"
@@ -132,6 +196,48 @@ grep -v '^@' "${samf}" > "${samf}.rows" 2>/dev/null
 grep -v '^@' "${samc}" > "${samc}.rows" 2>/dev/null
 grep -v '^@' "${saml}" > "${saml}.rows" 2>/dev/null
 cmp_text pe_bc_sam "${samf}.rows" "${samc}.rows" "${saml}.rows"
+
+# Y/noY FASTQ sidecars: compare mapping rows and decoded noY FASTQ payloads.
+yn_fq="${RUN}/ynoy.fastq.sam"; yn_c="${RUN}/ynoy.cbqcli.sam"; yn_l="${RUN}/ynoy.cbqlib.sam"
+yn_fq_y_prefix="${RUN}/ynoy.fastq.Y."; yn_fq_noy_prefix="${RUN}/ynoy.fastq.noY."
+yn_c_y_prefix="${RUN}/ynoy.cbqcli.Y."; yn_c_noy_prefix="${RUN}/ynoy.cbqcli.noY."
+yn_l_y_prefix="${RUN}/ynoy.cbqlib.Y."; yn_l_noy_prefix="${RUN}/ynoy.cbqlib.noY."
+"${CHROMAP}"            "${COMMON[@]}" "${ATAC[@]}" --SAM --emit-Y-noY-fastq --emit-Y-noY-fastq-compression none --Y-fastq-output-prefix "${yn_fq_y_prefix}" --noY-fastq-output-prefix "${yn_fq_noy_prefix}" -1 "${R1}" -2 "${R3}" -b "${R2}" --barcode-whitelist "${WL}" -o "${yn_fq}" >/dev/null 2>&1
+"${CHROMAP}"            "${COMMON[@]}" "${ATAC[@]}" --SAM --emit-Y-noY-fastq --emit-Y-noY-fastq-compression none --Y-fastq-output-prefix "${yn_c_y_prefix}" --noY-fastq-output-prefix "${yn_c_noy_prefix}" --input-format cbq --read-pair-cbq "${RC}" --barcode-cbq "${BC}" --barcode-whitelist "${WL}" -o "${yn_c}" >/dev/null 2>&1
+"${CHROMAP_LIB_RUNNER}" "${COMMON[@]}" "${ATAC[@]}" --SAM --emit-Y-noY-fastq --emit-Y-noY-fastq-compression none --Y-fastq-output-prefix "${yn_l_y_prefix}" --noY-fastq-output-prefix "${yn_l_noy_prefix}" --input-format cbq --read-pair-cbq "${RC}" --barcode-cbq "${BC}" --barcode-whitelist "${WL}" -o "${yn_l}" >/dev/null 2>&1
+grep -v '^@' "${yn_fq}" > "${yn_fq}.rows" 2>/dev/null
+grep -v '^@' "${yn_c}" > "${yn_c}.rows" 2>/dev/null
+grep -v '^@' "${yn_l}" > "${yn_l}.rows" 2>/dev/null
+cmp_text emit_y_noy_sam "${yn_fq}.rows" "${yn_c}.rows" "${yn_l}.rows"
+for mate in 1 2; do
+  for y_path in "${yn_fq_y_prefix}mate${mate}.fastq" "${yn_c_y_prefix}mate${mate}.fastq" "${yn_l_y_prefix}mate${mate}.fastq"; do
+    [[ -f "${y_path}" ]] || { bad "emit_y_noy_fastq: missing ${y_path}"; continue; }
+    if [[ -s "${y_path}" ]]; then bad "emit_y_noy_fastq: expected empty Y sidecar ${y_path}"; fi
+  done
+  cmp_fastq_payload "emit_y_noy_noY_mate${mate}" \
+    "${yn_fq_noy_prefix}mate${mate}.fastq" \
+    "${yn_c_noy_prefix}mate${mate}.fastq" \
+    "${yn_l_noy_prefix}mate${mate}.fastq"
+done
+
+if [[ "${HAVE_SAMTOOLS}" == 1 ]]; then
+  IFS='|' read -r a b c _ < <(run3 pe_bulk_bam bam 0 --BAM --sort-bam --hts-threads 1)
+  cmp_hts pe_bulk_bam "$a" "$b" "$c"
+
+  IFS='|' read -r a b c _ < <(run3 chip_bam bam 0 --preset chip --BAM --sort-bam --hts-threads 1)
+  cmp_hts chip_bam "$a" "$b" "$c"
+
+  IFS='|' read -r a b c _ < <(run3 pe_bulk_cram cram 0 --CRAM --sort-bam --hts-threads 1)
+  cmp_hts pe_bulk_cram "$a" "$b" "$c"
+
+  IFS='|' read -r a b c _ < <(run3 read_group_auto bam 0 --BAM --sort-bam --hts-threads 1 --read-group auto)
+  cmp_hts read_group_auto "$a" "$b" "$c" 1
+  assert_single_rg_id "read_group_auto.fastq" "$a" "R1"
+  assert_single_rg_id "read_group_auto.cbqcli" "$b" "reads.cbq"
+  assert_single_rg_id "read_group_auto.cbqlib" "$c" "reads.cbq"
+else
+  log "SKIP HTS positive cases (samtools not found)"
+fi
 
 # BAM dual fragments (needs samtools for record compare; always checks fragments TSV)
 if [[ "${HAVE_SAMTOOLS}" == 1 ]]; then
@@ -159,18 +265,26 @@ expect_fail() { # label  pattern  args...
 expect_fail no_readpair    "requires --read-pair-cbq"        --preset atac --input-format cbq --BED
 expect_fail mixed_inputs   "cannot be mixed"                 --preset atac --input-format cbq --read-pair-cbq "${RC}" -1 "${R1}" --BED
 expect_fail wl_no_bccbq    "requires --barcode-cbq"          --preset atac --input-format cbq --read-pair-cbq "${RC}" --barcode-whitelist "${WL}" --BED
+expect_fail cbq_count_mismatch "count must match"            --preset atac --input-format cbq --read-pair-cbq "${RC},${RC}" --barcode-cbq "${BC}" --BED
 expect_fail unpaired_cbq   "mate-count mismatch"             --preset atac --input-format cbq --read-pair-cbq "${BC}" --BED
 
-# headerless barcode lane (only constructible with bqtools -H)
-if [[ -z "${ORDERED}" && -n "${BQ}" ]] && encode_single "${R2}" "${BCNH}" -H; then
-  expect_fail headerless_bc "requires read names" "${ATAC[@]}" --input-format cbq --read-pair-cbq "${RC}" --barcode-cbq "${BCNH}" --barcode-whitelist "${WL}" --BED
-else
-  log "SKIP headerless-barcode case (needs bqtools -H)"
-fi
+# Headerless barcode lane.
+encode_single "${R2}" "${BCNH}" --strip-headers || skip "headerless barcode encode failed"
+expect_fail headerless_bc "requires read names" "${ATAC[@]}" --input-format cbq --read-pair-cbq "${RC}" --barcode-cbq "${BCNH}" --barcode-whitelist "${WL}" --BED
+
+# Read/barcode record-count mismatches are rejected before mapping.
+awk 'NR <= 20 {print}' "${R2}" > "${DATA}/R2.short.fastq"
+cat "${R2}" > "${DATA}/R2.long.fastq"
+awk 'NR <= 4 {print}' "${R2}" >> "${DATA}/R2.long.fastq"
+BC_SHORT="${CBQ}/bc_short.cbq"; BC_LONG="${CBQ}/bc_long.cbq"
+encode_single "${DATA}/R2.short.fastq" "${BC_SHORT}" || skip "short barcode encode failed"
+encode_single "${DATA}/R2.long.fastq" "${BC_LONG}" || skip "long barcode encode failed"
+expect_fail barcode_short "record counts differ|Numbers of reads and barcodes" "${ATAC[@]}" --input-format cbq --read-pair-cbq "${RC}" --barcode-cbq "${BC_SHORT}" --barcode-whitelist "${WL}" --BED
+expect_fail barcode_long  "record counts differ|Numbers of reads and barcodes" "${ATAC[@]}" --input-format cbq --read-pair-cbq "${RC}" --barcode-cbq "${BC_LONG}" --barcode-whitelist "${WL}" --BED
 
 # ---- summary ----------------------------------------------------------------
 log "outputs: ${OUT_ROOT}"
-log "encoder: ${ORDERED:-${BQ}}   samtools=${HAVE_SAMTOOLS}"
+log "encoder: ${CBQ_ORDERED_ENCODER}   samtools=${HAVE_SAMTOOLS}"
 log "RESULT: ${PASS} passed, ${FAIL} failed"
-printf 'pass=%s\nfail=%s\nencoder=%s\n' "${PASS}" "${FAIL}" "${ORDERED:-${BQ}}" > "${OUT_ROOT}/SUMMARY.txt"
+printf 'pass=%s\nfail=%s\nencoder=%s\n' "${PASS}" "${FAIL}" "${CBQ_ORDERED_ENCODER}" > "${OUT_ROOT}/SUMMARY.txt"
 [[ "${FAIL}" -eq 0 ]]

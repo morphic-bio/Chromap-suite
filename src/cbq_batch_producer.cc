@@ -1,6 +1,7 @@
 #include "cbq_batch_producer.h"
 
 #include <exception>
+#include <limits>
 #include <utility>
 
 #include "utils.h"
@@ -175,6 +176,11 @@ CbqPairedEndRangeBatchProducer::CbqPairedEndRangeBatchProducer(
       load_fn_(std::move(load_fn)) {
   if (batch_size_ == 0) {
     batch_size_ = 1;
+  }
+  if (total_records_ >
+      std::numeric_limits<uint64_t>::max() -
+          static_cast<uint64_t>(batch_size_) + 1U) {
+    ExitWithMessage("CBQ range producer record count overflows batch count");
   }
   total_batches_ =
       (total_records_ + static_cast<uint64_t>(batch_size_) - 1U) /

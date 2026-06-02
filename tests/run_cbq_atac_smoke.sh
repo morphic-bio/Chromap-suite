@@ -6,6 +6,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 CHROMAP="${CHROMAP:-${REPO_ROOT}/chromap}"
 CHROMAP_LIB_RUNNER="${CHROMAP_LIB_RUNNER:-${REPO_ROOT}/chromap_lib_runner}"
+CBQ_ORDERED_ENCODER="${CBQ_ORDERED_ENCODER:-${REPO_ROOT}/tests/cbq_ordered_encoder}"
 ARTIFACT_ROOT="${CHROMAP_ARTIFACT_ROOT:-${REPO_ROOT}/plans/artifacts}"
 OUT_ROOT="${OUT_ROOT:-${ARTIFACT_ROOT}/cbq_atac_smoke/$(date -u +%Y%m%dT%H%M%SZ)}"
 DATA_DIR="${OUT_ROOT}/data"
@@ -24,69 +25,26 @@ skip() {
   exit 0
 }
 
-resolve_bqtools() {
-  if [[ -n "${BQTOOLS:-}" ]]; then
-    if [[ -x "${BQTOOLS}" ]]; then
-      printf '%s\n' "${BQTOOLS}"
-      return 0
-    fi
-    if command -v "${BQTOOLS}" >/dev/null 2>&1; then
-      command -v "${BQTOOLS}"
-      return 0
-    fi
-    return 1
-  fi
-  if [[ -x /tmp/star_suite_bqtools/bin/bqtools ]]; then
-    printf '%s\n' /tmp/star_suite_bqtools/bin/bqtools
-    return 0
-  fi
-  command -v bqtools 2>/dev/null
-}
-
 encode_pair_cbq() {
-  local bqtools="$1"
+  local encoder="$1"
   local r1="$2"
   local r2="$3"
   local out="$4"
 
   rm -f "${out}"
-  if "${bqtools}" encode "${r1}" "${r2}" --mode cbq -o "${out}" -T 2 \
-      > "${out}.encode.stdout" 2> "${out}.encode.stderr"; then
-    [[ -s "${out}" ]] && return 0
-  fi
-
-  rm -f "${out}"
-  if "${bqtools}" encode "${r1}" "${r2}" -o "${out}" --mode cbq -T 2 \
-      >> "${out}.encode.stdout" 2>> "${out}.encode.stderr"; then
-    [[ -s "${out}" ]] && return 0
-  fi
-
-  rm -f "${out}"
-  "${bqtools}" encode "${r1}" "${r2}" -o "${out}" -T 2 \
-      >> "${out}.encode.stdout" 2>> "${out}.encode.stderr"
+  "${encoder}" --readFilesIn "${r1}" "${r2}" --outFile "${out}" \
+      > "${out}.encode.stdout" 2> "${out}.encode.stderr"
   [[ -s "${out}" ]]
 }
 
 encode_single_cbq() {
-  local bqtools="$1"
+  local encoder="$1"
   local r1="$2"
   local out="$3"
 
   rm -f "${out}"
-  if "${bqtools}" encode "${r1}" --mode cbq -o "${out}" -T 2 \
-      > "${out}.encode.stdout" 2> "${out}.encode.stderr"; then
-    [[ -s "${out}" ]] && return 0
-  fi
-
-  rm -f "${out}"
-  if "${bqtools}" encode "${r1}" -o "${out}" --mode cbq -T 2 \
-      >> "${out}.encode.stdout" 2>> "${out}.encode.stderr"; then
-    [[ -s "${out}" ]] && return 0
-  fi
-
-  rm -f "${out}"
-  "${bqtools}" encode "${r1}" -o "${out}" -T 2 \
-      >> "${out}.encode.stdout" 2>> "${out}.encode.stderr"
+  "${encoder}" --readFilesIn "${r1}" --outFile "${out}" \
+      > "${out}.encode.stdout" 2> "${out}.encode.stderr"
   [[ -s "${out}" ]]
 }
 
@@ -129,11 +87,13 @@ count_fastq_reads() {
   echo "ERROR: chromap_lib_runner not found; run make chromap_lib_runner or set CHROMAP_LIB_RUNNER" >&2
   exit 1
 }
-
-bqtools_bin="$(resolve_bqtools)" || skip "bqtools not found; set BQTOOLS=/path/to/bqtools"
+[[ -x "${CBQ_ORDERED_ENCODER}" ]] || {
+  echo "ERROR: CBQ encoder not found; run make tests/cbq_ordered_encoder or set CBQ_ORDERED_ENCODER" >&2
+  exit 1
+}
 
 log "outputs: ${OUT_ROOT}"
-log "bqtools: ${bqtools_bin}"
+log "encoder: ${CBQ_ORDERED_ENCODER}"
 
 python3 - "${DATA_DIR}" <<'PY'
 import random
@@ -180,9 +140,9 @@ PY
 
 read_pair_cbq="${CBQ_DIR}/reads_pair.cbq"
 barcode_cbq="${CBQ_DIR}/barcodes.cbq"
-encode_pair_cbq "${bqtools_bin}" "${DATA_DIR}/reads_R1.fastq" \
+encode_pair_cbq "${CBQ_ORDERED_ENCODER}" "${DATA_DIR}/reads_R1.fastq" \
   "${DATA_DIR}/reads_R2.fastq" "${read_pair_cbq}"
-encode_single_cbq "${bqtools_bin}" "${DATA_DIR}/barcodes.fastq" "${barcode_cbq}"
+encode_single_cbq "${CBQ_ORDERED_ENCODER}" "${DATA_DIR}/barcodes.fastq" "${barcode_cbq}"
 
 common_args=(
   --preset atac
@@ -280,7 +240,7 @@ log "PASS: CBQ Y/noY FASTQ sidecars"
 cat > "${OUT_ROOT}/SUMMARY.txt" <<EOF
 chromap=${CHROMAP}
 chromap_lib_runner=${CHROMAP_LIB_RUNNER}
-bqtools=${bqtools_bin}
+encoder=${CBQ_ORDERED_ENCODER}
 out_root=${OUT_ROOT}
 cbq_cli=pass
 cbq_lib_runner=pass

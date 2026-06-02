@@ -484,7 +484,7 @@ bool Chromap::GetPairedEndCbqRangeMetadata(
       error =
           "Barcoded CBQ input requires read names (headers) in both the "
           "read-pair and barcode CBQ so record alignment can be verified; "
-          "re-encode without --skip-headers";
+          "re-encode with headers";
       return false;
     }
     if (record_count != barcode_record_count) {

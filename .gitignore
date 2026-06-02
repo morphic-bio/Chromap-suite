@@ -27,6 +27,7 @@ objs/
 tests/test_y_filter
 tests/test_atac_spill_record_roundtrip
 tests/cbq_range_reader_harness
+tests/cbq_ordered_encoder
 
 # Test outputs
 tests/bamwriter/out/

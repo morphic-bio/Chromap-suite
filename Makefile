@@ -198,21 +198,24 @@ tests/cbq_range_reader_harness: dir $(objs_dir)/cbq_reader.o
 test-cbq-range-reader: tests/cbq_range_reader_harness
 	./tests/run_cbq_range_reader_smoke.sh
 
-# Synthetic ATAC CBQ parity smoke. Requires bqtools (or BQTOOLS=/path/to/bqtools).
-test-cbq-atac-smoke: chromap chromap_lib_runner
+tests/cbq_ordered_encoder: tests/cbq_ordered_encoder.cpp
+	$(CXX) $(CXXFLAGS) tests/cbq_ordered_encoder.cpp \
+		-o tests/cbq_ordered_encoder -lz -ldl
+
+# Synthetic ATAC CBQ parity smoke using the vendored ordered CBQ encoder.
+test-cbq-atac-smoke: chromap chromap_lib_runner tests/cbq_ordered_encoder
 	./tests/run_cbq_atac_smoke.sh
 
-# Hermetic CBQ modality matrix: CBQ vs FASTQ parity across BED/TagAlign/SAM/BAM
-# dual, bulk, ChIP (CLI + libchromap), plus verified rejection cases. Requires a
-# CBQ encoder (CBQ_ORDERED_ENCODER or bqtools); skips if none. BAM case needs
-# samtools.
-test-cbq-modality-matrix: chromap chromap_lib_runner
+# Hermetic CBQ modality matrix: CBQ vs FASTQ parity across BED/TagAlign/SAM,
+# BAM/CRAM writer output, ATAC BAM+fragments, bulk, ChIP, Hi-C pairs, read-group
+# auto, and Y/noY FASTQ, plus verified rejection cases. HTS cases need samtools.
+test-cbq-modality-matrix: chromap chromap_lib_runner tests/cbq_ordered_encoder
 	./tests/run_cbq_modality_matrix.sh
 
-# 100K PBMC ATAC CBQ vs FASTQ parity gate. Requires bqtools plus the 100K
+# 100K PBMC ATAC CBQ vs FASTQ parity gate. Requires the 100K
 # fixture, index, GRCh38 reference, and 10x ATAC whitelist (skips when absent).
 # Serial benchmark; artifacts under plans/artifacts/cbq_atac_100k/<timestamp>/.
-test-cbq-atac-100k: chromap chromap_lib_runner
+test-cbq-atac-100k: chromap chromap_lib_runner tests/cbq_ordered_encoder
 	./tests/run_cbq_atac_100k.sh
 
 # Hermetic synthetic smoke for CLI vs libchromap parity. Artifacts are written
@@ -237,10 +240,10 @@ prepare-encode-cross-assay-fixtures:
 test-encode-cross-assay-smoke: chromap chromap_lib_runner
 	./tests/run_encode_cross_assay_smoke.sh
 
-# Optional S1 CBQ parity over the ENCODE cross-assay FASTQ fixtures. Requires
-# cbq_ordered_encoder plus CHROMAP_GRCH38_REF/INDEX; downloads still go through
+# Optional S1 CBQ parity over the ENCODE cross-assay FASTQ fixtures. Uses the
+# vendored ordered CBQ encoder; downloads still go through
 # prepare_encode_cross_assay_fixtures.sh when ENCODE_ALLOW_DOWNLOAD=1.
-test-encode-cbq-cross-assay-smoke: chromap chromap_lib_runner
+test-encode-cbq-cross-assay-smoke: chromap chromap_lib_runner tests/cbq_ordered_encoder
 	./tests/run_encode_cbq_cross_assay_smoke.sh
 
 # 100K: memory vs file fragment source for integrated MACS3 FRAG peaks

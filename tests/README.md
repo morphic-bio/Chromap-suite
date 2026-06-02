@@ -39,11 +39,11 @@ path there; native ATAC CBQ ingestion is covered by the smoke below.
 ## CBQ ATAC Smoke
 
 `run_cbq_atac_smoke.sh` verifies native ATAC CBQ ingestion. It generates a small
-paired-end scATAC fixture, encodes read-pair and barcode CBQ files with
-`bqtools`, compares CLI FASTQ vs CLI CBQ fragments, and compares CLI FASTQ vs
-`chromap_lib_runner` CBQ fragments. It also exercises `--emit-Y-noY-fastq` in
-CBQ mode and checks that decoded FASTQ sidecars are written under
-`y_separated/`.
+paired-end scATAC fixture, encodes read-pair and barcode CBQ files with the
+vendored `tests/cbq_ordered_encoder`, compares CLI FASTQ vs CLI CBQ fragments,
+and compares CLI FASTQ vs `chromap_lib_runner` CBQ fragments. It also exercises
+`--emit-Y-noY-fastq` in CBQ mode and checks that decoded FASTQ sidecars are
+written under `y_separated/`.
 
 Run it with:
 
@@ -51,7 +51,25 @@ Run it with:
 make test-cbq-atac-smoke
 ```
 
-Set `BQTOOLS=/path/to/bqtools` when `bqtools` is not on `PATH`.
+Set `CBQ_ORDERED_ENCODER=/path/to/cbq_ordered_encoder` only when intentionally
+testing a non-default encoder.
+
+## CBQ Modality Matrix
+
+`run_cbq_modality_matrix.sh` is the hermetic full-surface CBQ parity gate. It
+uses the vendored ordered encoder and compares FASTQ, `chromap` CBQ, and
+`chromap_lib_runner` CBQ across scATAC BED/TagAlign/SAM/BAM+fragments, bulk
+paired BED/BAM/CRAM, ChIP BED/BAM, Hi-C `.pairs`, and Y/noY FASTQ emission. It
+also verifies CBQ option validation, headerless barcoded CBQ rejection, and
+read/barcode record-count mismatch rejection. BAM/CRAM row comparisons require
+`samtools`; the script records outputs under
+`plans/artifacts/cbq_modality_matrix/<timestamp>/`.
+
+Run it with:
+
+```bash
+make test-cbq-modality-matrix
+```
 
 ## CBQ Range Reader Smoke
 
@@ -85,12 +103,12 @@ Run it with:
 make test-cbq-atac-100k
 ```
 
-This gate uses the order-preserving `cbq_ordered_encoder` rather than `bqtools`:
-the barcoded path requires the read-pair and barcode CBQ lanes to stay
+This gate uses the vendored order-preserving `tests/cbq_ordered_encoder`: the
+barcoded path requires the read-pair and barcode CBQ lanes to stay
 record-aligned, and stock `bqtools` reorders records across blocks at scale.
-Set `CBQ_ORDERED_ENCODER=/path/to/cbq_ordered_encoder` if it is not at the
-default location. `LANES="1"` runs a faster single-lane variant. Missing the
-encoder or any fixture input is reported as a skip.
+Set `CBQ_ORDERED_ENCODER=/path/to/cbq_ordered_encoder` only when intentionally
+testing a non-default encoder. `LANES="1"` runs a faster single-lane variant.
+Missing fixture input is reported as a skip.
 
 The current CBQ reader decodes sequence bases directly into Chromap
 `SequenceBatch` buffers, matching the FASTQ path's buffer shape and avoiding a
@@ -174,7 +192,7 @@ plan and source-accession rationale.
 
 `run_encode_cbq_cross_assay_smoke.sh` layers CBQ parity on top of the same
 generated ENCODE fixtures. It encodes each downsampled paired read set with the
-order-preserving `cbq_ordered_encoder`, then compares canonical FASTQ,
+vendored order-preserving `tests/cbq_ordered_encoder`, then compares canonical FASTQ,
 `chromap` CBQ, and `chromap_lib_runner` CBQ rows for ChIP, bulk ATAC, scATAC,
 and Hi-C `.pairs` output:
 
