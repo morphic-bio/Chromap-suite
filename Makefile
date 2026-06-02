@@ -82,7 +82,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 
 -include $(deps)
 
-.PHONY: clean test-unit test-atac-spill-record-roundtrip test-atac-runtime-spill-schema-harness test-frag-compact-store test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-atac-100k test-libchromap-core-smoke \
+.PHONY: clean test-unit test-atac-spill-record-roundtrip test-atac-runtime-spill-schema-harness test-frag-compact-store test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
 	 test-encode-cbq-cross-assay-smoke \
@@ -201,6 +201,13 @@ test-cbq-range-reader: tests/cbq_range_reader_harness
 # Synthetic ATAC CBQ parity smoke. Requires bqtools (or BQTOOLS=/path/to/bqtools).
 test-cbq-atac-smoke: chromap chromap_lib_runner
 	./tests/run_cbq_atac_smoke.sh
+
+# Hermetic CBQ modality matrix: CBQ vs FASTQ parity across BED/TagAlign/SAM/BAM
+# dual, bulk, ChIP (CLI + libchromap), plus verified rejection cases. Requires a
+# CBQ encoder (CBQ_ORDERED_ENCODER or bqtools); skips if none. BAM case needs
+# samtools.
+test-cbq-modality-matrix: chromap chromap_lib_runner
+	./tests/run_cbq_modality_matrix.sh
 
 # 100K PBMC ATAC CBQ vs FASTQ parity gate. Requires bqtools plus the 100K
 # fixture, index, GRCh38 reference, and 10x ATAC whitelist (skips when absent).
