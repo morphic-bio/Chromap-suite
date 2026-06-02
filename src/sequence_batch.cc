@@ -32,6 +32,9 @@ void SequenceBatch::ResetLoadedSequences() {
 
 void SequenceBatch::AssignKstring(kstring_t &dest, const char *data,
                                   size_t len) {
+  if (len == std::numeric_limits<size_t>::max()) {
+    ExitWithMessage("Sequence field length exceeds platform size");
+  }
   if (dest.m < len + 1) {
     dest.m = len + 1;
     dest.s = static_cast<char *>(realloc(dest.s, dest.m));

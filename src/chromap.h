@@ -1093,11 +1093,11 @@ void Chromap::MapPairedEndReads() {
                                        *read_cbq_index,
                                        barcode_cbq_index.get(),
                                        cbq_lane_record_count, error)) {
-        if (cbq_lane_record_count > 0 &&
-            cbq_lane_global_record_offset >
-                static_cast<uint64_t>(
-                    std::numeric_limits<uint32_t>::max()) -
-                    (cbq_lane_record_count - 1U)) {
+        const uint64_t max_cbq_record_count =
+            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1U;
+        if (cbq_lane_global_record_offset > max_cbq_record_count ||
+            cbq_lane_record_count >
+                max_cbq_record_count - cbq_lane_global_record_offset) {
           ExitWithMessage(
               "CBQ record ordinal exceeds Chromap's uint32 read-id limit");
         }
@@ -1163,7 +1163,7 @@ void Chromap::MapPairedEndReads() {
             ExitWithMessage(
                 "Barcoded CBQ input requires read names (headers) in both the "
                 "read-pair and barcode CBQ so record alignment can be "
-                "verified; re-encode without --skip-headers");
+                "verified; re-encode with headers");
           }
         }
         const size_t cbq_queue_depth =

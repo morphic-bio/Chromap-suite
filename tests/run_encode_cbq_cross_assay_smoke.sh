@@ -11,6 +11,7 @@ OUTROOT="${OUTROOT:-${ARTIFACT_ROOT}/encode_cbq_cross_assay_smoke/${RUN_ID}}"
 GENERATED_MANIFEST="${ENCODE_CROSS_ASSAY_GENERATED_MANIFEST:-${CACHE_ROOT}/manifest.generated.tsv}"
 CHROMAP_BIN="${CHROMAP_BIN:-${REPO_ROOT}/chromap}"
 LIBRUNNER_BIN="${LIBRUNNER_BIN:-${REPO_ROOT}/chromap_lib_runner}"
+CBQ_ORDERED_ENCODER="${CBQ_ORDERED_ENCODER:-${REPO_ROOT}/tests/cbq_ordered_encoder}"
 THREADS="${THREADS:-1}"
 BUILD="${BUILD:-1}"
 ASSAYS="${ENCODE_CBQ_ASSAYS:-${ENCODE_ASSAYS:-all}}"
@@ -58,11 +59,7 @@ resolve_encoder() {
     fi
     return 1
   fi
-  if [[ -x /mnt/pikachu/STAR-suite/core/legacy/source/cbq_ordered_encoder ]]; then
-    printf '%s\n' /mnt/pikachu/STAR-suite/core/legacy/source/cbq_ordered_encoder
-    return 0
-  fi
-  command -v cbq_ordered_encoder 2>/dev/null
+  return 1
 }
 
 git_state() {
@@ -246,7 +243,7 @@ main() {
   require_file "${CHROMAP_GRCH38_REF}"
   require_file "${CHROMAP_GRCH38_INDEX}"
 
-  ENCODER_BIN="$(resolve_encoder)" || fail "cbq_ordered_encoder not found; set CBQ_ORDERED_ENCODER"
+  ENCODER_BIN="$(resolve_encoder)" || fail "CBQ encoder not found; run make tests/cbq_ordered_encoder or set CBQ_ORDERED_ENCODER"
   export ENCODER_BIN
 
   mkdir -p "${OUTROOT}"/{cases,cbq,compare,logs}

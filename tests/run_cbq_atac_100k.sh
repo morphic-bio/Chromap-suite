@@ -19,25 +19,23 @@
 #   scale: the paired-read lane and the barcode lane are independently
 #   reordered, so they no longer align and chromap rejects them. (The 4-record
 #   synthetic smoke happens to fit one block and survives; 100K does not.)
-#   This gate therefore uses the order-preserving `cbq_ordered_encoder`, which
-#   emits records in input FASTQ order so the two lanes stay aligned. The zstd
-#   decompression path is covered separately by the synthetic smoke, which
-#   feeds chromap a compressed bqtools CBQ.
+#   This gate therefore uses the vendored order-preserving
+#   `tests/cbq_ordered_encoder`, which emits records in input FASTQ order so the
+#   two lanes stay aligned.
 #
 # No intermediate FASTQ is materialized in the production CBQ mapping path; the
 # only FASTQ-to-CBQ conversion is the test-only encode step below. The encoder
-# is an optional, test-only external dependency; released Chromap-suite does
-# not depend on STAR-suite or any STAR adapter.
+# is vendored under tests/ so this gate does not depend on STAR-suite or
+# bqtools.
 #
 # Benchmarks run serially. The manifest records command lines, git state,
 # fixture/index/reference paths, thread count, output directory, and
 # wall/user/sys/max-RSS for each chromap invocation (GNU /usr/bin/time when
 # available).
 #
-# Prerequisites: chromap + chromap_lib_runner built at repo root, the
-# cbq_ordered_encoder (set CBQ_ORDERED_ENCODER=/path or place on PATH), and the
-# 100K fixture, 12 GB index, GRCh38 reference, and 10x ATAC whitelist. A missing
-# encoder or fixture input is reported as a SKIP, not a failure.
+# Prerequisites: chromap + chromap_lib_runner + tests/cbq_ordered_encoder built
+# at repo root, and the 100K fixture, 12 GB index, GRCh38 reference, and 10x
+# ATAC whitelist. A missing fixture input is reported as a SKIP, not a failure.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +44,7 @@ export LD_LIBRARY_PATH="${REPO_ROOT}/third_party/htslib${LD_LIBRARY_PATH:+:${LD_
 
 CHROMAP="${CHROMAP:-${REPO_ROOT}/chromap}"
 CHROMAP_LIB_RUNNER="${CHROMAP_LIB_RUNNER:-${REPO_ROOT}/chromap_lib_runner}"
+CBQ_ORDERED_ENCODER="${CBQ_ORDERED_ENCODER:-${REPO_ROOT}/tests/cbq_ordered_encoder}"
 
 FIXTURE_ATAC="${FIXTURE_ATAC:-/mnt/pikachu/atac-seq/benchmarks/pbmc_unsorted_3k_100k/fixture/atac}"
 INDEX="${INDEX:-/mnt/pikachu/atac-seq/benchmarks/pbmc_unsorted_3k_100k/chromap_index/genome.index}"
@@ -88,11 +87,7 @@ resolve_encoder() {
     fi
     return 1
   fi
-  if [[ -x /mnt/pikachu/STAR-suite/core/legacy/source/cbq_ordered_encoder ]]; then
-    printf '%s\n' /mnt/pikachu/STAR-suite/core/legacy/source/cbq_ordered_encoder
-    return 0
-  fi
-  command -v cbq_ordered_encoder 2>/dev/null
+  return 1
 }
 
 encode_pair_cbq() {
@@ -165,7 +160,7 @@ assert_fragment_parity() {
 [[ -x "${CHROMAP}" ]] || { echo "ERROR: chromap not built (${CHROMAP})" >&2; exit 2; }
 [[ -x "${CHROMAP_LIB_RUNNER}" ]] || { echo "ERROR: chromap_lib_runner not built (${CHROMAP_LIB_RUNNER})" >&2; exit 2; }
 
-encoder_bin="$(resolve_encoder)" || skip "cbq_ordered_encoder not found; set CBQ_ORDERED_ENCODER=/path/to/cbq_ordered_encoder"
+encoder_bin="$(resolve_encoder)" || { echo "ERROR: CBQ encoder not built (${CBQ_ORDERED_ENCODER})" >&2; exit 2; }
 [[ -d "${FIXTURE_ATAC}" ]] || skip "fixture not found: ${FIXTURE_ATAC}"
 [[ -f "${INDEX}" ]] || skip "index not found: ${INDEX}"
 [[ -f "${REF}" ]] || skip "reference not found: ${REF}"

@@ -68,8 +68,8 @@ No committed smoke covers, per front-end (CLI `chromap` **and** `chromap_lib_run
 - **Hermetic.** Reuse the synthetic-fixture pattern from
   `tests/run_cbq_atac_smoke.sh`: a tiny generated genome + paired FASTQs +
   barcode FASTQ + whitelist, a small `--build-index`, and CBQ files encoded
-  from those FASTQs. No 12 GB index, no external fixture. Small data keeps the
-  encoder single-block, so even a reordering encoder stays lane-aligned.
+  from those FASTQs by the vendored C++ writer under `tests/`. No STAR-suite,
+  no `bqtools`, no 12 GB index, and no external fixture.
 - **Canonical comparison.** `LC_ALL=C sort` over text rows for BED / BEDPE /
   TagAlign / pairs / fragments; for BAM, compare `samtools view` records (or
   fragment TSV) and `samtools quickcheck`; for SAM, compare non-`@` rows.
@@ -90,8 +90,13 @@ No committed smoke covers, per front-end (CLI `chromap` **and** `chromap_lib_run
 | `pe_bc_sam` | `--SAM` + barcode (compare non-`@` rows) |
 | `pe_bc_bam` | `--BAM --sort-bam` + barcode (samtools view rows + quickcheck) |
 | `pe_bc_dual` | `--BAM --sort-bam --atac-fragments frags.tsv.gz` (compare fragments) |
+| `pe_bulk_bam` | paired, no barcode, `--BAM --sort-bam` (samtools view rows + quickcheck) |
+| `chip_bam` | `--preset chip --BAM --sort-bam`, no barcode (samtools view rows + quickcheck) |
+| `pe_bulk_cram` | paired, no barcode, `--CRAM --sort-bam` (samtools view rows + quickcheck) |
+| `read_group_auto` | `--BAM --read-group auto`; normalize RG tags for row parity and assert source-derived IDs |
 | `chip_bed` | `--preset chip --BED`, no barcode |
 | `hic_pairs` | `--split-alignment --pairs` (compare sorted pairs rows) |
+| `emit_y_noy_fastq` | `--emit-Y-noY-fastq` (compare SAM rows and noY FASTQ payloads) |
 
 ### Rejection / safety cases (assert non-zero exit + message, no crash)
 
@@ -102,18 +107,15 @@ No committed smoke covers, per front-end (CLI `chromap` **and** `chromap_lib_run
 | `--barcode-whitelist` without `--barcode-cbq` | "requires --barcode-cbq" |
 | FASTQ (`-1/-2/-b`) mixed with CBQ | "cannot be mixed" |
 | unpaired (1-mate) CBQ as `--read-pair-cbq` | "mate-count mismatch" |
-| barcoded CBQ with headers stripped (`bqtools -H`) | "requires read names (headers)" |
+| barcoded CBQ with headers stripped (`tests/cbq_ordered_encoder --strip-headers`) | "requires read names (headers)" |
 | read lane longer than barcode lane and vice-versa | "Numbers of reads and barcodes don't match!" |
 | garbage / truncated / oversized-dimension CBQ | clean error, no crash, RSS bounded |
 
 ### Deliverable
 
-`tests/run_cbq_modality_matrix.sh` + `make test-cbq-modality-matrix`. Resolves
-a CBQ encoder in this order: `CBQ_ORDERED_ENCODER` env / default STAR path →
-`bqtools` (`BQTOOLS` env or `/tmp/star_suite_bqtools/bin/bqtools`) → skip.
-Because the fixture is tiny (single block), `bqtools` ordering is safe here;
-the multi-block ordering requirement remains the concern only at scale (see
-`tests/run_cbq_atac_100k.sh`). Artifacts under
+`tests/run_cbq_modality_matrix.sh` + `make test-cbq-modality-matrix`. Builds and
+uses `tests/cbq_ordered_encoder` by default; `CBQ_ORDERED_ENCODER` is only for
+intentional local overrides. Artifacts under
 `plans/artifacts/cbq_modality_matrix/<timestamp>/`.
 
 Wire it into the merge checklist next to `test-cbq-atac-smoke`.
@@ -190,33 +192,24 @@ entangle an upstream PR. Cherry-pick the minimal core, then re-apply hardening.
 ### Runtime dependency
 
 The reader `dlopen`s `libzstd.so.1` / `libzstd.so` at run time (no link-time
-dep beyond `-ldl`). Document: compressed CBQ requires libzstd present at run
-time; uncompressed CBQ does not. This keeps the upstream build change to a
-single `-ldl`.
+dep beyond `-ldl`). Document that compressed CBQ requires libzstd present at run
+time. This keeps the upstream build change to a single `-ldl`.
 
 ### Test self-containment (the real blocker)
 
-The current smokes generate CBQ with **external** tools:
+The original smokes generated CBQ with **external** tools:
 
-- `cbq_ordered_encoder` lives in STAR-suite and is **ephemeral** — it
+- `cbq_ordered_encoder` lived in STAR-suite and was **ephemeral** — it
   disappeared from `core/legacy/source/` mid-session after a STAR rebuild.
 - `bqtools` is a separate external binary and **reorders records across blocks
   at scale**, so it only works for tiny single-block fixtures.
 
-An upstream PR cannot depend on STAR-suite or a floating `bqtools`. Options,
-preferred first:
-
-1. **Vendor a tiny CBQ v1 writer** in `tests/` (≈150 lines C++ or Python) that
-   emits the exact block layout `cbq_reader.cc` parses — uncompressed columns
-   are enough (the reader handles uncompressed), which also removes the libzstd
-   requirement from the test path. This makes the smoke hermetic and is the
-   cleanest upstream story.
-2. Make the CBQ smoke **skip** when no encoder is found (already the pattern),
-   and document the encoder as an optional dev dependency. Weaker — leaves the
-   feature effectively untested in upstream CI.
-
-Recommendation: ship option 1 (vendored writer) with the PR; it is the only way
-the CBQ path is actually gated in an upstream checkout.
+An upstream PR cannot depend on STAR-suite or a floating `bqtools`. Vendor the
+order-preserving C++ CBQ v1 writer source under `tests/` and build it as part of
+the smoke target. This is the only acceptable path for a gated upstream checkout:
+the test writer is local source, emits the exact block layout `cbq_reader.cc`
+parses, appends the CBQINDEX footer used by the indexed producer, and preserves
+read/barcode lane order across blocks.
 
 ### Alignment contract (carry into PR docs)
 

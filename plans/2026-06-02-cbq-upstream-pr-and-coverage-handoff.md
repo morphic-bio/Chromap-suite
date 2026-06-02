@@ -67,6 +67,17 @@ The one place input source legitimately leaks into BAM is `--read-group auto`,
 whose RG ID derives from the input filename via `ReadGroupSourcePath()` (the
 `.cbq` path for CBQ vs the `.fastq` path for FASTQ) — expected, not a bug.
 
+**Scope note — ChIP and peak calling.** "ChIP" here means ChIP read
+**mapping/alignment** only (`--preset chip` → BED/BAM/TagAlign); CBQ feeds the
+same loader, so it is an alignment-parity case. The libMACS3 port is a
+**fragment-based ATAC narrow-peak pipeline** (`macs3_frag_peak_pipeline` /
+`bdgpeakcall` / `FragmentIterator`); it does **not** implement ChIP-seq peak
+calling (no treatment-vs-control, no `build_model`/`predictd`). Do **not** add a
+ChIP `--call-macs3-frag-peaks` case to the modality matrix — that combination is
+not supported. Peak calling stays ATAC-only (bulk via
+`--macs3-frag-peaks-source memory`, scATAC via barcoded fragments), and is
+Chromap-suite-only (not part of the upstream PR).
+
 ## Key facts and gotchas
 
 ### Upstream forks (for the PR)
@@ -94,10 +105,9 @@ whose RG ID derives from the input filename via `ReadGroupSourcePath()` (the
 - The CBQ v1 block layout the reader expects is fully specified by the parser in
   `src/cbq_reader.cc` (`ParseFileHeader` 64-byte header; `ParseBlockHeader`
   96-byte block header; 7 zstd columns: `z_seq_len, z_header_len, z_npos, z_seq,
-  z_flags, z_headers, z_qual`; uncompressed columns are accepted — `Decompress`
-  validates size, and the reader handles uncompressed input). A vendored writer
-  emitting **uncompressed** columns is sufficient and removes the libzstd
-  runtime requirement from the test path.
+  z_flags, z_headers, z_qual`, plus an optional `CBQINDEX` footer). The vendored
+  test writer should emit this layout directly and stay in-tree; compressed CBQ
+  decoding requires the same `libzstd` runtime that production CBQ input uses.
 
 ### Alignment contract
 
@@ -108,7 +118,7 @@ per-record name match and rejects headerless barcoded input).
 ### Runtime dependency
 
 The reader `dlopen`s `libzstd.so.1`/`libzstd.so`; the only build change needed
-is `-ldl`. Uncompressed CBQ needs no libzstd at run time.
+is `-ldl`. Compressed CBQ requires libzstd at run time.
 
 ### Test fixtures
 
@@ -121,9 +131,9 @@ is `-ldl`. Uncompressed CBQ needs no libzstd at run time.
 
 ## Open work — acceptance criteria
 
-1. **Vendored CBQ writer** (`tests/` ): emits CBQ v1 (uncompressed columns OK)
-   matching `cbq_reader.cc`; round-trips through `chromap --input-format cbq`
-   with FASTQ parity; no STAR-suite / `bqtools` dependency.
+1. **Vendored CBQ writer** (`tests/` ): emits CBQ v1 matching
+   `cbq_reader.cc`; round-trips through `chromap --input-format cbq` with FASTQ
+   parity; no STAR-suite / `bqtools` dependency.
 2. **Modality smoke extended**: `run_cbq_modality_matrix.sh` uses the vendored
    writer (drops the external-encoder skip), and adds positive cases for Hi-C
    `--pairs`, `--emit-Y-noY-fastq`, non-ATAC **bulk-paired BAM** and **ChIP BAM**
@@ -168,10 +178,9 @@ Existing gates (`test-cbq-atac-smoke`, `test-cbq-atac-100k`,
 >
 > Deliver, each verified and committed on your branch:
 >
-> 1. **A vendored, self-contained CBQ v1 writer under `tests/`** (Python or a
->    tiny C++ tool) that emits the exact block layout `src/cbq_reader.cc`
->    parses. Uncompressed columns are fine (the reader accepts them; this also
->    avoids the libzstd test dependency). Prove it: encode a small FASTQ pair +
+> 1. **A vendored, self-contained C++ CBQ v1 writer under `tests/`** that emits
+>    the exact block layout `src/cbq_reader.cc` parses and preserves input
+>    record order across blocks. Prove it: encode a small FASTQ pair +
 >    barcode, run `chromap --input-format cbq`, and show byte-identical (sorted)
 >    fragments vs the FASTQ baseline. It must NOT depend on STAR-suite or
 >    `bqtools`.
