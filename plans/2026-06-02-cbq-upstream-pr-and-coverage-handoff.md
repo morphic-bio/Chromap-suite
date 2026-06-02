@@ -59,7 +59,13 @@ paired-end modalities on `master`. Four things remain:
 CBQ is a FASTQ drop-in with byte-identical (sorted) parity for scATAC
 BED/BAM-dual/TagAlign/SAM, bulk ATAC, ChIP; Hi-C `--pairs` produces a valid
 `.pairs` file; `--emit-Y-noY-fastq` emits Y/noY mate FASTQs; an unpaired
-(1-mate) CBQ passed as `--read-pair-cbq` is rejected at open.
+(1-mate) CBQ passed as `--read-pair-cbq` is rejected at open. Non-ATAC BAM/CRAM
+output also works: bulk-paired `--BAM` and ChIP `--BAM` produce alignment
+records byte-identical to FASTQ (chromap `@SQ`/`@PG` headers match; no `@RG`
+unless `--read-group` is given), and bulk `--CRAM` passes `samtools quickcheck`.
+The one place input source legitimately leaks into BAM is `--read-group auto`,
+whose RG ID derives from the input filename via `ReadGroupSourcePath()` (the
+`.cbq` path for CBQ vs the `.fastq` path for FASTQ) — expected, not a bug.
 
 ## Key facts and gotchas
 
@@ -120,7 +126,10 @@ is `-ldl`. Uncompressed CBQ needs no libzstd at run time.
    with FASTQ parity; no STAR-suite / `bqtools` dependency.
 2. **Modality smoke extended**: `run_cbq_modality_matrix.sh` uses the vendored
    writer (drops the external-encoder skip), and adds positive cases for Hi-C
-   `--pairs` and `--emit-Y-noY-fastq`, plus the read/barcode count-mismatch
+   `--pairs`, `--emit-Y-noY-fastq`, non-ATAC **bulk-paired BAM** and **ChIP BAM**
+   (record-level parity via `samtools view`, not just the ATAC fragments TSV),
+   **CRAM**, and a **`--read-group auto`** case (assert the RG ID derives from
+   the CBQ filename as designed), plus the read/barcode count-mismatch
    rejection. All CBQ==FASTQ on both front-ends; all rejections exit non-zero
    with the documented message and no crash.
 3. **Audit of parallel CBQ code**: adversarial correctness + memory-safety review
@@ -169,10 +178,13 @@ Existing gates (`test-cbq-atac-smoke`, `test-cbq-atac-100k`,
 >
 > 2. **Extend `tests/run_cbq_modality_matrix.sh`** to use the vendored writer
 >    (remove the external-encoder skip) and add committed positive cases for
->    Hi-C `--pairs` and `--emit-Y-noY-fastq`, plus a read/barcode count-mismatch
->    rejection case. Every positive case compares CBQ vs FASTQ on both `chromap`
->    and `chromap_lib_runner`; every rejection asserts non-zero exit, the
->    documented message, and no crash/OOM. Keep it hermetic.
+>    Hi-C `--pairs`, `--emit-Y-noY-fastq`, non-ATAC bulk-paired BAM and ChIP BAM
+>    (record-level parity via `samtools view`, not just the ATAC fragments TSV),
+>    CRAM, and a `--read-group auto` case (assert the RG ID derives from the CBQ
+>    filename as designed), plus a read/barcode count-mismatch rejection case.
+>    Every positive case compares CBQ vs FASTQ on both `chromap` and
+>    `chromap_lib_runner`; every rejection asserts non-zero exit, the documented
+>    message, and no crash/OOM. Keep it hermetic.
 >
 > 3. **Adversarially audit the parallel-agent CBQ code** added after the ATAC
 >    milestone — the diffs in commits `00d0910` (direct-buffer decode),
