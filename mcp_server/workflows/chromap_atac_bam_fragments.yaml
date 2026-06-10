@@ -6,6 +6,7 @@ entry_script: chromap
 supported_modes: ["local", "dry-run-capable"]
 caveats:
   - "The optional AEV1 sidecar requires --atac-fragments and BAM/CRAM output."
+  - "PROVENANCE-FIRST: for scATAC/multiome at scale, copy thread/memory/low-mem params from a known-good run at morphic-provenance/runs/<project>/ (e.g. nw_atac_seq_libmacs3, jax_multiome01); do not invent resource params."
 default_output_layout: "BAM/CRAM is written to --output; fragment rows are written to --atac-fragments; optional AEV1 sidecar output is written to --atac-fragment-binary-output plus <sidecar>.chroms.tsv."
 scripts:
   - role: entry
