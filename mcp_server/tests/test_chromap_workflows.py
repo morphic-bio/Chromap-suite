@@ -60,13 +60,37 @@ def test_atac_bam_fragments_renders_peak_options(loaded_default_config):
             "call_macs3_frag_peaks": True,
             "macs3_frag_peaks_output": "peaks.narrowPeak",
             "macs3_frag_summits_output": "summits.bed",
+            "macs3_frag_qvalue": 0.05,
             "macs3_frag_peaks_source": "memory",
         },
     )
     assert "--BAM" in result.argv
     assert "--atac-fragments" in result.argv
     assert "--call-macs3-frag-peaks" in result.argv
+    assert result.argv[result.argv.index("--macs3-frag-qvalue") + 1] == "0.05"
+    assert "--macs3-frag-pvalue" not in result.argv
     assert result.argv[result.argv.index("--macs3-frag-peaks-source") + 1] == "memory"
+
+
+def test_atac_bam_fragments_rejects_p_and_q_peak_thresholds(loaded_default_config):
+    result = validate_workflow_parameters(
+        "chromap_atac_bam_fragments",
+        {
+            "reference": "ref.fa",
+            "index": "ref.idx",
+            "read1": "r1.fastq.gz",
+            "read2": "r2.fastq.gz",
+            "barcode": "bc.fastq.gz",
+            "output": "out.bam",
+            "atac_fragments": "fragments.tsv.gz",
+            "macs3_frag_pvalue": 1e-5,
+            "macs3_frag_qvalue": 0.05,
+        },
+        check_paths=False,
+    )
+
+    assert not result.valid
+    assert any("Mutually exclusive" in error for error in result.errors)
 
 
 def test_atac_bam_fragments_renders_optional_sidecar(loaded_default_config):

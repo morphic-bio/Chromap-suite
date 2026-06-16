@@ -68,8 +68,12 @@ def test_atac_bam_fragments_recipe_exposes_sidecar_metadata():
     outputs = {output.name: output.path_template for output in recipe.outputs}
 
     assert "atac_fragment_binary_output" in input_names
+    assert "call_macs3_frag_peaks" in input_names
+    assert "macs3_frag_qvalue" in input_names
     assert outputs["fragments_binary_sidecar"] == "{atac_fragment_binary_output}"
     assert outputs["fragments_binary_chroms"] == "{atac_fragment_binary_output}.chroms.tsv"
+    assert outputs["peaks"] == "{macs3_frag_peaks_output}"
+    assert outputs["summits"] == "{macs3_frag_summits_output}"
 
 
 def test_planned_recipes_are_metadata_only():

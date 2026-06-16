@@ -9,6 +9,7 @@
 
 #include "libmacs3/frag_compact_store.h"
 #include "libmacs3/fragments.h"
+#include "libmacs3/macs3_frag_peak_pipeline.h"
 
 namespace chromap {
 
@@ -163,7 +164,10 @@ struct MappingParameters {
 
   std::string macs3_frag_peaks_narrowpeak_path;
   std::string macs3_frag_peaks_summits_path;
+  peaks::Macs3FragThresholdMode macs3_frag_threshold_mode =
+      peaks::Macs3FragThresholdMode::kPValue;
   double macs3_frag_pvalue = 1e-5;
+  double macs3_frag_qvalue = 0.0;
   int macs3_frag_min_length = 200;
   int macs3_frag_max_gap = 30;
   bool macs3_frag_uint8_counts = true;

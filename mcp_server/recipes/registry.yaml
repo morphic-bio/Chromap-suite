@@ -164,6 +164,38 @@ recipes:
         type: file
         required: false
         description: Optional AEV1 binary sidecar path; Chromap also writes <path>.chroms.tsv.
+      - name: call_macs3_frag_peaks
+        type: bool
+        required: false
+        default: false
+        description: Enable integrated libMACS3 FRAG peak calling.
+      - name: macs3_frag_peaks_output
+        type: file
+        required: false
+        description: Optional narrowPeak output path when integrated peak calling is enabled.
+      - name: macs3_frag_summits_output
+        type: file
+        required: false
+        description: Optional summits BED output path when integrated peak calling is enabled.
+      - name: macs3_frag_pvalue
+        type: float
+        required: false
+        description: p-value threshold for integrated FRAG peak calling; omit to use Chromap's default 1e-5.
+      - name: macs3_frag_qvalue
+        type: float
+        required: false
+        description: q-value/FDR threshold for integrated FRAG peak calling; mutually exclusive with macs3_frag_pvalue.
+      - name: macs3_frag_peaks_source
+        type: enum
+        required: false
+        default: file
+        choices: [file, memory]
+        description: Fragment source for integrated FRAG peak calling.
+      - name: macs3_frag_low_mem
+        type: bool
+        required: false
+        default: false
+        description: Use the low-memory libMACS3 sweep workspace for in-memory peak calling.
     outputs:
       - name: bam
         artifact_type: bam
@@ -183,6 +215,16 @@ recipes:
         path_template: "{atac_fragment_binary_output}.chroms.tsv"
         required: false
         description: Chromosome id/name metadata written with the AEV1 sidecar.
+      - name: peaks
+        artifact_type: peaks
+        path_template: "{macs3_frag_peaks_output}"
+        required: false
+        description: Optional integrated libMACS3 narrowPeak output.
+      - name: summits
+        artifact_type: peaks
+        path_template: "{macs3_frag_summits_output}"
+        required: false
+        description: Optional integrated libMACS3 summit BED output.
     preflight:
       - reference_fasta_exists
       - chromap_index_exists
@@ -190,6 +232,7 @@ recipes:
       - barcode_list_matches_read1
       - secondary_output_not_primary
       - atac_fragments_requires_barcoded_paired_bam
+      - macs3_threshold_valid
       - output_parent_trusted_or_creatable
     smoke_coverage:
       S0: C08_atac_bam_fragments in tests/run_libchromap_core_smoke.sh
@@ -205,6 +248,7 @@ recipes:
       - STAR Suite may consume fragments or derived evidence TSVs.
     notes:
       - Set atac_fragment_binary_output to render --atac-fragment-binary-output and produce the AEV1 sidecar plus .chroms.tsv metadata.
+      - Set call_macs3_frag_peaks plus narrowPeak/summits outputs to render integrated libMACS3 FRAG peak calling; macs3_frag_qvalue switches from default p-mode to q-mode.
 
   - id: chromap_hic_pairs
     title: Chromap Hi-C pairs
@@ -375,7 +419,7 @@ recipes:
     preflight:
       - macs3_peaks_output_required
       - macs3_summits_output_required
-      - macs3_pvalue_positive
+      - macs3_threshold_valid
     smoke_coverage:
       S2: test-peak-memory-source-100k and related 100K gates.
     docs:

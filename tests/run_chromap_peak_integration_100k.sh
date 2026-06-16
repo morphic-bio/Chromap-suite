@@ -43,9 +43,12 @@ bed3_from_narrow() {
 
 main() {
   if [[ -z "${OUTDIR}" ]]; then
-    OUTDIR="$(mktemp -d /tmp/chromap_peak_integration_100k.XXXXXX)"
+    artifact_root="${CHROMAP_ARTIFACT_ROOT:-${REPO_ROOT}/plans/artifacts}"
+    run_id="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+    OUTDIR="${artifact_root}/chromap_peak_integration_100k/${run_id}"
   fi
-  mkdir -p "${OUTDIR}/baseline" "${OUTDIR}/integrated" "${OUTDIR}/standalone_ref" "${OUTDIR}/logs"
+  mkdir -p "${OUTDIR}/baseline" "${OUTDIR}/integrated" "${OUTDIR}/qmode" \
+    "${OUTDIR}/standalone_ref" "${OUTDIR}/logs"
   local log="${OUTDIR}/integration_harness.log"
   log_msg() { echo "$@" | tee -a "${log}"; }
 
@@ -108,6 +111,33 @@ main() {
     exit 1
   fi
 
+  log_msg "[5q] Dual ATAC + q-mode MACS3 FRAG peaks"
+  "${CHROMAP}" "${chromap_common_args[@]}" \
+    --atac-fragments "${OUTDIR}/qmode/fragments.tsv.gz" \
+    --summary "${OUTDIR}/qmode/summary.tsv" \
+    -o "${OUTDIR}/qmode/possorted_bam.bam" \
+    --call-macs3-frag-peaks \
+    --macs3-frag-peaks-output "${OUTDIR}/qmode/chromap_macs3_frag_q005.narrowPeak" \
+    --macs3-frag-summits-output "${OUTDIR}/qmode/chromap_macs3_frag_q005_summits.bed" \
+    --macs3-frag-qvalue 0.05 \
+    --macs3-frag-min-length "${MINLEN}" \
+    --macs3-frag-max-gap "${MAXGAP}" \
+    >>"${log}" 2>&1
+
+  if [[ ! -s "${OUTDIR}/qmode/chromap_macs3_frag_q005.narrowPeak" ||
+        ! -s "${OUTDIR}/qmode/chromap_macs3_frag_q005_summits.bed" ]]; then
+    echo "FAIL: q-mode integrated MACS3 FRAG outputs are empty" >&2
+    exit 1
+  fi
+  if ! grep -q $'macs3_frag_threshold_mode\tqvalue' \
+      "${OUTDIR}/qmode/summary.tsv.macs3_frag_peaks.tsv" ||
+     ! grep -q $'macs3_frag_qvalue\t0.05' \
+      "${OUTDIR}/qmode/summary.tsv.macs3_frag_peaks.tsv"; then
+    echo "FAIL: q-mode sidecar did not record q-value threshold metadata" >&2
+    cat "${OUTDIR}/qmode/summary.tsv.macs3_frag_peaks.tsv" >&2
+    exit 1
+  fi
+
   local summary_tsv="${OUTDIR}/integration_summary.tsv"
   local macs3_note="skipped_RUN_MACS3_0"
   local bed3_id="na"
@@ -153,6 +183,10 @@ main() {
     echo "fragments_unchanged_vs_baseline	true"
     echo "integrated_matches_standalone_cpp_narrowPeak	true"
     echo "integrated_matches_standalone_cpp_summits	true"
+    echo "qmode_qvalue	0.05"
+    echo "qmode_narrowpeak	${OUTDIR}/qmode/chromap_macs3_frag_q005.narrowPeak"
+    echo "qmode_summits	${OUTDIR}/qmode/chromap_macs3_frag_q005_summits.bed"
+    echo "qmode_sidecar_tsv	${OUTDIR}/qmode/summary.tsv.macs3_frag_peaks.tsv"
     echo "macs3_bed3_check	${macs3_note}"
     echo "bed3_sorted_identity	${bed3_id}"
     echo "jaccard_bed3	${jac}"

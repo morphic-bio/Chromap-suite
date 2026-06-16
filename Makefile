@@ -86,7 +86,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
 	 test-encode-cbq-cross-assay-smoke \
-	 test-peak-memory-source-100k \
+	 test-peak-memory-source-100k test-macs3-frag-qvalue-cli \
 	benchmark-peak-memory-fullset test-peak-100k test-peak-calibration-100k \
 	test-peak-input-repr-100k test-peak-pileup-100k test-peak-frag-pileup-100k \
 	test-peak-lambda-100k test-peak-score-100k test-peak-bdgpeakcall-100k \
@@ -154,7 +154,8 @@ test-lowmem-bed-100k: chromap
 # Cheap smoke bundle: unit + frag_compact_store + the two integration
 # matrices that cover the chromap+MACS3 integration surface end-to-end.
 # ~3 min total; suitable for pre-commit CI.
-test-smoke: test-unit test-frag-compact-store test-atac-spill-record-roundtrip \
+test-smoke: test-unit test-frag-compact-store test-macs3-frag-qvalue-cli \
+            test-atac-spill-record-roundtrip \
             test-lowmem-bed-100k \
             test-peak-integration-matrix-100k
 
@@ -222,6 +223,10 @@ test-cbq-atac-100k: chromap chromap_lib_runner tests/cbq_ordered_encoder
 # under CHROMAP_ARTIFACT_ROOT (default: plans/artifacts).
 test-libchromap-core-smoke: chromap chromap_lib_runner
 	./tests/run_libchromap_core_smoke.sh
+
+# Lightweight parser smoke for the MACS3 FRAG p/q threshold flags.
+test-macs3-frag-qvalue-cli: chromap
+	bash ./tests/test_macs3_frag_qvalue_cli.sh
 
 # Optional real-data smoke. Requires CHROMAP_GRCH38_REF and
 # CHROMAP_GRCH38_INDEX; downloads require ENCODE_ALLOW_DOWNLOAD=1.

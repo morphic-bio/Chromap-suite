@@ -311,6 +311,44 @@ Summarize the mapping statistics at bulk or barcode level.
 .B -v
 Print version number to stdout.
 
+.SS MACS3 FRAG peaks (opt-in)
+.TP 10
+.BR --call-macs3-frag-peaks
+After mapping, run integrated libMACS3 FRAG narrowPeak and summit calling.
+.TP
+.BI --macs3-frag-peaks-output \ FILE
+narrowPeak path for
+.BR --call-macs3-frag-peaks .
+.TP
+.BI --macs3-frag-summits-output \ FILE
+Summits BED path for
+.BR --call-macs3-frag-peaks .
+.TP
+.BI --macs3-frag-pvalue \ FLT
+Raw p-value threshold, matching
+.BR "macs3 callpeak -p" .
+Default is 1e-5.
+.TP
+.BI --macs3-frag-qvalue \ FLT
+Raw q-value/FDR threshold, matching
+.BR "macs3 callpeak -q" .
+Switches integrated FRAG peak calling to qscore region selection and is
+mutually exclusive with an explicit
+.BR --macs3-frag-pvalue .
+.TP
+.BI --macs3-frag-min-length \ INT
+bdgpeakcall minimum peak length [200].
+.TP
+.BI --macs3-frag-max-gap \ INT
+bdgpeakcall maximum merge gap [30].
+.TP
+.BI --macs3-frag-peaks-source \ STR
+Fragment source for peak calling: file or memory [file].
+.TP
+.BR --macs3-frag-low-mem
+Use the sweep-line low-memory libMACS3 workspace for in-memory FRAG peak
+calling.
+
 .SS Preset options
 .TP 10
 .BI --preset \ STR

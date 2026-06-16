@@ -15,7 +15,7 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 ### Core capabilities
 
 - **Native BAM output + coordinate sort** (`--BAM --sort-bam --write-index`). Replaces the conventional `chromap | samtools sort | samtools index` chain via htslib + a *k*-way disk-merge spillover. Produces `@HD VN:1.6 SO:coordinate` headers and `.bam.bai` indexes in one process. Sort key: `(tid, pos, flag, mtid, mpos, isize)` with `read_id` tie-break (note: differs from `samtools sort` QNAME tie-break). See [`docs/sort_spec.md`](docs/sort_spec.md). Compatible with `--low-mem`.
-- **In-process libMACS3 narrow peak calling** (`--call-macs3-frag-peaks`). Fragments are handed to `libMACS3` through the `FragmentIterator` API without an intermediate `fragments.tsv.gz` write, so a single chromap invocation produces sorted-and-indexed BAM, fragments, and MACS3-equivalent narrowPeak and summit outputs. Bulk ATAC supported via `--macs3-frag-peaks-source memory` (no barcode required); scATAC/multiomic via barcoded fragments. Output is byte-identical to standalone MACS3 v3.0.3 (50,274 peaks, md5 `34f9f991…` on the 3K PBMC ATAC channel).
+- **In-process libMACS3 narrow peak calling** (`--call-macs3-frag-peaks`). Fragments are handed to `libMACS3` through the `FragmentIterator` API without an intermediate `fragments.tsv.gz` write, so a single chromap invocation produces sorted-and-indexed BAM, fragments, and MACS3-equivalent narrowPeak and summit outputs. The default threshold remains MACS-style p-mode (`--macs3-frag-pvalue 1e-5`); `--macs3-frag-qvalue Q` switches to q-value/FDR thresholding for `macs3 callpeak -q` compatibility. Bulk ATAC supported via `--macs3-frag-peaks-source memory` (no barcode required); scATAC/multiomic via barcoded fragments. Output is byte-identical to standalone MACS3 v3.0.3 in the default p-mode path (50,274 peaks, md5 `34f9f991…` on the 3K PBMC ATAC channel).
 - **Y-chromosome filtering** (`--emit-Y-bam`, `--emit-noY-bam`, `--emit-Y-noY-fastq`, `--emit-Y-read-names`). Three-stream output (all / Y-only / noY) for sex-aware analyses. Works with `--sort-bam`. Detection is case-insensitive and matches `Y`, `chrY`, `CHR_Y`, `chr_y`; decoy/random/alt contigs (`chrY_random`, etc.) are intentionally excluded. See the [Y-chromosome filtering](#y-chromosome-filtering) section below.
 - **`libchromap.a` callable library**. The full Chromap Suite ATAC pipeline is exposed through the `libchromap` API (`RunAtacMapping()`, `ChromapAtacConfig`, `ChromapPermitHooks`). The same library backs the `chromap` CLI binary and is the integration point used by STAR Suite for multiomic processing. See [`src/libchromap.h`](src/libchromap.h) and [`src/libchromap.cc`](src/libchromap.cc).
 - **`--Tn5-shift-mode {classical|symmetric}`** picks the Tn5 cut-site offset convention on BED/BEDPE/PAF. `classical` (`+4 / -5`; Buenrostro 2013 / Cell Ranger ARC) is the default; `symmetric` (`+4 / -4`; ChromBPNet) is the alternative. Implies `--Tn5-shift`. Active offsets are echoed at startup. SAM/BAM output remains intentionally unshifted (shifting would require coordinated edits to `POS`, `MPOS`, `TLEN`, `CIGAR`, `NM`, `MD`).
@@ -98,6 +98,10 @@ chromap ... --BAM --sort-bam --write-index \
   --call-macs3-frag-peaks \
   -o possorted.bam
 ```
+
+Use `--macs3-frag-qvalue 0.05` on the integrated path, or
+`MACS3_QVALUE=0.05` in the benchmark scripts, when comparing against workflows
+that use MACS `-q` semantics.
 
 The baseline uses unfixed upstream Chromap `0.3.3-r519` and standalone MACS3
 v3.0.3. The integrated path uses Chromap Suite `0.3.3-r519`. Both normal and

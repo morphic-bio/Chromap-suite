@@ -44,9 +44,19 @@ RESUME_EXISTING="${RESUME_EXISTING:-0}"
 RESUME_COMPARISONS="${RESUME_COMPARISONS:-0}"
 
 MACS3_PVALUE="${MACS3_PVALUE:-1e-5}"
+MACS3_QVALUE="${MACS3_QVALUE:-}"
 GENOME_SIZE="${GENOME_SIZE:-hs}"
 MACS3_MIN_LENGTH="${MACS3_MIN_LENGTH:-200}"
 MACS3_MAX_GAP="${MACS3_MAX_GAP:-30}"
+
+MACS3_THRESHOLD_MODE="pvalue"
+macs3_threshold_args=(-p "${MACS3_PVALUE}")
+chromap_suite_threshold_args=(--macs3-frag-pvalue "${MACS3_PVALUE}")
+if [[ -n "${MACS3_QVALUE}" ]]; then
+  MACS3_THRESHOLD_MODE="qvalue"
+  macs3_threshold_args=(-q "${MACS3_QVALUE}")
+  chromap_suite_threshold_args=(--macs3-frag-qvalue "${MACS3_QVALUE}")
+fi
 
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-${REPO_ROOT}/plans/artifacts/libmacs3_chromap_atac_panel}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -283,7 +293,9 @@ write_static_metadata() {
     printf 'benchmark_note\t%s\n' "${BENCHMARK_NOTE}"
     printf 'resume_existing\t%s\n' "${RESUME_EXISTING}"
     printf 'resume_comparisons\t%s\n' "${RESUME_COMPARISONS}"
+    printf 'macs3_threshold_mode\t%s\n' "${MACS3_THRESHOLD_MODE}"
     printf 'macs3_pvalue\t%s\n' "${MACS3_PVALUE}"
+    printf 'macs3_qvalue\t%s\n' "${MACS3_QVALUE:-na}"
     printf 'macs3_genome_size\t%s\n' "${GENOME_SIZE}"
     printf 'macs3_min_length\t%s\n' "${MACS3_MIN_LENGTH}"
     printf 'macs3_max_gap\t%s\n' "${MACS3_MAX_GAP}"
@@ -431,7 +443,7 @@ run_mode() {
         -t "${original_dir}/fragments.tsv" \
         -f FRAG -g "${GENOME_SIZE}" \
         -n original_chromap_macs3 \
-        -p "${MACS3_PVALUE}" \
+        "${macs3_threshold_args[@]}" \
         --min-length "${MACS3_MIN_LENGTH}" \
         --max-gap "${MACS3_MAX_GAP}" \
         --outdir "${original_dir}/macs3"; then
@@ -450,6 +462,7 @@ run_mode() {
     --call-macs3-frag-peaks
     --macs3-frag-peaks-output "${suite_dir}/chromap_suite_libmacs3_peaks.narrowPeak"
     --macs3-frag-summits-output "${suite_dir}/chromap_suite_libmacs3_summits.bed"
+    "${chromap_suite_threshold_args[@]}"
     -o "${suite_dir}/possorted.bam"
   )
   if "${CHROMAP_SUITE}" --help 2>&1 | grep -q -- '--temp-dir'; then

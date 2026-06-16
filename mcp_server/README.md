@@ -121,6 +121,10 @@ real execution.
 For `chromap_atac_bam_fragments`, set `atac_fragment_binary_output` to render
 `--atac-fragment-binary-output`. Expected outputs and manifests then include
 both the AEV1 binary file and the generated `<sidecar>.chroms.tsv` metadata.
+When integrated MACS3 FRAG peaks are enabled, the workflow defaults to
+`--macs3-frag-pvalue 1e-5`; set `macs3_frag_qvalue` to render
+`--macs3-frag-qvalue` instead. Manifests record the selected
+`macs3_frag_threshold` mode and value.
 
 ## Test Tiers
 
