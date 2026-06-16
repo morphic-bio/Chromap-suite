@@ -502,6 +502,54 @@ pairs flipping.</p>
 </td></tr>
 </table>
 
+<p style="margin-left:11%; margin-top: 1em"><b>MACS3 FRAG peaks
+(opt-in)</b></p>
+
+<p style="margin-left:11%;"><b>--call-macs3-frag-peaks</b></p>
+
+<p style="margin-left:26%;">After mapping, run integrated libMACS3 FRAG
+narrowPeak and summit calling.</p>
+
+<p style="margin-left:11%;"><b>--macs3-frag-peaks-output&nbsp;</b><i>FILE</i></p>
+
+<p style="margin-left:26%;">narrowPeak path for
+<b>--call-macs3-frag-peaks</b>.</p>
+
+<p style="margin-left:11%;"><b>--macs3-frag-summits-output&nbsp;</b><i>FILE</i></p>
+
+<p style="margin-left:26%;">Summits BED path for
+<b>--call-macs3-frag-peaks</b>.</p>
+
+<p style="margin-left:11%;"><b>--macs3-frag-pvalue&nbsp;</b><i>FLT</i></p>
+
+<p style="margin-left:26%;">Raw p-value threshold, matching
+<b>macs3 callpeak -p</b>. Default is 1e-5.</p>
+
+<p style="margin-left:11%;"><b>--macs3-frag-qvalue&nbsp;</b><i>FLT</i></p>
+
+<p style="margin-left:26%;">Raw q-value/FDR threshold, matching
+<b>macs3 callpeak -q</b>. Switches integrated FRAG peak calling to qscore
+region selection and is mutually exclusive with an explicit
+<b>--macs3-frag-pvalue</b>.</p>
+
+<p style="margin-left:11%;"><b>--macs3-frag-min-length&nbsp;</b><i>INT</i></p>
+
+<p style="margin-left:26%;">bdgpeakcall minimum peak length [200].</p>
+
+<p style="margin-left:11%;"><b>--macs3-frag-max-gap&nbsp;</b><i>INT</i></p>
+
+<p style="margin-left:26%;">bdgpeakcall maximum merge gap [30].</p>
+
+<p style="margin-left:11%;"><b>--macs3-frag-peaks-source&nbsp;</b><i>STR</i></p>
+
+<p style="margin-left:26%;">Fragment source for peak calling: file or memory
+[file].</p>
+
+<p style="margin-left:11%;"><b>--macs3-frag-low-mem</b></p>
+
+<p style="margin-left:26%;">Use the sweep-line low-memory libMACS3 workspace
+for in-memory FRAG peak calling.</p>
+
 <p style="margin-left:11%; margin-top: 1em"><b>Preset
 options <br>
 --preset&nbsp;</b><i>STR</i></p>

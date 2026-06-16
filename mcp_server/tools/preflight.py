@@ -302,26 +302,65 @@ def _check_macs3_required_path(rule_id: str, params: dict[str, Any], key: str) -
     return _check(rule_id, "pass", f"{key} is set", path=str(params[key]))
 
 
-def _check_macs3_pvalue_positive(params: dict[str, Any]) -> RecipePreflightCheck:
-    raw = params.get("macs3_frag_pvalue", params.get("pvalue", 0.01))
+def _check_macs3_threshold_valid(params: dict[str, Any]) -> RecipePreflightCheck:
+    p_keys = ("macs3_frag_pvalue", "macs3_pvalue", "pvalue")
+    q_keys = ("macs3_frag_qvalue", "macs3_qvalue", "qvalue")
+    p_supplied = [key for key in p_keys if params.get(key) not in (None, "")]
+    q_supplied = [key for key in q_keys if params.get(key) not in (None, "")]
+    if p_supplied and q_supplied:
+        return _check(
+            "macs3_threshold_valid",
+            "fail",
+            "MACS3 FRAG p-value and q-value thresholds are mutually exclusive",
+            suggested_fix="Provide either macs3_frag_pvalue or macs3_frag_qvalue, not both.",
+            pvalue_param=p_supplied[0],
+            qvalue_param=q_supplied[0],
+        )
+    mode = "qvalue" if q_supplied else "pvalue"
+    if q_supplied:
+        raw = params.get(q_supplied[0])
+    elif p_supplied:
+        raw = params.get(p_supplied[0], 1e-5)
+    else:
+        raw = 1e-5
     try:
         value = float(raw)
     except (TypeError, ValueError):
         return _check(
-            "macs3_pvalue_positive",
+            "macs3_threshold_valid",
             "fail",
-            f"MACS3 p-value is not numeric: {raw}",
-            suggested_fix="Use a positive numeric p-value.",
+            f"MACS3 FRAG {mode} threshold is not numeric: {raw}",
+            suggested_fix=f"Use a numeric {mode} threshold in (0, 1].",
+            threshold_mode=mode,
         )
-    if value <= 0:
+    if value <= 0 or value > 1:
         return _check(
-            "macs3_pvalue_positive",
+            "macs3_threshold_valid",
             "fail",
-            "MACS3 p-value must be positive",
-            suggested_fix="Use a p-value greater than 0.",
+            f"MACS3 FRAG {mode} threshold must be in (0, 1]",
+            suggested_fix=f"Use a {mode} threshold greater than 0 and at most 1.",
+            threshold_mode=mode,
             value=value,
         )
-    return _check("macs3_pvalue_positive", "pass", "MACS3 p-value is positive", value=value)
+    return _check(
+        "macs3_threshold_valid",
+        "pass",
+        f"MACS3 FRAG threshold is valid ({mode})",
+        threshold_mode=mode,
+        value=value,
+    )
+
+
+def _check_macs3_pvalue_positive(params: dict[str, Any]) -> RecipePreflightCheck:
+    result = _check_macs3_threshold_valid(params)
+    return _check(
+        "macs3_pvalue_positive",
+        result.status,
+        result.message,
+        result.path,
+        result.suggested_fix,
+        **result.details,
+    )
 
 
 def _check_y_noy_requires_sam_bam_cram(params: dict[str, Any]) -> RecipePreflightCheck:
@@ -415,6 +454,8 @@ def _run_recipe_rule(recipe: RecipeEntry, params: dict[str, Any], rule_id: str) 
         return _check_macs3_required_path(rule_id, params, "macs3_frag_peaks_output")
     if rule_id == "macs3_summits_output_required":
         return _check_macs3_required_path(rule_id, params, "macs3_frag_summits_output")
+    if rule_id == "macs3_threshold_valid":
+        return _check_macs3_threshold_valid(params)
     if rule_id == "macs3_pvalue_positive":
         return _check_macs3_pvalue_positive(params)
     if rule_id == "y_noy_requires_sam_bam_cram":

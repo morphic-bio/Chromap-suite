@@ -237,6 +237,11 @@ void AddMacs3FragPeakOptions(cxxopts::Options &options) {
       "macs3-frag-pvalue",
       "Raw p-value gate like macs3 callpeak -p; bdgpeakcall cutoff = -log10(p) [1e-5]",
       cxxopts::value<double>()->default_value("1e-5"), "FLT")(
+      "macs3-frag-qvalue",
+      "Raw q-value/FDR gate like macs3 callpeak -q; switches FRAG peak calling "
+      "to qscore threshold mode and is mutually exclusive with explicit "
+      "--macs3-frag-pvalue",
+      cxxopts::value<double>(), "FLT")(
       "macs3-frag-min-length", "bdgpeakcall min length [200]",
       cxxopts::value<int>()->default_value("200"), "INT")(
       "macs3-frag-max-gap", "bdgpeakcall max gap [30]",
@@ -424,11 +429,18 @@ std::string DeriveSecondaryOutputPath(const std::string &primary_path,
   return primary_path + suffix + ".sam";
 }
 
+const char* Macs3FragThresholdModeName(
+    chromap::peaks::Macs3FragThresholdMode mode) {
+  return mode == chromap::peaks::Macs3FragThresholdMode::kQValue ? "qvalue"
+                                                                 : "pvalue";
+}
+
 void WriteMacs3FragPeakSidecar(
     const std::string &summary_path, const std::string &fragments_path,
     const std::string &narrow_path, const std::string &summits_path,
     const std::string &temp_work_dir_used, const std::string &keep_intermediates,
-    double pvalue, int min_len, int max_gap, bool uint8_counts,
+    chromap::peaks::Macs3FragThresholdMode threshold_mode, double pvalue,
+    double qvalue, int min_len, int max_gap, bool uint8_counts,
     const std::string &fragments_source,
     const std::string &memory_storage_mode_label) {
   if (summary_path.empty()) {
@@ -450,10 +462,20 @@ void WriteMacs3FragPeakSidecar(
   }
   std::fprintf(fp, "narrowpeak_out\t%s\n", narrow_path.c_str());
   std::fprintf(fp, "summits_out\t%s\n", summits_path.c_str());
-  std::fprintf(fp, "macs3_frag_pvalue\t%.10g\n", pvalue);
-  std::fprintf(fp, "bdgpeakcall_cutoff_neg_log10_p\t%.10g\n",
-               static_cast<double>(
-                   chromap::peaks::BdgPeakCallCutoffFromPValue(pvalue)));
+  std::fprintf(fp, "macs3_frag_threshold_mode\t%s\n",
+               Macs3FragThresholdModeName(threshold_mode));
+  if (threshold_mode == chromap::peaks::Macs3FragThresholdMode::kQValue) {
+    std::fprintf(fp, "macs3_frag_threshold_value\t%.10g\n", qvalue);
+    std::fprintf(fp, "macs3_frag_qvalue\t%.10g\n", qvalue);
+    std::fprintf(fp, "bdgpeakcall_cutoff_neg_log10_q\t%.10g\n",
+                 -std::log10(qvalue));
+  } else {
+    std::fprintf(fp, "macs3_frag_threshold_value\t%.10g\n", pvalue);
+    std::fprintf(fp, "macs3_frag_pvalue\t%.10g\n", pvalue);
+    std::fprintf(fp, "bdgpeakcall_cutoff_neg_log10_p\t%.10g\n",
+                 static_cast<double>(
+                     chromap::peaks::BdgPeakCallCutoffFromPValue(pvalue)));
+  }
   std::fprintf(fp, "macs3_frag_min_length\t%d\n", min_len);
   std::fprintf(fp, "macs3_frag_max_gap\t%d\n", max_gap);
   std::fprintf(fp, "macs3_uint8_counts\t%d\n", uint8_counts ? 1 : 0);
@@ -498,6 +520,14 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
   if (result.count("v")) {
     std::cerr << CHROMAP_VERSION << "\n";
     return;
+  }
+  const bool macs3_frag_pvalue_explicit =
+      result.count("macs3-frag-pvalue") > 0;
+  const bool macs3_frag_qvalue_explicit =
+      result.count("macs3-frag-qvalue") > 0;
+  if (macs3_frag_pvalue_explicit && macs3_frag_qvalue_explicit) {
+    chromap::ExitWithMessage(
+        "--macs3-frag-pvalue and --macs3-frag-qvalue are mutually exclusive");
   }
   // Parameters and their default
   IndexParameters index_parameters;
@@ -932,6 +962,12 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
           result["macs3-frag-summits-output"].as<std::string>();
     }
     mapping_parameters.macs3_frag_pvalue = result["macs3-frag-pvalue"].as<double>();
+    if (macs3_frag_qvalue_explicit) {
+      mapping_parameters.macs3_frag_threshold_mode =
+          chromap::peaks::Macs3FragThresholdMode::kQValue;
+      mapping_parameters.macs3_frag_qvalue =
+          result["macs3-frag-qvalue"].as<double>();
+    }
     mapping_parameters.macs3_frag_min_length =
         result["macs3-frag-min-length"].as<int>();
     mapping_parameters.macs3_frag_max_gap = result["macs3-frag-max-gap"].as<int>();
@@ -1099,14 +1135,25 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
             "--call-macs3-frag-peaks requires --macs3-frag-peaks-output and "
             "--macs3-frag-summits-output");
       }
-      if (mapping_parameters.macs3_frag_pvalue <= 0.0 ||
-          mapping_parameters.macs3_frag_pvalue > 1.0) {
-        chromap::ExitWithMessage(
-            "--macs3-frag-pvalue must be in (0, 1] (macs3 callpeak -p semantics)");
-      }
-      if (chromap::peaks::BdgPeakCallCutoffFromPValue(
-              mapping_parameters.macs3_frag_pvalue) <= 0.f) {
-        chromap::ExitWithMessage("Invalid --macs3-frag-pvalue for bdgpeakcall cutoff");
+      if (mapping_parameters.macs3_frag_threshold_mode ==
+          chromap::peaks::Macs3FragThresholdMode::kQValue) {
+        if (std::isnan(mapping_parameters.macs3_frag_qvalue) ||
+            mapping_parameters.macs3_frag_qvalue <= 0.0 ||
+            mapping_parameters.macs3_frag_qvalue > 1.0) {
+          chromap::ExitWithMessage(
+              "--macs3-frag-qvalue must be in (0, 1] (macs3 callpeak -q semantics)");
+        }
+      } else {
+        if (std::isnan(mapping_parameters.macs3_frag_pvalue) ||
+            mapping_parameters.macs3_frag_pvalue <= 0.0 ||
+            mapping_parameters.macs3_frag_pvalue > 1.0) {
+          chromap::ExitWithMessage(
+              "--macs3-frag-pvalue must be in (0, 1] (macs3 callpeak -p semantics)");
+        }
+        if (chromap::peaks::BdgPeakCallCutoffFromPValue(
+                mapping_parameters.macs3_frag_pvalue) < 0.f) {
+          chromap::ExitWithMessage("Invalid --macs3-frag-pvalue for bdgpeakcall cutoff");
+        }
       }
       if (mapping_parameters.macs3_frag_min_length < 1 ||
           mapping_parameters.macs3_frag_max_gap < 0) {
@@ -1532,8 +1579,10 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         }
       }
       chromap::peaks::Macs3FragPeakPipelineParams pr;
+      pr.threshold_mode = mapping_parameters.macs3_frag_threshold_mode;
       pr.bdgpeakcall_cutoff = chromap::peaks::BdgPeakCallCutoffFromPValue(
           mapping_parameters.macs3_frag_pvalue);
+      pr.qvalue_cutoff = mapping_parameters.macs3_frag_qvalue;
       pr.min_length = mapping_parameters.macs3_frag_min_length;
       pr.max_gap = mapping_parameters.macs3_frag_max_gap;
       pr.macs3_uint8_counts = mapping_parameters.macs3_frag_uint8_counts;
@@ -1619,7 +1668,9 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
               : mapping_parameters.mapping_output_file_path,
           mapping_parameters.macs3_frag_peaks_narrowpeak_path,
           mapping_parameters.macs3_frag_peaks_summits_path, work_used, keep,
-          mapping_parameters.macs3_frag_pvalue, mapping_parameters.macs3_frag_min_length,
+          mapping_parameters.macs3_frag_threshold_mode,
+          mapping_parameters.macs3_frag_pvalue, mapping_parameters.macs3_frag_qvalue,
+          mapping_parameters.macs3_frag_min_length,
           mapping_parameters.macs3_frag_max_gap, mapping_parameters.macs3_frag_uint8_counts,
           fragments_source, mem_mode);
     }

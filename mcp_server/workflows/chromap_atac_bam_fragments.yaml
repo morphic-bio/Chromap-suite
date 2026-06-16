@@ -30,7 +30,7 @@ parameter_groups:
     parameters: [num_threads, hts_threads, mapq_threshold, max_insert_size, remove_pcr_duplicates, tn5_shift, temp_dir]
   - name: peaks
     title: MACS3 FRAG peaks
-    parameters: [call_macs3_frag_peaks, macs3_frag_peaks_output, macs3_frag_summits_output, macs3_frag_peaks_source, macs3_frag_low_mem]
+    parameters: [call_macs3_frag_peaks, macs3_frag_peaks_output, macs3_frag_summits_output, macs3_frag_pvalue, macs3_frag_qvalue, macs3_frag_peaks_source, macs3_frag_low_mem]
 parameters:
   - name: reference
     cli_flag: --ref
@@ -149,6 +149,19 @@ parameters:
     cli_flag: --macs3-frag-summits-output
     type: file
     description: Output summits BED path.
+  - name: macs3_frag_pvalue
+    cli_flag: --macs3-frag-pvalue
+    type: float
+    skip_when_default: true
+    min_value: 0
+    max_value: 1
+    description: Raw p-value threshold for integrated FRAG peak calling; omit to use Chromap's default 1e-5.
+  - name: macs3_frag_qvalue
+    cli_flag: --macs3-frag-qvalue
+    type: float
+    min_value: 0
+    max_value: 1
+    description: Raw q-value/FDR threshold for integrated FRAG peak calling.
   - name: macs3_frag_peaks_source
     cli_flag: --macs3-frag-peaks-source
     type: enum
@@ -175,8 +188,11 @@ parameters:
     description: BAM output mode.
     widget_hint: hidden
 rendering:
-  flag_order: [preset, bam, reference, index, read1, read2, barcode, barcode_whitelist, output, atac_fragments, atac_fragment_binary_output, summary, num_threads, hts_threads, mapq_threshold, max_insert_size, remove_pcr_duplicates, tn5_shift, sort_bam, write_index, temp_dir, call_macs3_frag_peaks, macs3_frag_peaks_output, macs3_frag_summits_output, macs3_frag_peaks_source, macs3_frag_low_mem]
+  flag_order: [preset, bam, reference, index, read1, read2, barcode, barcode_whitelist, output, atac_fragments, atac_fragment_binary_output, summary, num_threads, hts_threads, mapq_threshold, max_insert_size, remove_pcr_duplicates, tn5_shift, sort_bam, write_index, temp_dir, call_macs3_frag_peaks, macs3_frag_peaks_output, macs3_frag_summits_output, macs3_frag_pvalue, macs3_frag_qvalue, macs3_frag_peaks_source, macs3_frag_low_mem]
 constraints:
+  - kind: mutual_exclusion
+    params: [macs3_frag_pvalue, macs3_frag_qvalue]
+    message: Select either a p-value or q-value MACS3 FRAG threshold, not both.
   - kind: positive
     params: [num_threads, hts_threads, max_insert_size]
     message: Thread and insert-size values must be positive.

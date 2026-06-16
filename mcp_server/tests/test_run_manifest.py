@@ -118,6 +118,33 @@ def test_run_manifest_records_serial_benchmark_policy(loaded_default_config, tem
 
     assert manifest["benchmark_policy"] == "serial_required"
     assert manifest["classification"]["benchmark_policy"] == "serial_required"
+    assert manifest["macs3_frag_threshold"] == {
+        "mode": "pvalue",
+        "param": "macs3_pvalue",
+        "value": "0.01",
+    }
+
+
+def test_run_manifest_records_macs3_qvalue_threshold(
+    loaded_default_config, temp_dir
+):
+    loaded_default_config.paths.artifact_log_root = temp_dir / "artifacts"
+
+    result = write_run_manifest(
+        "chromap_macs3_frag_peaks",
+        {
+            "macs3_frag_peaks_output": str(temp_dir / "peaks.narrowPeak"),
+            "macs3_frag_summits_output": str(temp_dir / "summits.bed"),
+            "macs3_frag_qvalue": "0.05",
+        },
+        execution_status="dry_run",
+    )
+
+    assert result["manifest"]["macs3_frag_threshold"] == {
+        "mode": "qvalue",
+        "param": "macs3_frag_qvalue",
+        "value": "0.05",
+    }
 
 
 def test_launchpad_launch_writes_manifest_and_logs(

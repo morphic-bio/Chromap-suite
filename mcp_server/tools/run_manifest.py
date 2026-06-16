@@ -125,6 +125,38 @@ def _reference_paths(params: dict[str, Any]) -> dict[str, str]:
     return {key: str(params[key]) for key in keys if params.get(key)}
 
 
+def _macs3_frag_threshold(recipe: RecipeEntry, params: dict[str, Any]) -> dict[str, Any] | None:
+    has_peak_outputs = bool(
+        params.get("macs3_frag_peaks_output")
+        or params.get("macs3_frag_summits_output")
+    )
+    if recipe.id != "chromap_macs3_frag_peaks" and not (
+        params.get("call_macs3_frag_peaks") or has_peak_outputs
+    ):
+        return None
+    q_keys = ("macs3_frag_qvalue", "macs3_qvalue", "qvalue")
+    p_keys = ("macs3_frag_pvalue", "macs3_pvalue", "pvalue")
+    for key in q_keys:
+        if params.get(key) not in (None, ""):
+            return {
+                "mode": "qvalue",
+                "value": params[key],
+                "param": key,
+            }
+    for key in p_keys:
+        if params.get(key) not in (None, ""):
+            return {
+                "mode": "pvalue",
+                "value": params[key],
+                "param": key,
+            }
+    return {
+        "mode": "pvalue",
+        "value": 1e-5,
+        "param": "default",
+    }
+
+
 def _relevant_environment(env_overrides: dict[str, str] | None = None) -> dict[str, str]:
     env: dict[str, str] = {}
     for key, value in os.environ.items():
@@ -250,6 +282,7 @@ def build_run_manifest(
         "binaries": _binary_info(final_argv),
         "input_paths": _input_paths(recipe, params),
         "reference_paths": _reference_paths(params),
+        "macs3_frag_threshold": _macs3_frag_threshold(recipe, params),
         "output_paths": _output_paths(recipe, params),
         "artifact_dir": artifact_dir_str,
         "log_paths": log_paths,

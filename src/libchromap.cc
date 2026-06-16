@@ -1,6 +1,7 @@
 #include "libchromap.h"
 
 #include <exception>
+#include <cmath>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -158,9 +159,20 @@ ChromapRunResult RunMacs3FragPeaksFromMappingParameters(
   }
 
   peaks::Macs3FragPeakPipelineParams pr;
+  pr.threshold_mode = mapping_parameters.macs3_frag_threshold_mode;
   pr.bdgpeakcall_cutoff =
       peaks::BdgPeakCallCutoffFromPValue(mapping_parameters.macs3_frag_pvalue);
-  if (pr.bdgpeakcall_cutoff <= 0.f) {
+  pr.qvalue_cutoff = mapping_parameters.macs3_frag_qvalue;
+  if (pr.threshold_mode == peaks::Macs3FragThresholdMode::kQValue) {
+    if (std::isnan(pr.qvalue_cutoff) || pr.qvalue_cutoff <= 0.0 ||
+        pr.qvalue_cutoff > 1.0) {
+      return MakeFailure(mapping_parameters,
+                         "invalid --macs3-frag-qvalue for q-value cutoff");
+    }
+  } else if (std::isnan(mapping_parameters.macs3_frag_pvalue) ||
+             mapping_parameters.macs3_frag_pvalue <= 0.0 ||
+             mapping_parameters.macs3_frag_pvalue > 1.0 ||
+             pr.bdgpeakcall_cutoff < 0.f) {
     return MakeFailure(mapping_parameters,
                        "invalid --macs3-frag-pvalue for bdgpeakcall cutoff");
   }

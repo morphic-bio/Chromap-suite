@@ -29,6 +29,9 @@ The `chromap_atac_bam_fragments` recipe exposes `atac_fragment_binary_output`
 for the optional AEV1 sidecar. When supplied, the rendered argv includes
 `--atac-fragment-binary-output`, and manifests list both the sidecar file and
 its generated `<sidecar>.chroms.tsv` chromosome metadata.
+The same recipe exposes MACS3 FRAG threshold fields: p-mode defaults to
+`macs3_frag_pvalue=1e-5`, while `macs3_frag_qvalue` renders
+`--macs3-frag-qvalue` and records q-mode in the run manifest.
 
 The recipe API starts at:
 

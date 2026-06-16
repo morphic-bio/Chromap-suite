@@ -81,8 +81,11 @@ def test_launchpad_atac_bam_recipe_schema_includes_sidecar(loaded_default_config
     names = [p["name"] for p in payload["parameters"]]
     outputs = {out["name"]: out["path_template"] for out in payload["outputs"]}
     assert "atac_fragment_binary_output" in names
+    assert "call_macs3_frag_peaks" in names
+    assert "macs3_frag_qvalue" in names
     assert outputs["fragments_binary_sidecar"] == "{atac_fragment_binary_output}"
     assert outputs["fragments_binary_chroms"] == "{atac_fragment_binary_output}.chroms.tsv"
+    assert outputs["peaks"] == "{macs3_frag_peaks_output}"
 
 
 def test_launchpad_recipe_preflight_render_and_manifest(loaded_default_config, temp_dir):

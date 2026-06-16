@@ -38,9 +38,21 @@ SAMTOOLS_BIN="${SAMTOOLS_BIN:-samtools}"
 THREADS="${THREADS:-1}"
 SAMTOOLS_THREADS="${SAMTOOLS_THREADS:-1}"
 MACS3_PVALUE="${MACS3_PVALUE:-1e-5}"
+MACS3_QVALUE="${MACS3_QVALUE:-}"
 GENOME_SIZE="${GENOME_SIZE:-hs}"
 MACS3_MIN_LENGTH="${MACS3_MIN_LENGTH:-200}"
 MACS3_MAX_GAP="${MACS3_MAX_GAP:-30}"
+
+MACS3_THRESHOLD_MODE="pvalue"
+macs3_threshold_args=(-p "${MACS3_PVALUE}")
+chromap_suite_threshold_args=(--macs3-frag-pvalue "${MACS3_PVALUE}")
+chromap_callpeaks_threshold_args=(--macs3-frag-pvalue "${MACS3_PVALUE}")
+if [[ -n "${MACS3_QVALUE}" ]]; then
+  MACS3_THRESHOLD_MODE="qvalue"
+  macs3_threshold_args=(-q "${MACS3_QVALUE}")
+  chromap_suite_threshold_args=(--macs3-frag-qvalue "${MACS3_QVALUE}")
+  chromap_callpeaks_threshold_args=(--macs3-frag-qvalue "${MACS3_QVALUE}")
+fi
 
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-${REPO_ROOT}/plans/artifacts/libmacs3_chromap_atac_panel}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -103,7 +115,9 @@ bench_require_exe "${REPO_ROOT}/chromap_callpeaks" "chromap_callpeaks"
   printf 'whitelist\t%s\n' "${WHITELIST}"
   printf 'threads\t%s\n' "${THREADS}"
   printf 'samtools_threads\t%s\n' "${SAMTOOLS_THREADS}"
+  printf 'macs3_threshold_mode\t%s\n' "${MACS3_THRESHOLD_MODE}"
   printf 'macs3_pvalue\t%s\n' "${MACS3_PVALUE}"
+  printf 'macs3_qvalue\t%s\n' "${MACS3_QVALUE:-na}"
   printf 'macs3_min_length\t%s\n' "${MACS3_MIN_LENGTH}"
   printf 'macs3_max_gap\t%s\n' "${MACS3_MAX_GAP}"
   printf 'mapping_mode\t%s\n' "explicit_atac_flags_normal_memory_no_preset"
@@ -169,7 +183,7 @@ bench_run_timed "MACS3 callpeak on original unfixed Chromap fragments" \
   -t "${OUTDIR}/original_chromap/fragments.tsv" \
   -f FRAG -g "${GENOME_SIZE}" \
   -n original_chromap_macs3 \
-  -p "${MACS3_PVALUE}" \
+  "${macs3_threshold_args[@]}" \
   --min-length "${MACS3_MIN_LENGTH}" \
   --max-gap "${MACS3_MAX_GAP}" \
   --outdir "${OUTDIR}/original_chromap/macs3"
@@ -186,6 +200,7 @@ bench_run_timed "Chromap-suite integrated BAM + fragments + libMACS3 peaks" \
   --call-macs3-frag-peaks \
   --macs3-frag-peaks-output "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_peaks.narrowPeak" \
   --macs3-frag-summits-output "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_summits.bed" \
+  "${chromap_suite_threshold_args[@]}" \
   -o "${OUTDIR}/chromap_suite/possorted.bam"
 bench_sort_fragments_5col "${OUTDIR}/chromap_suite/fragments.tsv.gz" \
   "${OUTDIR}/chromap_suite/compare/fragments.5col.sorted.tsv"
@@ -202,7 +217,7 @@ bench_run_timed "chromap_callpeaks on original unfixed Chromap fragments" \
   --frag-pileup-macs3-uint8-counts \
   --macs3-frag-narrowpeak "${OUTDIR}/original_chromap/chromap_callpeaks_from_original.narrowPeak" \
   --macs3-frag-summits "${OUTDIR}/original_chromap/chromap_callpeaks_from_original_summits.bed" \
-  --bdgpeakcall-cutoff 5 \
+  "${chromap_callpeaks_threshold_args[@]}" \
   --bdgpeakcall-min-len "${MACS3_MIN_LENGTH}" \
   --bdgpeakcall-max-gap "${MACS3_MAX_GAP}" \
   --frag-score-pseudocount 0

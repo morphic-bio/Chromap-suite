@@ -89,6 +89,47 @@ def test_recipe_preflight_passes_for_atac_bam_fragments_sidecar(
     statuses = {check.rule_id: check.status for check in result.checks}
     assert statuses["secondary_output_not_primary"] == "pass"
     assert statuses["output_parent_trusted_or_creatable"] == "pass"
+    assert statuses["macs3_threshold_valid"] == "pass"
+
+
+def test_recipe_preflight_accepts_macs3_qvalue_threshold(
+    loaded_default_config, temp_dir
+):
+    params = {
+        **_base_params(temp_dir),
+        "barcode": str(temp_dir / "bc.fastq.gz"),
+        "output": str(temp_dir / "out.bam"),
+        "atac_fragments": str(temp_dir / "fragments.tsv.gz"),
+        "macs3_frag_qvalue": "0.05",
+    }
+
+    result = preflight_recipe("chromap_atac_bam_fragments", params)
+
+    assert result.valid
+    threshold = [c for c in result.checks if c.rule_id == "macs3_threshold_valid"][0]
+    assert threshold.status == "pass"
+    assert threshold.details["threshold_mode"] == "qvalue"
+    assert threshold.details["value"] == 0.05
+
+
+def test_recipe_preflight_rejects_macs3_p_and_q_thresholds(
+    loaded_default_config, temp_dir
+):
+    params = {
+        **_base_params(temp_dir),
+        "barcode": str(temp_dir / "bc.fastq.gz"),
+        "output": str(temp_dir / "out.bam"),
+        "atac_fragments": str(temp_dir / "fragments.tsv.gz"),
+        "macs3_frag_pvalue": "1e-5",
+        "macs3_frag_qvalue": "0.05",
+    }
+
+    result = preflight_recipe("chromap_atac_bam_fragments", params)
+
+    assert not result.valid
+    threshold = [c for c in result.checks if c.rule_id == "macs3_threshold_valid"][0]
+    assert threshold.status == "fail"
+    assert "mutually exclusive" in threshold.message
 
 
 def test_recipe_preflight_reports_sidecar_output_collision(
