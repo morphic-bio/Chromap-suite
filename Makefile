@@ -87,6 +87,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
 	 test-encode-cbq-cross-assay-smoke \
 	 test-peak-memory-source-100k test-macs3-frag-qvalue-cli \
+	test-macs3-bed-callpeak-cli \
 	benchmark-peak-memory-fullset test-peak-100k test-peak-calibration-100k \
 	test-peak-input-repr-100k test-peak-pileup-100k test-peak-frag-pileup-100k \
 	test-peak-lambda-100k test-peak-score-100k test-peak-bdgpeakcall-100k \
@@ -227,6 +228,9 @@ test-libchromap-core-smoke: chromap chromap_lib_runner
 # Lightweight parser smoke for the MACS3 FRAG p/q threshold flags.
 test-macs3-frag-qvalue-cli: chromap
 	bash ./tests/test_macs3_frag_qvalue_cli.sh
+
+test-macs3-bed-callpeak-cli: chromap_callpeaks
+	bash ./tests/test_macs3_bed_callpeak_cli.sh
 
 # Optional real-data smoke. Requires CHROMAP_GRCH38_REF and
 # CHROMAP_GRCH38_INDEX; downloads require ENCODE_ALLOW_DOWNLOAD=1.
