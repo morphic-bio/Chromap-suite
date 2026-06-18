@@ -46,12 +46,16 @@ jobs:
         run: |
           make -j"$(nproc)" chromap chromap_callpeaks chromap_lib_runner libchromap.a
 
-      - name: Smoke tests (hermetic S0 tier)
-        run: make test-smoke
+      - name: Smoke tests (hermetic subset)
+        # The full `make test-smoke` includes two integration matrices that read
+        # out-of-tree ATAC fixtures + a GRCh38 index (not present in CI), so gate
+        # on the genuinely hermetic unit / serialization / CLI tests here. The
+        # fixture-backed integration parity (lowmem-bed, peak matrix) runs locally.
+        run: make test-unit test-frag-compact-store test-macs3-frag-qvalue-cli test-atac-spill-record-roundtrip
 
       - name: Verify reported version matches the tag
         run: |
-          got="$(./chromap --version)"
+          got="$(./chromap --version 2>&1)"   # chromap prints --version to stderr
           want="${GITHUB_REF_NAME#v}"
           echo "chromap --version=${got}  tag=${want}"
           if [ "${got}" != "${want}" ]; then

@@ -45,7 +45,7 @@ done
 cp README.md LICENSE CHANGELOG.md "${STAGE}/"
 [ -f "docs/RELEASE_NOTES_${VERSION}.md" ] && cp "docs/RELEASE_NOTES_${VERSION}.md" "${STAGE}/docs/"
 
-engine="$(./chromap --upstream-version 2>/dev/null || echo unknown)"
+engine="$(./chromap --upstream-version 2>&1 || echo unknown)"   # printed to stderr
 cat > "${STAGE}/VERSION" <<EOF
 chromap-suite ${VERSION}
 chromap-engine ${engine}
