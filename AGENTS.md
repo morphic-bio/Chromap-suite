@@ -103,6 +103,35 @@ For every benchmark or timing run, record:
 - output directory under `plans/artifacts/`,
 - wall/user/sys/max RSS when available.
 
+## Releases
+
+Versioning mirrors STAR Suite: an annotated `vX.Y.Z` git tag is the release, with
+a matching `docs/RELEASE_NOTES_vX.Y.Z.md` and a rolled `CHANGELOG.md` entry. The
+suite version lives in `src/version.h` (`CHROMAP_SUITE_VERSION`); `chromap
+--version` reports it, and `chromap --upstream-version` reports the chromap engine
+version (also the BAM/SAM `@PG VN`).
+
+To cut a release:
+
+1. Bump `CHROMAP_SUITE_VERSION` in `src/version.h`.
+2. Add `docs/RELEASE_NOTES_vX.Y.Z.md` (see prior releases for the format).
+3. Roll `CHANGELOG.md`: move `[Unreleased]` entries under a new `[X.Y.Z] - <date>`.
+4. Commit, then `git tag -a vX.Y.Z -m "Chromap Suite vX.Y.Z"` and
+   `git push origin master --follow-tags`.
+
+Pushing the tag triggers `.github/workflows/release.yml`, which builds
+compatibility tarballs on two glibc baselines (Ubuntu 22.04 / 24.04), runs
+`make test-smoke`, and **blocks the release unless the smoke passes and
+`chromap --version` matches the tag**. On success it publishes a GitHub release
+with the tarballs, `SHA256SUMS`, and the release notes. A Docker image is pushed
+only when the `RELEASE_PUSH_IMAGE` repo variable is set (with
+`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`).
+
+The release gate is the S0 smoke tier (`make test-smoke`); the heavier S1/S2
+tiers need out-of-tree fixtures and remain opt-in/local. The build requires the
+system `libhts-dev` package (provides `htslib/kfunc.h` + `libhts` for the
+libMACS3 build and the chromap link).
+
 ## Git Authorship
 
 Agents must not claim co-authorship in commits, pull requests, or pushes. Do not

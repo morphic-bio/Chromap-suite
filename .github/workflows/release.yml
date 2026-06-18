@@ -39,7 +39,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential g++ make pkg-config \
             zlib1g-dev libbz2-dev liblzma-dev libdeflate-dev \
-            libcurl4-gnutls-dev libssl-dev
+            libcurl4-gnutls-dev libssl-dev \
+            libhts-dev
 
       - name: Build (chromap, callpeaks, lib_runner, libchromap.a)
         run: |
