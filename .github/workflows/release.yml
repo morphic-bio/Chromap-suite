@@ -1,0 +1,169 @@
+name: Release
+
+# Cut a release when an annotated semver tag (vX.Y.Z) is pushed. Modeled on the
+# STAR Suite release workflow: build per-glibc-baseline compatibility tarballs,
+# (optionally) push a Docker image, and publish a GitHub release with the
+# tarballs + checksums and the matching docs/RELEASE_NOTES_<tag>.md as the body.
+#
+# Not yet ported from STAR Suite (future hardening): Debian/PPA source+binary
+# packaging, GPG signing, installer bundles, and multi-distro runtime-validation
+# containers.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-tarballs:
+    name: Build tarball (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # Two glibc baselines for portability (22.04 = glibc 2.35, 24.04 = 2.39).
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential g++ make pkg-config \
+            zlib1g-dev libbz2-dev liblzma-dev libdeflate-dev \
+            libcurl4-gnutls-dev libssl-dev
+
+      - name: Build (chromap, callpeaks, lib_runner, libchromap.a)
+        run: |
+          make -j"$(nproc)" chromap chromap_callpeaks chromap_lib_runner libchromap.a
+
+      - name: Smoke tests (hermetic S0 tier)
+        run: make test-smoke
+
+      - name: Verify reported version matches the tag
+        run: |
+          got="$(./chromap --version)"
+          want="${GITHUB_REF_NAME#v}"
+          echo "chromap --version=${got}  tag=${want}"
+          if [ "${got}" != "${want}" ]; then
+            echo "::error::version constant (${got}) does not match tag (${want}); update src/version.h" >&2
+            exit 1
+          fi
+
+      - name: Package release tarball
+        run: |
+          chmod +x scripts/release/*.sh
+          scripts/release/build_release_tarball.sh \
+            --version "${GITHUB_REF_NAME}" \
+            --out-dir "dist/release"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}-${{ matrix.os }}
+          path: dist/release/**
+          if-no-files-found: error
+
+  docker-image:
+    name: Build & push Docker image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # Gated on Docker Hub credentials so the release still succeeds without them.
+    if: ${{ vars.RELEASE_PUSH_IMAGE == 'true' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve image tags
+        id: tags
+        run: |
+          repo="${DOCKER_IMAGE_REPO:-biodepot/chromap-suite}"
+          if echo "${GITHUB_REF_NAME}" | grep -qiE '^v0([.]|$)|[-](alpha|beta|rc|dev)'; then
+            echo "tags=${repo}:${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${repo}:${GITHUB_REF_NAME},${repo}:latest" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          DOCKER_IMAGE_REPO: ${{ vars.DOCKER_IMAGE_REPO }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+
+  github-release:
+    name: Publish GitHub release
+    needs: [build-tarballs, docker-image]
+    if: ${{ always() && needs.build-tarballs.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (for release notes)
+        uses: actions/checkout@v4
+
+      - name: Download tarball artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-${{ github.ref_name }}-*
+          path: dist/incoming
+          merge-multiple: true
+
+      - name: Collect artifacts + checksums
+        run: |
+          mkdir -p dist/release
+          find dist/incoming -type f -name '*.tar.gz' -exec cp {} dist/release/ \;
+          chmod +x scripts/release/*.sh
+          scripts/release/create_checksums.sh dist/release
+
+      - name: Detect prerelease from tag
+        id: prerelease
+        run: |
+          if echo "${GITHUB_REF_NAME}" | grep -qiE '^v0([.]|$)|[-](alpha|beta|rc|dev)'; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve release notes body
+        id: notes
+        run: |
+          f="docs/RELEASE_NOTES_${GITHUB_REF_NAME}.md"
+          if [ -f "$f" ]; then
+            echo "body_path=$f" >> "$GITHUB_OUTPUT"
+          else
+            echo "body_path=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/release/*
+          body_path: ${{ steps.notes.outputs.body_path }}
+          generate_release_notes: ${{ steps.notes.outputs.body_path == '' }}
+          draft: false
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease == 'true' }}

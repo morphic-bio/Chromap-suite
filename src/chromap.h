@@ -44,7 +44,11 @@
 #include "y_contig_detector.h"
 #include "y_read_names_writer.h"
 #include "fastq_split_writer.h"
+#include "version.h"
 
+// chromap engine / upstream lineage version. Reported by `chromap
+// --upstream-version` and written to the BAM/SAM @PG VN tag. The Chromap Suite
+// release version is CHROMAP_SUITE_VERSION (version.h), reported by `--version`.
 #define CHROMAP_VERSION "0.3.3-r519"
 
 namespace chromap {

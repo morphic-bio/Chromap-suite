@@ -261,7 +261,8 @@ int main(int argc, char **argv) {
 
   options.set_width(120).add_options()
       ("h,help", "Print help")
-      ("v,version", "Print Chromap version")
+      ("v,version", "Print Chromap Suite version")
+      ("upstream-version", "Print upstream chromap engine version")
       ("preset", "Preset parameters: atac, chip, or hic",
        cxxopts::value<std::string>(), "STR")
       ("t,num-threads", "Number of threads",
@@ -387,6 +388,10 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (result.count("version")) {
+      std::cerr << CHROMAP_SUITE_VERSION << "\n";
+      return 0;
+    }
+    if (result.count("upstream-version")) {
       std::cerr << CHROMAP_VERSION << "\n";
       return 0;
     }
