@@ -2,7 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
+project adheres to [Semantic Versioning](https://semver.org/). Per-release notes
+are in [`docs/RELEASE_NOTES_vX.Y.Z.md`](docs/).
+
 ## [Unreleased]
+
+## [1.0.0] - 2026-06-18
+
+First production Chromap Suite release. `chromap --version` now reports the suite
+version (`1.0.0`); the chromap engine version (`0.3.3-r519`) is available via
+`chromap --upstream-version`. See [`docs/RELEASE_NOTES_v1.0.0.md`](docs/RELEASE_NOTES_v1.0.0.md).
 
 ### Fixed
 - SAM writer: emit each record atomically and use length-safe `fwrite` to prevent interleaving and stray bytes.

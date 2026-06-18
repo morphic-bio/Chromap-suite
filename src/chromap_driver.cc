@@ -496,7 +496,9 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
   cxxopts::Options options(
       "chromap", "Fast alignment and preprocessing of chromatin profiles");
 
-  options.add_options()("v,version", "Print version")("h,help", "Print help");
+  options.add_options()("v,version", "Print Chromap Suite version")(
+      "upstream-version", "Print upstream chromap engine version")(
+      "h,help", "Print help");
 
   AddIndexingOptions(options);
   AddMappingOptions(options);
@@ -518,6 +520,10 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     return;
   }
   if (result.count("v")) {
+    std::cerr << CHROMAP_SUITE_VERSION << "\n";
+    return;
+  }
+  if (result.count("upstream-version")) {
     std::cerr << CHROMAP_VERSION << "\n";
     return;
   }
