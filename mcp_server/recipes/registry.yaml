@@ -318,7 +318,8 @@ recipes:
   - id: chromap_chip_tagalign
     title: Chromap ChIP TagAlign
     purpose: Map ChIP-seq reads with the ChIP preset and emit TagAlign output.
-    enabled: false
+    enabled: true
+    workflow_id: chromap_chip_tagalign
     runtime_class: interactive
     benchmark_policy: not_benchmark
     command_template:
@@ -326,7 +327,37 @@ recipes:
       - --preset
       - chip
       - --TagAlign
-    inputs: []
+      - --ref
+      - "{reference}"
+      - --index
+      - "{index}"
+      - --read1
+      - "{read1}"
+      - --read2
+      - "{read2}"
+      - --output
+      - "{output}"
+    inputs:
+      - name: reference
+        type: file
+        required: true
+        description: Reference FASTA.
+      - name: index
+        type: file
+        required: true
+        description: Chromap index.
+      - name: read1
+        type: string
+        required: true
+        description: Read 1 FASTQ path or comma-separated lane list.
+      - name: read2
+        type: string
+        required: true
+        description: Read 2 FASTQ path or comma-separated lane list.
+      - name: output
+        type: file
+        required: true
+        description: Output TagAlign path.
     outputs:
       - name: tagalign
         artifact_type: tagalign
@@ -336,12 +367,17 @@ recipes:
       - reference_fasta_exists
       - chromap_index_exists
       - read_pair_lists_match
+      - output_parent_trusted_or_creatable
     smoke_coverage:
       S0: C03_chip_tagalign in tests/run_libchromap_core_smoke.sh
       S1: C03_chip_tagalign in tests/run_encode_downsample_smoke.sh
     docs:
+      - path: mcp_server/workflows/chromap_chip_tagalign.yaml
+        description: Workflow schema.
       - path: tests/README.md
         description: ChIP real-data smoke.
+    handoff_artifacts:
+      - TagAlign mapping output consumed by downstream ChIP peak/QC recipes.
 
   - id: chromap_sorted_bam
     title: Chromap sorted BAM

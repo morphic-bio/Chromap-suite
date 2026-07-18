@@ -13,6 +13,7 @@ EXPECTED_WORKFLOWS = {
     "chromap_index",
     "chromap_atac_bed",
     "chromap_atac_bam_fragments",
+    "chromap_chip_tagalign",
     "chromap_hic_pairs",
 }
 
@@ -131,6 +132,30 @@ def test_hic_pairs_renders_pairs_command(loaded_default_config):
     assert "--pairs" in result.argv
 
 
+def test_chip_tagalign_renders_chip_preset_and_tagalign(loaded_default_config):
+    result = render_workflow_command(
+        "chromap_chip_tagalign",
+        {
+            "reference": "ref.fa",
+            "index": "ref.idx",
+            "read1": "chip_R1.fastq.gz",
+            "read2": "chip_R2.fastq.gz",
+            "output": "chip.tagAlign",
+            "summary": "chip.summary.tsv",
+            "num_threads": 4,
+            "trim_adapters": True,
+        },
+    )
+    assert "--preset" in result.argv
+    assert result.argv[result.argv.index("--preset") + 1] == "chip"
+    assert "--TagAlign" in result.argv
+    assert "--summary" in result.argv
+    assert result.argv[result.argv.index("--summary") + 1] == "chip.summary.tsv"
+    assert "--num-threads" in result.argv
+    assert result.argv[result.argv.index("--num-threads") + 1] == "4"
+    assert "--trim-adapters" in result.argv
+
+
 def test_schema_validation_reports_required_params(loaded_default_config):
     validation = validate_workflow_parameters("chromap_atac_bed", {}, check_paths=False)
     assert not validation.valid
@@ -138,6 +163,6 @@ def test_schema_validation_reports_required_params(loaded_default_config):
 
 
 def test_parameter_schema_has_groups(loaded_default_config):
-    schema = get_workflow_parameter_schema("chromap_atac_bed")
+    schema = get_workflow_parameter_schema("chromap_chip_tagalign")
     groups = {g.name for g in schema.parameter_groups}
     assert {"inputs", "output", "mapping"} <= groups
