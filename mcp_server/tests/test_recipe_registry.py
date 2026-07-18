@@ -7,11 +7,11 @@ PUBLIC_WORKFLOWS = {
     "chromap_index",
     "chromap_atac_bed",
     "chromap_atac_bam_fragments",
+    "chromap_chip_tagalign",
     "chromap_hic_pairs",
 }
 
 PLANNED_RECIPES = {
-    "chromap_chip_tagalign",
     "chromap_sorted_bam",
     "chromap_y_noy_split",
     "chromap_macs3_frag_peaks",

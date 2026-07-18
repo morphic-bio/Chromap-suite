@@ -33,6 +33,22 @@ def test_recipe_preflight_passes_for_atac_bed(loaded_default_config, temp_dir):
     assert statuses["output_parent_trusted_or_creatable"] == "pass"
 
 
+def test_recipe_preflight_passes_for_chip_tagalign(loaded_default_config, temp_dir):
+    params = {
+        **_base_params(temp_dir),
+        "output": str(temp_dir / "chip.tagAlign"),
+    }
+
+    result = preflight_recipe("chromap_chip_tagalign", params)
+
+    assert result.valid
+    statuses = {check.rule_id: check.status for check in result.checks}
+    assert statuses["reference_fasta_exists"] == "pass"
+    assert statuses["chromap_index_exists"] == "pass"
+    assert statuses["read_pair_lists_match"] == "pass"
+    assert statuses["output_parent_trusted_or_creatable"] == "pass"
+
+
 def test_recipe_preflight_reports_missing_index(loaded_default_config, temp_dir):
     params = _base_params(temp_dir)
     params["index"] = str(temp_dir / "missing.index")

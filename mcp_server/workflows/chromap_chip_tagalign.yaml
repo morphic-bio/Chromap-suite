@@ -1,0 +1,125 @@
+id: chromap_chip_tagalign
+title: Chromap ChIP TagAlign
+summary: Map paired-end ChIP-seq reads with the ChIP preset and emit TagAlign output.
+kind: chromap_cli
+entry_script: chromap
+supported_modes: ["local", "dry-run-capable"]
+caveats:
+  - "Use comma-separated FASTQ paths for multi-lane input."
+  - "The ChIP preset enables duplicate removal; this schema does not expose a disable toggle because Chromap provides enable flags for duplicate removal."
+  - "PROVENANCE-FIRST: for production ChIP-seq runs, copy resource and filtering parameters from a known-good provenance record before scaling."
+default_output_layout: "TagAlign output is written to --output."
+scripts:
+  - role: entry
+    path: chromap
+    description: Chromap binary
+    language: executable
+stages:
+  - name: map
+    title: Map ChIP reads
+    script: chromap
+    description: Map paired-end ChIP-seq reads and write TagAlign output.
+parameter_groups:
+  - name: inputs
+    title: Inputs
+    parameters: [reference, index, read1, read2]
+  - name: output
+    title: Output
+    parameters: [output, summary]
+  - name: mapping
+    title: Mapping
+    parameters: [num_threads, mapq_threshold, max_insert_size, trim_adapters, low_mem, low_mem_ram, temp_dir]
+parameters:
+  - name: reference
+    cli_flag: --ref
+    type: file
+    required: true
+    path_must_exist: true
+    description: Reference FASTA.
+  - name: index
+    cli_flag: --index
+    type: file
+    required: true
+    path_must_exist: true
+    description: Chromap index.
+  - name: read1
+    cli_flag: --read1
+    type: string
+    required: true
+    description: Read 1 FASTQ path, or comma-separated paths for multiple lanes.
+  - name: read2
+    cli_flag: --read2
+    type: string
+    required: true
+    description: Read 2 FASTQ path, or comma-separated paths for multiple lanes.
+  - name: output
+    cli_flag: --output
+    type: file
+    required: true
+    is_output_root: true
+    description: Output TagAlign path.
+  - name: summary
+    cli_flag: --summary
+    type: file
+    description: Optional mapping summary path.
+  - name: num_threads
+    cli_flag: --num-threads
+    type: int
+    default: 8
+    description: Mapping threads.
+    min_value: 1
+  - name: mapq_threshold
+    cli_flag: --MAPQ-threshold
+    type: int
+    default: 30
+    skip_when_default: true
+    description: Minimum MAPQ for output.
+    min_value: 0
+    max_value: 60
+  - name: max_insert_size
+    cli_flag: --max-insert-size
+    type: int
+    default: 2000
+    skip_when_default: true
+    description: Maximum insert size.
+    min_value: 1
+  - name: trim_adapters
+    cli_flag: --trim-adapters
+    type: bool
+    default: false
+    description: Trim 3 prime adapters.
+  - name: low_mem
+    cli_flag: --low-mem
+    type: bool
+    default: false
+    description: Use low-memory mode.
+  - name: low_mem_ram
+    cli_flag: --low-mem-ram
+    type: string
+    description: Low-memory spill threshold, for example 1G or 512M.
+  - name: temp_dir
+    cli_flag: --temp-dir
+    type: directory
+    description: Temporary directory.
+  - name: preset
+    cli_flag: --preset
+    type: enum
+    default: chip
+    choices: [chip]
+    description: Chromap preset.
+    widget_hint: hidden
+  - name: tagalign
+    cli_flag: --TagAlign
+    type: bool
+    default: true
+    description: TagAlign output mode.
+    widget_hint: hidden
+rendering:
+  flag_order: [preset, tagalign, reference, index, read1, read2, output, summary, num_threads, mapq_threshold, max_insert_size, trim_adapters, low_mem, low_mem_ram, temp_dir]
+constraints:
+  - kind: positive
+    params: [num_threads, max_insert_size]
+    message: Thread and insert-size values must be positive.
+  - kind: non_negative
+    params: [mapq_threshold]
+    message: MAPQ threshold must be non-negative.
