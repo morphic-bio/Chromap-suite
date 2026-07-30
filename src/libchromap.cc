@@ -45,6 +45,32 @@ ChromapRunResult MakeFailure(const MappingParameters &mapping_parameters,
 ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
   try {
     MappingParameters params = mapping_parameters;
+    if (params.use_fqgzip) {
+#if !WITH_FQGZIP
+      return MakeFailure(
+          params, "fqgzip input requires a build with WITH_FQGZIP=1");
+#else
+      if (params.UsesCbqInput()) {
+        return MakeFailure(params,
+                           "fqgzip input cannot be combined with CBQ input");
+      }
+      if (!params.HasPairedEndInput()) {
+        return MakeFailure(params,
+                           "fqgzip input currently requires paired-end reads");
+      }
+      if (params.HasBarcodeInput()) {
+        return MakeFailure(
+            params,
+            "fqgzip input currently supports bulk paired-end reads without a separate barcode file");
+      }
+      if (params.read_file1_paths.size() != params.read_file2_paths.size()) {
+        return MakeFailure(params, "fqgzip read 1 and read 2 counts differ");
+      }
+      if (params.fqgzip_threads != 0 && params.fqgzip_threads < 2) {
+        return MakeFailure(params, "fqgzip reader threads must be at least two");
+      }
+#endif
+    }
     if (params.emit_y_noy_fastq &&
         (params.y_fastq_output_paths_per_file.empty() ||
          params.noy_fastq_output_paths_per_file.empty())) {

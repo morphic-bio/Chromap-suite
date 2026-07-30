@@ -216,6 +216,36 @@ pe_plain="$(run_pe_sam pe_fastq_plain "${DATA_DIR}/test_pe_R1.fq" "${DATA_DIR}/t
 pe_gzip="$(run_pe_sam pe_fastq_gzip "${DATA_DIR}/test_pe_R1.fq.gz" "${DATA_DIR}/test_pe_R2.fq.gz")"
 assert_sam_parity "${pe_plain}" "${pe_gzip}" "paired FASTQ plain vs gzip input"
 
+if [[ "${TEST_FQGZIP_INPUT:-0}" == 1 ]]; then
+  pe_fqgzip_out="${RUN_DIR}/pe_fastq_fqgzip.sam"
+  "${CHROMAP}" --SAM --fqgzip --fqgzip-shards 4 --fqgzip-threads 4 \
+    -r "${DATA_DIR}/test_ref.fa" -x "${DATA_DIR}/test_ref.idx" \
+    -1 "${DATA_DIR}/test_pe_R1.fq.gz" -2 "${DATA_DIR}/test_pe_R2.fq.gz" \
+    -o "${pe_fqgzip_out}" \
+    --min-num-seeds 1 --error-threshold 10 --max-insert-size 1000 -t 4 \
+    > "${RUN_DIR}/pe_fastq_fqgzip.stdout" \
+    2> "${RUN_DIR}/pe_fastq_fqgzip.stderr"
+  assert_sam_parity "${pe_gzip}" "${pe_fqgzip_out}" \
+    "paired native gzip vs fqgzip alignment"
+
+  awk 'NR <= 4 { next } { print }' "${DATA_DIR}/test_pe_R2.fq" \
+    | gzip -c > "${DATA_DIR}/test_pe_R2_dropped.fq.gz"
+  if "${CHROMAP}" --SAM --fqgzip --fqgzip-shards 4 --fqgzip-threads 4 \
+    -r "${DATA_DIR}/test_ref.fa" -x "${DATA_DIR}/test_ref.idx" \
+    -1 "${DATA_DIR}/test_pe_R1.fq.gz" \
+    -2 "${DATA_DIR}/test_pe_R2_dropped.fq.gz" \
+    -o "${RUN_DIR}/pe_fastq_fqgzip_mismatch.sam" \
+    --min-num-seeds 1 --error-threshold 10 --max-insert-size 1000 -t 4 \
+    > "${RUN_DIR}/pe_fastq_fqgzip_mismatch.stdout" \
+    2> "${RUN_DIR}/pe_fastq_fqgzip_mismatch.stderr"; then
+    echo "ERROR: mismatched fqgzip mates unexpectedly succeeded" >&2
+    exit 1
+  fi
+  grep -F "fqgzip producer failed" \
+    "${RUN_DIR}/pe_fastq_fqgzip_mismatch.stderr" >/dev/null
+  log "PASS: mismatched fqgzip mates rejected"
+fi
+
 se_plain="$(run_se_sam se_fastq_plain "${DATA_DIR}/test_se.fq")"
 se_gzip="$(run_se_sam se_fastq_gzip "${DATA_DIR}/test_se.fq.gz")"
 assert_sam_parity "${se_plain}" "${se_gzip}" "single-end FASTQ plain vs gzip input"

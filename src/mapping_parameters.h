@@ -84,6 +84,9 @@ struct MappingParameters {
   std::string reference_file_path;
   std::string index_file_path;
   ReadInputFormat read_input_format = ReadInputFormat::kFastq;
+  bool use_fqgzip = false;
+  uint32_t fqgzip_shards = 0;   // 0 = derive from the reader worker budget
+  uint32_t fqgzip_threads = 0;  // 0 = one independent worker per mate
   std::vector<std::string> read_file1_paths;
   std::vector<std::string> read_file2_paths;
   std::vector<std::string> barcode_file_paths;
@@ -208,6 +211,10 @@ struct MappingParameters {
 
   bool UsesCbqInput() const {
     return read_input_format == ReadInputFormat::kCbq;
+  }
+
+  bool UsesFqgzipInput() const {
+    return read_input_format == ReadInputFormat::kFastq && use_fqgzip;
   }
 
   bool HasPairedEndInput() const {
