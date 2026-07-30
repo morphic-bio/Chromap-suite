@@ -109,6 +109,11 @@ void AddInputOptions(cxxopts::Options &options) {
       "x,index", "Index file", cxxopts::value<std::string>(), "FILE")(
       "input-format", "Read input format: fastq or cbq [fastq]",
       cxxopts::value<std::string>(), "STR")(
+      "fqgzip", "Use the opt-in paired gzip FASTQ shard reader")(
+      "fqgzip-shards", "Requested fqgzip paired shards [reader threads]",
+      cxxopts::value<uint32_t>(), "INT")(
+      "fqgzip-threads", "fqgzip reader worker budget [2: one per mate]",
+      cxxopts::value<uint32_t>(), "INT")(
       "1,read1", "Single-end read files or paired-end read files 1",
       cxxopts::value<std::vector<std::string>>(),
       "FILE")("2,read2", "Paired-end read files 2",
@@ -842,6 +847,33 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
             "--input-format must be \"fastq\" or \"cbq\"");
       }
     }
+    if (result.count("fqgzip")) {
+      mapping_parameters.use_fqgzip = true;
+    }
+    if (result.count("fqgzip-shards")) {
+      mapping_parameters.fqgzip_shards =
+          result["fqgzip-shards"].as<uint32_t>();
+      if (mapping_parameters.fqgzip_shards == 0) {
+        chromap::ExitWithMessage("--fqgzip-shards must be greater than zero");
+      }
+    }
+    if (result.count("fqgzip-threads")) {
+      mapping_parameters.fqgzip_threads =
+          result["fqgzip-threads"].as<uint32_t>();
+      if (mapping_parameters.fqgzip_threads < 2) {
+        chromap::ExitWithMessage("--fqgzip-threads must be at least two");
+      }
+    }
+
+    if (mapping_parameters.use_fqgzip && mapping_parameters.UsesCbqInput()) {
+      chromap::ExitWithMessage("--fqgzip cannot be combined with --input-format cbq");
+    }
+#if !WITH_FQGZIP
+    if (mapping_parameters.use_fqgzip) {
+      chromap::ExitWithMessage(
+          "--fqgzip requires a binary built with WITH_FQGZIP=1");
+    }
+#endif
 
     if (mapping_parameters.UsesCbqInput()) {
       if (result.count("1") || result.count("2") || result.count("b")) {
@@ -880,6 +912,20 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       if (result.count("barcode-whitelist") == 0) {
         std::cerr << "WARNING: there are input barcode files but a barcode "
                      "whitelist file is missing!\n";
+      }
+    }
+
+    if (mapping_parameters.use_fqgzip) {
+      if (mapping_parameters.read_file2_paths.empty()) {
+        chromap::ExitWithMessage("--fqgzip currently requires paired-end -1/-2 input");
+      }
+      if (!mapping_parameters.barcode_file_paths.empty()) {
+        chromap::ExitWithMessage(
+            "--fqgzip currently supports bulk paired-end input without a separate barcode file");
+      }
+      if (mapping_parameters.read_file1_paths.size() !=
+          mapping_parameters.read_file2_paths.size()) {
+        chromap::ExitWithMessage("fqgzip read 1 and read 2 input counts differ");
       }
     }
 
@@ -1412,7 +1458,11 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
               << "\n";
     std::cerr << "Index file: " << mapping_parameters.index_file_path << "\n";
     std::cerr << "Input format: "
-              << (mapping_parameters.UsesCbqInput() ? "cbq" : "fastq")
+              << (mapping_parameters.UsesCbqInput()
+                      ? "cbq"
+                      : (mapping_parameters.UsesFqgzipInput()
+                             ? "fastq+fqgzip"
+                             : "fastq"))
               << "\n";
     if (mapping_parameters.UsesCbqInput()) {
       for (size_t i = 0; i < mapping_parameters.read_pair_cbq_paths.size();

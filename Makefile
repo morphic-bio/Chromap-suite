@@ -19,7 +19,25 @@ CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(LIBMACS3_DIR
 DEPFLAGS=-MMD -MP
 LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -ldl -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
-core_cpp_source=sequence_batch.cc cbq_reader.cc cbq_batch_producer.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
+# Optional, pinned paired gzip FASTQ input adapter. Ordinary builds remain
+# independent of fqgzip.
+WITH_FQGZIP ?= 0
+FQGZIP_DIR ?= /mnt/pikachu/fgqzip
+FQGZIP_BUILD_DIR ?= $(FQGZIP_DIR)/build-clean
+FQGZIP_REVISION := bcdc92d8d6e7f1258724195c2789c677eb33a1a6
+FQGZIP_LIB := $(FQGZIP_BUILD_DIR)/libfqgzip.a
+ifeq ($(WITH_FQGZIP),1)
+CXXFLAGS += -DWITH_FQGZIP=1 -I$(FQGZIP_DIR)/include
+LDFLAGS := $(FQGZIP_LIB) $(LDFLAGS)
+fqgzip_source := fqgzip_batch_producer.cc
+FQGZIP_DEPS := fqgzip-check
+else
+CXXFLAGS += -DWITH_FQGZIP=0
+fqgzip_source :=
+FQGZIP_DEPS :=
+endif
+
+core_cpp_source=sequence_batch.cc cbq_reader.cc cbq_batch_producer.cc $(fqgzip_source) index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
 driver_cpp_source=chromap_driver.cc
 libchromap_cpp_source=libchromap.cc
 runner_cpp_source=chromap_lib_runner.cc
@@ -61,10 +79,10 @@ libmacs3:
 
 $(LIBMACS3_LIB) $(LIBMACS3_CLI): libmacs3
 
-$(exec): $(driver_objs) $(libchromap) $(LIBMACS3_LIB)
+$(exec): $(FQGZIP_DEPS) $(driver_objs) $(libchromap) $(LIBMACS3_LIB)
 	$(CXX) $(CXXFLAGS) $(driver_objs) $(libchromap) $(LIBMACS3_LIB) -o $(exec) $(LDFLAGS)
 
-$(libchromap): $(core_objs) $(libchromap_objs)
+$(libchromap): $(FQGZIP_DEPS) $(core_objs) $(libchromap_objs)
 	rm -f $(libchromap)
 	ar rcs $(libchromap) $(core_objs) $(libchromap_objs)
 
@@ -75,6 +93,16 @@ $(runner): $(libchromap) $(runner_objs) $(LIBMACS3_LIB)
 # Keeps existing tests/harnesses working without source-level changes here.
 $(peak_caller): $(LIBMACS3_CLI)
 	cp $(LIBMACS3_CLI) $(peak_caller)
+
+.PHONY: fqgzip-check
+fqgzip-check:
+	@actual=$$(git -C "$(FQGZIP_DIR)" rev-parse HEAD 2>/dev/null); \
+		test "$$actual" = "$(FQGZIP_REVISION)" || { \
+			echo "ERROR: fqgzip revision $$actual does not match pinned $(FQGZIP_REVISION)" >&2; exit 1; }
+	@git -C "$(FQGZIP_DIR)" diff --quiet HEAD -- || { \
+		echo "ERROR: fqgzip has tracked source changes; build the pinned clean revision" >&2; exit 1; }
+	@cmake --build "$(FQGZIP_BUILD_DIR)" --target fqgzip
+	@test -f "$(FQGZIP_LIB)" || { echo "ERROR: missing $(FQGZIP_LIB)" >&2; exit 1; }
 
 $(objs_dir)/%.o: $(src_dir)/%.cc
 	@mkdir -p $(@D)

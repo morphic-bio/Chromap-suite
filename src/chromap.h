@@ -22,6 +22,9 @@
 #include "candidate_processor.h"
 #include "cbq_batch_producer.h"
 #include "cbq_reader.h"
+#if WITH_FQGZIP
+#include "fqgzip_batch_producer.h"
+#endif
 #include "cxxopts.hpp"
 #include "draft_mapping_generator.h"
 #include "feature_barcode_matrix.h"
@@ -1045,6 +1048,7 @@ void Chromap::MapPairedEndReads() {
     thread_num_corrected_barcode)
   double real_start_mapping_time = GetRealTime();
   uint64_t cbq_global_record_offset = 0;
+  uint64_t fqgzip_global_record_offset = 0;
   for (size_t read_file_index = 0;
        read_file_index < mapping_parameters_.NumInputLanes();
        ++read_file_index) {
@@ -1064,9 +1068,13 @@ void Chromap::MapPairedEndReads() {
     std::unique_ptr<CbqPairedEndBatchProducer> cbq_batch_producer;
     std::unique_ptr<CbqPairedEndRangeBatchProducer>
         cbq_range_batch_producer;
+#if WITH_FQGZIP
+    std::unique_ptr<FqgzipPairedEndBatchProducer> fqgzip_batch_producer;
+#endif
     bool use_cbq_range_batch_producer = false;
     uint64_t cbq_lane_record_count = 0;
     uint64_t cbq_lane_records_processed = 0;
+    uint64_t fqgzip_lane_records_processed = 0;
     const uint64_t cbq_lane_global_record_offset = cbq_global_record_offset;
     if (mapping_parameters_.UsesCbqInput()) {
       std::string error;
@@ -1184,6 +1192,33 @@ void Chromap::MapPairedEndReads() {
             }));
         cbq_batch_producer->Start();
       }
+    } else if (mapping_parameters_.UsesFqgzipInput()) {
+#if WITH_FQGZIP
+      const uint32_t fqgzip_threads =
+          mapping_parameters_.fqgzip_threads == 0
+              ? 2U
+              : mapping_parameters_.fqgzip_threads;
+      const uint32_t fqgzip_shards =
+          mapping_parameters_.fqgzip_shards == 0
+              ? fqgzip_threads
+              : mapping_parameters_.fqgzip_shards;
+      const size_t fqgzip_queue_depth =
+          mapping_parameters_.num_threads >= 4 ? 2 : 1;
+      fqgzip_batch_producer.reset(new FqgzipPairedEndBatchProducer(
+          mapping_parameters_.read_file1_paths[read_file_index],
+          mapping_parameters_.read_file2_paths[read_file_index],
+          read_batch_size_, read1_effective_range_, read2_effective_range_,
+          fqgzip_global_record_offset, fqgzip_shards, fqgzip_threads,
+          fqgzip_queue_depth));
+      fqgzip_batch_producer->Start();
+      std::cerr << "Using fqgzip paired input with " << fqgzip_shards
+                << " shards and " << fqgzip_threads
+                << " reader worker(s); R1/R2 discovery is independent.\n";
+#else
+      ExitWithMessage(
+          "fqgzip input requested but Chromap was built without "
+          "WITH_FQGZIP=1");
+#endif
     } else {
       // Set read batches to the current read files.
       read_batch1_for_loading.InitializeLoading(
@@ -1198,20 +1233,26 @@ void Chromap::MapPairedEndReads() {
 
     // Load the first batches.
     uint32_t num_loaded_pairs_for_loading = 0;
-    uint32_t num_loaded_pairs =
-        mapping_parameters_.UsesCbqInput()
-            ? (use_cbq_range_batch_producer
-                   ? PopCbqBatchIntoSequenceBatches(
-                         cbq_range_batch_producer.get(), read_batch1,
-                         read_batch2, barcode_batch)
-                   : PopCbqBatchIntoSequenceBatches(
-                         cbq_batch_producer.get(), read_batch1, read_batch2,
-                         barcode_batch))
-            : LoadPairedEndReadsWithBarcodes(
-                  read_batch1_for_loading, read_batch2_for_loading,
-                  barcode_batch_for_loading,
-                  mapping_parameters_.num_threads >= 3 ? true : false);
-    if (!mapping_parameters_.UsesCbqInput()) {
+    uint32_t num_loaded_pairs = 0;
+    if (mapping_parameters_.UsesCbqInput()) {
+      num_loaded_pairs =
+          use_cbq_range_batch_producer
+              ? PopCbqBatchIntoSequenceBatches(cbq_range_batch_producer.get(),
+                                                read_batch1, read_batch2,
+                                                barcode_batch)
+              : PopCbqBatchIntoSequenceBatches(cbq_batch_producer.get(),
+                                                read_batch1, read_batch2,
+                                                barcode_batch);
+    } else if (mapping_parameters_.UsesFqgzipInput()) {
+#if WITH_FQGZIP
+      num_loaded_pairs = PopFqgzipBatchIntoSequenceBatches(
+          fqgzip_batch_producer.get(), read_batch1, read_batch2);
+#endif
+    } else {
+      num_loaded_pairs = LoadPairedEndReadsWithBarcodes(
+          read_batch1_for_loading, read_batch2_for_loading,
+          barcode_batch_for_loading,
+          mapping_parameters_.num_threads >= 3 ? true : false);
       read_batch1_for_loading.SwapSequenceBatch(read_batch1);
       read_batch2_for_loading.SwapSequenceBatch(read_batch2);
       if (!mapping_parameters_.is_bulk_data) {
@@ -1296,7 +1337,8 @@ void Chromap::MapPairedEndReads() {
           num_reads_ += num_loaded_pairs;
           num_reads_ += num_loaded_pairs;
 
-          if (!mapping_parameters_.UsesCbqInput()) {
+          if (!mapping_parameters_.UsesCbqInput() &&
+              !mapping_parameters_.UsesFqgzipInput()) {
 #pragma omp task
             {
               num_loaded_pairs_for_loading =
@@ -1738,6 +1780,12 @@ void Chromap::MapPairedEndReads() {
                     : PopCbqBatchIntoSequenceBatches(
                           cbq_batch_producer.get(), read_batch1, read_batch2,
                           barcode_batch);
+          } else if (mapping_parameters_.UsesFqgzipInput()) {
+#if WITH_FQGZIP
+            fqgzip_lane_records_processed += num_loaded_pairs;
+            num_loaded_pairs = PopFqgzipBatchIntoSequenceBatches(
+                fqgzip_batch_producer.get(), read_batch1, read_batch2);
+#endif
           } else {
             num_loaded_pairs = num_loaded_pairs_for_loading;
             read_batch1_for_loading.SwapSequenceBatch(read_batch1);
@@ -1849,6 +1897,10 @@ void Chromap::MapPairedEndReads() {
       if (barcode_cbq_reader) {
         barcode_cbq_reader->Close();
       }
+    } else if (mapping_parameters_.UsesFqgzipInput()) {
+#if WITH_FQGZIP
+      fqgzip_batch_producer.reset();
+#endif
     } else {
       read_batch1_for_loading.FinalizeLoading();
       read_batch2_for_loading.FinalizeLoading();
@@ -1859,6 +1911,8 @@ void Chromap::MapPairedEndReads() {
     }
     if (mapping_parameters_.UsesCbqInput()) {
       cbq_global_record_offset += cbq_lane_records_processed;
+    } else if (mapping_parameters_.UsesFqgzipInput()) {
+      fqgzip_global_record_offset += fqgzip_lane_records_processed;
     }
   }  // end of for read_file_index
 
