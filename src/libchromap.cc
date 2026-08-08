@@ -10,9 +10,9 @@
 
 #include "atac_dual_mapping.h"
 #include "chromap.h"
-#include "libmacs3/fragment_input.h"
-#include "libmacs3/fragments.h"
-#include "libmacs3/macs3_frag_peak_pipeline.h"
+#include "rapidmacs/fragment_input.h"
+#include "rapidmacs/fragments.h"
+#include "rapidmacs/macs3_frag_peak_pipeline.h"
 #include "utils.h"
 #include "y_noy_path_utils.h"
 
@@ -178,6 +178,7 @@ ChromapRunResult RunMacs3FragPeaksFromMappingParameters(
   }
   pr.min_length = mapping_parameters.macs3_frag_min_length;
   pr.max_gap = mapping_parameters.macs3_frag_max_gap;
+  pr.name_prefix = "NA";
   pr.macs3_uint8_counts = mapping_parameters.macs3_frag_uint8_counts;
   pr.peak_caller_threads = mapping_parameters.num_threads;
 

@@ -6,16 +6,16 @@ ifeq (,$(wildcard $(HTSLIB_DIR)/htslib/sam.h))
 $(error "htslib submodule not initialized. Run: git submodule update --init --recursive")
 endif
 
-# libMACS3 submodule (peak-caller library extracted from src/peak_caller/).
+# RapidMACS submodule (MACS3-compatible peak-caller library).
 # Built standalone via its own Makefile; we just link the resulting archive.
-LIBMACS3_DIR=third_party/libMACS3
-LIBMACS3_LIB=$(LIBMACS3_DIR)/lib/libmacs3.a
-LIBMACS3_CLI=$(LIBMACS3_DIR)/bin/macs3frag
-ifeq (,$(wildcard $(LIBMACS3_DIR)/include/libmacs3/macs3_frag_peak_pipeline.h))
-$(error "libMACS3 submodule not initialized. Run: git submodule update --init --recursive")
+RAPIDMACS_DIR=third_party/rapidmacs
+RAPIDMACS_LIB=$(RAPIDMACS_DIR)/lib/librapidmacs.a
+RAPIDMACS_CLI=$(RAPIDMACS_DIR)/bin/rapidmacs
+ifeq (,$(wildcard $(RAPIDMACS_DIR)/include/rapidmacs/macs3_frag_peak_pipeline.h))
+$(error "RapidMACS submodule not initialized. Run: git submodule update --init --recursive")
 endif
 
-CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(LIBMACS3_DIR)/include
+CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(RAPIDMACS_DIR)/include
 DEPFLAGS=-MMD -MP
 LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -ldl -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
@@ -34,7 +34,8 @@ deps=$(core_objs:.o=.d) $(driver_objs:.o=.d) $(libchromap_objs:.o=.d) $(runner_o
 exec=chromap
 libchromap=libchromap.a
 runner=chromap_lib_runner
-peak_caller=chromap_callpeaks
+peak_caller=rapidmacs
+peak_caller_compat=chromap_callpeaks
 
 .DEFAULT_GOAL := all
 
@@ -47,34 +48,37 @@ ifneq ($(LEGACY_OVERFLOW),)
 	CXXFLAGS+=-DLEGACY_OVERFLOW
 endif
 
-all: dir $(exec) $(peak_caller)
+all: dir $(exec) $(peak_caller) $(peak_caller_compat)
 
 dir:
 	mkdir -p $(objs_dir)
 
-# libMACS3 sub-build. Re-runs the submodule's Makefile every top-level make
+# RapidMACS sub-build. Re-runs the submodule's Makefile every top-level make
 # invocation; submodule make is itself incremental so this is cheap when up
-# to date. Output: third_party/libMACS3/lib/libmacs3.a + bin/macs3frag.
-.PHONY: libmacs3
-libmacs3:
-	$(MAKE) -C $(LIBMACS3_DIR)
+# to date. Output: third_party/rapidmacs/lib/librapidmacs.a + bin/rapidmacs.
+.PHONY: librapidmacs
+librapidmacs:
+	$(MAKE) -C $(RAPIDMACS_DIR)
 
-$(LIBMACS3_LIB) $(LIBMACS3_CLI): libmacs3
+$(RAPIDMACS_LIB) $(RAPIDMACS_CLI): librapidmacs
 
-$(exec): $(driver_objs) $(libchromap) $(LIBMACS3_LIB)
-	$(CXX) $(CXXFLAGS) $(driver_objs) $(libchromap) $(LIBMACS3_LIB) -o $(exec) $(LDFLAGS)
+$(exec): $(driver_objs) $(libchromap) $(RAPIDMACS_LIB)
+	$(CXX) $(CXXFLAGS) $(driver_objs) $(libchromap) $(RAPIDMACS_LIB) -o $(exec) $(LDFLAGS)
 
 $(libchromap): $(core_objs) $(libchromap_objs)
 	rm -f $(libchromap)
 	ar rcs $(libchromap) $(core_objs) $(libchromap_objs)
 
-$(runner): $(libchromap) $(runner_objs) $(LIBMACS3_LIB)
-	$(CXX) $(CXXFLAGS) $(runner_objs) $(libchromap) $(LIBMACS3_LIB) -o $(runner) $(LDFLAGS)
+$(runner): $(libchromap) $(runner_objs) $(RAPIDMACS_LIB)
+	$(CXX) $(CXXFLAGS) $(runner_objs) $(libchromap) $(RAPIDMACS_LIB) -o $(runner) $(LDFLAGS)
 
-# chromap_callpeaks is now an alias for libMACS3's macs3frag binary.
-# Keeps existing tests/harnesses working without source-level changes here.
-$(peak_caller): $(LIBMACS3_CLI)
-	cp $(LIBMACS3_CLI) $(peak_caller)
+# Install the canonical RapidMACS CLI at the suite root.
+$(peak_caller): $(RAPIDMACS_CLI)
+	cp $(RAPIDMACS_CLI) $(peak_caller)
+
+# Preserve the historical Chromap Suite executable name for existing harnesses.
+$(peak_caller_compat): $(peak_caller)
+	ln -sfn $(peak_caller) $(peak_caller_compat)
 
 $(objs_dir)/%.o: $(src_dir)/%.cc
 	@mkdir -p $(@D)
@@ -92,10 +96,10 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 	test-peak-input-repr-100k test-peak-pileup-100k test-peak-frag-pileup-100k \
 	test-peak-lambda-100k test-peak-score-100k test-peak-bdgpeakcall-100k \
 	test-peak-narrowpeak-100k test-peak-integration-100k \
-	test-peak-integration-matrix-100k test-lowmem-bed-100k test-smoke libmacs3
+	test-peak-integration-matrix-100k test-lowmem-bed-100k test-smoke librapidmacs
 clean:
-	-rm -rf $(exec) $(libchromap) $(runner) $(peak_caller) $(objs_dir)
-	-$(MAKE) -C $(LIBMACS3_DIR) clean
+	-rm -rf $(exec) $(libchromap) $(runner) $(peak_caller) $(peak_caller_compat) $(objs_dir)
+	-$(MAKE) -C $(RAPIDMACS_DIR) clean
 
 # 100K fragment peak-caller benchmark. Pair inputs: CHROMAP_PEAK_RUN_ROOT, or
 # FRAGMENTS_TSV_GZ+ATAC_BAM, or same-run auto-pair under CHROMAP_100K_BENCH; RUN_MACS3=0 for internal only.
@@ -178,11 +182,11 @@ test-unit: dir
 	./tests/test_y_filter
 
 # Unit tests for in-memory fragment packing / accumulator. Now linked
-# against libmacs3.a (frag_compact_store moved to libMACS3).
-test-frag-compact-store: dir $(LIBMACS3_LIB)
+# against librapidmacs.a (frag_compact_store lives in RapidMACS).
+test-frag-compact-store: dir $(RAPIDMACS_LIB)
 	@mkdir -p tests
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_frag_compact_store.cc \
-		$(LIBMACS3_LIB) -o tests/test_frag_compact_store $(LDFLAGS)
+		$(RAPIDMACS_LIB) -o tests/test_frag_compact_store $(LDFLAGS)
 	./tests/test_frag_compact_store
 
 # Hermetic input-format smoke. Verifies plain/gzip FASTQ parity and, when

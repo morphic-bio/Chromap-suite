@@ -84,7 +84,7 @@ jobs concurrently unless a runbook or the user explicitly says that is safe.
 
 Rationale:
 
-- Chromap, STAR, libMACS3, htslib compression, and sort/spill paths compete for
+- Chromap, STAR, librapidmacs, htslib compression, and sort/spill paths compete for
   CPU, RAM, disk bandwidth, and temporary storage.
 - Parallel benchmarks make wall time and RSS comparisons hard to interpret.
 - Several regression gates compare byte-for-byte outputs and should not share
@@ -130,7 +130,7 @@ only when the `RELEASE_PUSH_IMAGE` repo variable is set (with
 The release gate is the S0 smoke tier (`make test-smoke`); the heavier S1/S2
 tiers need out-of-tree fixtures and remain opt-in/local. The build requires the
 system `libhts-dev` package (provides `htslib/kfunc.h` + `libhts` for the
-libMACS3 build and the chromap link).
+librapidmacs build and the chromap link).
 
 ## Git Authorship
 

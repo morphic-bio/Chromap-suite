@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publication smoke for the Chromap-suite libMACS3 integration.
+# Publication smoke for the Chromap-suite librapidmacs integration.
 #
 # Baseline:
 #   unfixed upstream Chromap 0.3.3 in normal-memory mode emits SAM to stdout,
@@ -7,7 +7,7 @@
 #   original upstream Chromap binary emits BED/FRAG rows for standalone MACS3.
 #
 # Integrated:
-#   Chromap-suite emits sorted BAM, fragments, and libMACS3 FRAG peaks in one
+#   Chromap-suite emits sorted BAM, fragments, and librapidmacs FRAG peaks in one
 #   command.
 #
 # Important: do not use `--preset atac` here. Upstream Chromap's ATAC preset
@@ -18,8 +18,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-# shellcheck source=scripts/benchmarks/libmacs3_chromap_common.sh
-source "${SCRIPT_DIR}/libmacs3_chromap_common.sh"
+# shellcheck source=scripts/benchmarks/rapidmacs_chromap_common.sh
+source "${SCRIPT_DIR}/rapidmacs_chromap_common.sh"
 
 export LD_LIBRARY_PATH="${REPO_ROOT}/third_party/htslib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
@@ -54,7 +54,7 @@ if [[ -n "${MACS3_QVALUE}" ]]; then
   chromap_callpeaks_threshold_args=(--macs3-frag-qvalue "${MACS3_QVALUE}")
 fi
 
-ARTIFACT_ROOT="${ARTIFACT_ROOT:-${REPO_ROOT}/plans/artifacts/libmacs3_chromap_atac_panel}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-${REPO_ROOT}/plans/artifacts/rapidmacs_chromap_atac_panel}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 OUTDIR="${OUTDIR:-${ARTIFACT_ROOT}/${RUN_ID}/100k_smoke}"
 
@@ -191,23 +191,23 @@ bench_bed3_from_narrowpeak "${OUTDIR}/original_chromap/macs3/original_chromap_ma
   "${OUTDIR}/original_chromap/macs3/original_chromap_macs3_peaks.bed3"
 
 echo "[100k-smoke] Chromap-suite integrated command" | tee -a "${LOG}"
-bench_run_timed "Chromap-suite integrated BAM + fragments + libMACS3 peaks" \
+bench_run_timed "Chromap-suite integrated BAM + fragments + librapidmacs peaks" \
   "${OUTDIR}/times/chromap_suite_integrated.time.txt" "${LOG}" "${COMMANDS}" \
   "${CHROMAP_SUITE}" -t "${THREADS}" "${chromap_common_args[@]}" \
   --BAM --sort-bam --write-index \
   --atac-fragments "${OUTDIR}/chromap_suite/fragments.tsv.gz" \
   --summary "${OUTDIR}/chromap_suite/summary.tsv" \
   --call-macs3-frag-peaks \
-  --macs3-frag-peaks-output "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_peaks.narrowPeak" \
-  --macs3-frag-summits-output "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_summits.bed" \
+  --macs3-frag-peaks-output "${OUTDIR}/chromap_suite/chromap_suite_rapidmacs_peaks.narrowPeak" \
+  --macs3-frag-summits-output "${OUTDIR}/chromap_suite/chromap_suite_rapidmacs_summits.bed" \
   "${chromap_suite_threshold_args[@]}" \
   -o "${OUTDIR}/chromap_suite/possorted.bam"
 bench_sort_fragments_5col "${OUTDIR}/chromap_suite/fragments.tsv.gz" \
   "${OUTDIR}/chromap_suite/compare/fragments.5col.sorted.tsv"
 bench_bed3_from_fragments "${OUTDIR}/chromap_suite/fragments.tsv.gz" \
   "${OUTDIR}/chromap_suite/fragments.bed3"
-bench_bed3_from_narrowpeak "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_peaks.narrowPeak" \
-  "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_peaks.bed3"
+bench_bed3_from_narrowpeak "${OUTDIR}/chromap_suite/chromap_suite_rapidmacs_peaks.narrowPeak" \
+  "${OUTDIR}/chromap_suite/chromap_suite_rapidmacs_peaks.bed3"
 
 echo "[100k-smoke] standalone chromap_callpeaks reference from original unfixed fragments" | tee -a "${LOG}"
 bench_run_timed "chromap_callpeaks on original unfixed Chromap fragments" \
@@ -243,22 +243,22 @@ cmp -s "${OUTDIR}/original_chromap/compare/fragments.5col.sorted.tsv" \
 [[ "${original_bam_body_md5}" == "${suite_bam_body_md5}" ]] &&
   suite_original_bam_body_identical=true
 cmp -s "${OUTDIR}/original_chromap/macs3/original_chromap_macs3_peaks.bed3" \
-       "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_peaks.bed3" &&
+       "${OUTDIR}/chromap_suite/chromap_suite_rapidmacs_peaks.bed3" &&
   suite_macs3_bed3_identical=true
 cmp -s "${OUTDIR}/original_chromap/chromap_callpeaks_from_original.narrowPeak" \
-       "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_peaks.narrowPeak" &&
+       "${OUTDIR}/chromap_suite/chromap_suite_rapidmacs_peaks.narrowPeak" &&
   suite_callpeaks_narrowpeak_identical=true
 cmp -s "${OUTDIR}/original_chromap/chromap_callpeaks_from_original_summits.bed" \
-       "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_summits.bed" &&
+       "${OUTDIR}/chromap_suite/chromap_suite_rapidmacs_summits.bed" &&
   suite_callpeaks_summits_identical=true
 
 macs3_peak_count="$(bench_count_noncomment_lines "${OUTDIR}/original_chromap/macs3/original_chromap_macs3_peaks.narrowPeak")"
-suite_peak_count="$(bench_count_noncomment_lines "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_peaks.narrowPeak")"
+suite_peak_count="$(bench_count_noncomment_lines "${OUTDIR}/chromap_suite/chromap_suite_rapidmacs_peaks.narrowPeak")"
 callpeaks_peak_count="$(bench_count_noncomment_lines "${OUTDIR}/original_chromap/chromap_callpeaks_from_original.narrowPeak")"
 fragments_count="$(wc -l <"${OUTDIR}/original_chromap/compare/fragments.5col.sorted.tsv")"
 peak_jaccard="$(bench_jaccard_or_na \
   "${OUTDIR}/original_chromap/macs3/original_chromap_macs3_peaks.bed3" \
-  "${OUTDIR}/chromap_suite/chromap_suite_libmacs3_peaks.bed3")"
+  "${OUTDIR}/chromap_suite/chromap_suite_rapidmacs_peaks.bed3")"
 read -r original_only suite_only common_fragments < <(bench_line_set_counts \
   "${OUTDIR}/original_chromap/compare/fragments.5col.sorted.tsv" \
   "${OUTDIR}/chromap_suite/compare/fragments.5col.sorted.tsv" \

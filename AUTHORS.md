@@ -2,7 +2,7 @@
 
 ## Chromap Suite (this project)
 
-Chromap Suite is a standalone open-source chromatin-accessibility platform spun off from Chromap in 2026. The Chromap Suite extensions — `libchromap`, in-process `libMACS3` peak calling, native BAM output and coordinate sorting, the AEV1 fragment sidecar, the MCP server and Launchpad, and the multiomic integration with STAR Suite — were developed by:
+Chromap Suite is a standalone open-source chromatin-accessibility platform spun off from Chromap in 2026. The Chromap Suite extensions — `libchromap`, in-process `librapidmacs` peak calling, native BAM output and coordinate sorting, the AEV1 fragment sidecar, the MCP server and Launchpad, and the multiomic integration with STAR Suite — were developed by:
 
 - **Ling-Hong Hung** (University of Washington Tacoma) — copyright holder, primary developer.
 

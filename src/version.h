@@ -4,7 +4,7 @@
 // Chromap Suite release version (semantic versioning).
 //
 // This is the version reported by `chromap --version`. It versions the suite as
-// a whole (ATAC alignment + native BAM, libMACS3 peaks, libchromap API, MCP
+// a whole (ATAC alignment + native BAM, librapidmacs peaks, libchromap API, MCP
 // server / Launchpad), independent of the underlying chromap engine.
 //
 // The chromap engine / upstream lineage version is CHROMAP_VERSION (defined in

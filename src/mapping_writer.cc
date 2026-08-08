@@ -10,8 +10,8 @@
 #include <limits>
 #include "chromap.h"
 #include "bam_sorter.h"
-#include "libmacs3/frag_compact_store.h"
-#include "libmacs3/fragments.h"
+#include "rapidmacs/frag_compact_store.h"
+#include "rapidmacs/fragments.h"
 
 namespace chromap {
 

@@ -16,18 +16,18 @@ BUILD_STATE_FILE = ".chromap_build_state.json"
 TARGETS: dict[str, dict[str, Any]] = {
     "chromap": {
         "make_target": None,
-        "outputs": ["chromap", "chromap_callpeaks"],
-        "source_dirs": ["src", "third_party/libMACS3/include"],
+        "outputs": ["chromap", "rapidmacs", "chromap_callpeaks"],
+        "source_dirs": ["src", "third_party/rapidmacs/include"],
     },
     "libchromap": {
         "make_target": "libchromap.a",
         "outputs": ["libchromap.a"],
-        "source_dirs": ["src", "third_party/libMACS3/include"],
+        "source_dirs": ["src", "third_party/rapidmacs/include"],
     },
     "runner": {
         "make_target": "chromap_lib_runner",
         "outputs": ["chromap_lib_runner"],
-        "source_dirs": ["src", "third_party/libMACS3/include"],
+        "source_dirs": ["src", "third_party/rapidmacs/include"],
     },
 }
 
