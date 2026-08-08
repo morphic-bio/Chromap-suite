@@ -17,5 +17,5 @@
 
 ## Companion projects
 
-* [libMACS3](https://github.com/morphic-bio/libMACS3): portable C++ implementation of MACS3's narrow peak caller (byte-identical to MACS3 v3.0.3)
-* [STAR Suite](https://github.com/morphic-bio/STAR-suite): RNA-side counterpart; embeds `libchromap` + `libMACS3` for the end-to-end multiomic single-binary pipeline
+* [RapidMACS](https://github.com/morphic-bio/rapidmacs): portable C++ implementation (`librapidmacs`) of MACS3's narrow peak caller (byte-identical to MACS3 v3.0.3)
+* [STAR Suite](https://github.com/morphic-bio/STAR-suite): RNA-side counterpart; embeds `libchromap` + `librapidmacs` for the end-to-end multiomic single-binary pipeline

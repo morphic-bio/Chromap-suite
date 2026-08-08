@@ -168,7 +168,7 @@ recipes:
         type: bool
         required: false
         default: false
-        description: Enable integrated libMACS3 FRAG peak calling.
+        description: Enable integrated librapidmacs FRAG peak calling.
       - name: macs3_frag_peaks_output
         type: file
         required: false
@@ -195,7 +195,7 @@ recipes:
         type: bool
         required: false
         default: false
-        description: Use the low-memory libMACS3 sweep workspace for in-memory peak calling.
+        description: Use the low-memory librapidmacs sweep workspace for in-memory peak calling.
     outputs:
       - name: bam
         artifact_type: bam
@@ -219,12 +219,12 @@ recipes:
         artifact_type: peaks
         path_template: "{macs3_frag_peaks_output}"
         required: false
-        description: Optional integrated libMACS3 narrowPeak output.
+        description: Optional integrated librapidmacs narrowPeak output.
       - name: summits
         artifact_type: peaks
         path_template: "{macs3_frag_summits_output}"
         required: false
-        description: Optional integrated libMACS3 summit BED output.
+        description: Optional integrated librapidmacs summit BED output.
     preflight:
       - reference_fasta_exists
       - chromap_index_exists
@@ -248,7 +248,7 @@ recipes:
       - STAR Suite may consume fragments or derived evidence TSVs.
     notes:
       - Set atac_fragment_binary_output to render --atac-fragment-binary-output and produce the AEV1 sidecar plus .chroms.tsv metadata.
-      - Set call_macs3_frag_peaks plus narrowPeak/summits outputs to render integrated libMACS3 FRAG peak calling; macs3_frag_qvalue switches from default p-mode to q-mode.
+      - Set call_macs3_frag_peaks plus narrowPeak/summits outputs to render integrated librapidmacs FRAG peak calling; macs3_frag_qvalue switches from default p-mode to q-mode.
 
   - id: chromap_hic_pairs
     title: Chromap Hi-C pairs

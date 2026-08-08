@@ -7,6 +7,7 @@
 # Build artifacts
 chromap
 chromap_callpeaks
+rapidmacs
 chromap_lib_runner
 objs/
 *.o

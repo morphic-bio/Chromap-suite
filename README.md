@@ -1,8 +1,8 @@
 # Chromap Suite
 
-Chromap Suite is an open-source C++ chromatin-accessibility platform: ATAC-seq alignment with native BAM output and coordinate sorting, an in-process narrow peak caller (`libMACS3`) byte-identical to MACS3 v3.0.3, an embeddable callable-library API (`libchromap`), and an MCP server with a browser Launchpad. Chromap Suite produces the MACS3 narrow peaks the field already uses and composes with [STAR Suite](https://github.com/morphic-bio/STAR-suite) for an end-to-end multiomic (RNA + ATAC) single-binary pipeline. Bulk ATAC, scATAC, ChIP-seq, and Hi-C all run through the same binary; multiomic processing is delivered through `libchromap` embedded in STAR Suite as a worker thread.
+Chromap Suite is an open-source C++ chromatin-accessibility platform: ATAC-seq alignment with native BAM output and coordinate sorting, an in-process narrow peak caller (`librapidmacs`) byte-identical to MACS3 v3.0.3, an embeddable callable-library API (`libchromap`), and an MCP server with a browser Launchpad. Chromap Suite produces the MACS3 narrow peaks the field already uses and composes with [STAR Suite](https://github.com/morphic-bio/STAR-suite) for an end-to-end multiomic (RNA + ATAC) single-binary pipeline. Bulk ATAC, scATAC, ChIP-seq, and Hi-C all run through the same binary; multiomic processing is delivered through `libchromap` embedded in STAR Suite as a worker thread.
 
-On the public 3K PBMC Multiome at 32 threads, the integrated multiomic pipeline (STAR Suite + libchromap + libMACS3) completes in **18:17 / 64.8 GB peak RSS** vs **40:04 / 79.1 GB** for Cell Ranger ARC v2.2.0 (**2.19× faster, ~18% lower memory**), producing **50,274 narrowPeak peaks byte-identical** to MACS3 v3.0.3 (md5 `34f9f991…`). Standalone `libMACS3` runs **7.8× / 10.3× / 11.3× faster** than Cython MACS3 v3.0.3 at 1 / 4 / 24 threads.
+On the public 3K PBMC Multiome at 32 threads, the integrated multiomic pipeline (STAR Suite + libchromap + librapidmacs) completes in **18:17 / 64.8 GB peak RSS** vs **40:04 / 79.1 GB** for Cell Ranger ARC v2.2.0 (**2.19× faster, ~18% lower memory**), producing **50,274 narrowPeak peaks byte-identical** to MACS3 v3.0.3 (md5 `34f9f991…`). Standalone `librapidmacs` runs **7.8× / 10.3× / 11.3× faster** than Cython MACS3 v3.0.3 at 1 / 4 / 24 threads.
 
 Agent quickstart: see [`AGENTS.md`](AGENTS.md) for repo-specific guardrails, tests, and recent changes.
 
@@ -15,7 +15,7 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 ### Core capabilities
 
 - **Native BAM output + coordinate sort** (`--BAM --sort-bam --write-index`). Replaces the conventional `chromap | samtools sort | samtools index` chain via htslib + a *k*-way disk-merge spillover. Produces `@HD VN:1.6 SO:coordinate` headers and `.bam.bai` indexes in one process. Sort key: `(tid, pos, flag, mtid, mpos, isize)` with `read_id` tie-break (note: differs from `samtools sort` QNAME tie-break). See [`docs/sort_spec.md`](docs/sort_spec.md). Compatible with `--low-mem`.
-- **In-process libMACS3 narrow peak calling** (`--call-macs3-frag-peaks`). Fragments are handed to `libMACS3` through the `FragmentIterator` API without an intermediate `fragments.tsv.gz` write, so a single chromap invocation produces sorted-and-indexed BAM, fragments, and MACS3-equivalent narrowPeak and summit outputs. The default threshold remains MACS-style p-mode (`--macs3-frag-pvalue 1e-5`); `--macs3-frag-qvalue Q` switches to q-value/FDR thresholding for `macs3 callpeak -q` compatibility. Bulk ATAC supported via `--macs3-frag-peaks-source memory` (no barcode required); scATAC/multiomic via barcoded fragments. Output is byte-identical to standalone MACS3 v3.0.3 in the default p-mode path (50,274 peaks, md5 `34f9f991…` on the 3K PBMC ATAC channel).
+- **In-process librapidmacs narrow peak calling** (`--call-macs3-frag-peaks`). Fragments are handed to `librapidmacs` through the `FragmentIterator` API without an intermediate `fragments.tsv.gz` write, so a single chromap invocation produces sorted-and-indexed BAM, fragments, and MACS3-equivalent narrowPeak and summit outputs. The default threshold remains MACS-style p-mode (`--macs3-frag-pvalue 1e-5`); `--macs3-frag-qvalue Q` switches to q-value/FDR thresholding for `macs3 callpeak -q` compatibility. Bulk ATAC supported via `--macs3-frag-peaks-source memory` (no barcode required); scATAC/multiomic via barcoded fragments. Output is byte-identical to standalone MACS3 v3.0.3 in the default p-mode path (50,274 peaks, md5 `34f9f991…` on the 3K PBMC ATAC channel).
 - **Y-chromosome filtering** (`--emit-Y-bam`, `--emit-noY-bam`, `--emit-Y-noY-fastq`, `--emit-Y-read-names`). Three-stream output (all / Y-only / noY) for sex-aware analyses. Works with `--sort-bam`. Detection is case-insensitive and matches `Y`, `chrY`, `CHR_Y`, `chr_y`; decoy/random/alt contigs (`chrY_random`, etc.) are intentionally excluded. See the [Y-chromosome filtering](#y-chromosome-filtering) section below.
 - **`libchromap.a` callable library**. The full Chromap Suite ATAC pipeline is exposed through the `libchromap` API (`RunAtacMapping()`, `ChromapAtacConfig`, `ChromapPermitHooks`). The same library backs the `chromap` CLI binary and is the integration point used by STAR Suite for multiomic processing. See [`src/libchromap.h`](src/libchromap.h) and [`src/libchromap.cc`](src/libchromap.cc).
 - **`--Tn5-shift-mode {classical|symmetric}`** picks the Tn5 cut-site offset convention on BED/BEDPE/PAF. `classical` (`+4 / -5`; Buenrostro 2013 / Cell Ranger ARC) is the default; `symmetric` (`+4 / -4`; ChromBPNet) is the alternative. Implies `--Tn5-shift`. Active offsets are echoed at startup. SAM/BAM output remains intentionally unshifted (shifting would require coordinated edits to `POS`, `MPOS`, `TLEN`, `CIGAR`, `NM`, `MD`).
@@ -24,8 +24,8 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 ### Reliability and tooling
 
 - **Low-memory spillover (rewritten architecture)**. Per-thread overflow writers feeding a *k*-way merge on read-back **replace** the prior shared-buffer + atomic-write design. Supports the full cross-product of `--low-mem` with `--atac-fragments`, BAM output, `--macs3-frag-low-mem`, and Y-filtering modes; production-scale runs (≳10⁹ reads) handled cleanly. A pre-existing race condition in the legacy spillover that produced silent read drops at ~1/10⁴ on typical datasets and intermittent hangs at production scale is resolved as a side effect of the rewrite. The legacy temp-file system is available via `LEGACY_OVERFLOW=1` at compile time (single-threaded only). See [`HISTORY.md`](HISTORY.md) for file references and validation history.
-- **Concurrency coordination across new collaborators**. Worker threads coordinate with the native BAM writer, STAR Suite's permit allocator (when embedded), and libMACS3 peak-call paths under the existing OpenMP scheduler. The smoke matrix exercises all combinations of low-mem / BAM / peak-call / Y-filter modes.
-- **Regression suite (C01–C11)**. An 11-area parity matrix covering the main user-visible surfaces: index build, paired BED output, ChIP and ATAC presets, scATAC barcode handling, sorted BAM and index, low-memory BED parity, ATAC BAM + fragments, libMACS3 narrow peak calling, Hi-C pairs, and Y/noY split. Three tiers: **S0** hermetic synthetic for pre-commit smoke; **S1** ENCODE downsample for real-assay confidence (paired ENCODE accessions and downsample manifests committed; FASTQs cached out-of-tree); **S2** the 100K and paper-fixture tier reserved for heavier gates. The S0 tier is mandatory for pre-commit checks; S1 and S2 are opt-in.
+- **Concurrency coordination across new collaborators**. Worker threads coordinate with the native BAM writer, STAR Suite's permit allocator (when embedded), and librapidmacs peak-call paths under the existing OpenMP scheduler. The smoke matrix exercises all combinations of low-mem / BAM / peak-call / Y-filter modes.
+- **Regression suite (C01–C11)**. An 11-area parity matrix covering the main user-visible surfaces: index build, paired BED output, ChIP and ATAC presets, scATAC barcode handling, sorted BAM and index, low-memory BED parity, ATAC BAM + fragments, librapidmacs narrow peak calling, Hi-C pairs, and Y/noY split. Three tiers: **S0** hermetic synthetic for pre-commit smoke; **S1** ENCODE downsample for real-assay confidence (paired ENCODE accessions and downsample manifests committed; FASTQs cached out-of-tree); **S2** the 100K and paper-fixture tier reserved for heavier gates. The S0 tier is mandatory for pre-commit checks; S1 and S2 are opt-in.
 - **MCP server + Launchpad** (`mcp_server/`). Schema-driven workflow renderer for agents plus a browser recipe UI for humans. Both surfaces consume the same parameterised YAML recipe registry (`mcp_server/recipes/registry.yaml`). The MCP face exposes recipes to agents as schema-validated tool calls; the Launchpad face renders the same recipes as web forms. See the [Chromap Launchpad](#chromap-launchpad-recipe-builder) section below.
 
 ### ATAC-multiomic
@@ -39,10 +39,12 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 ```
 src/                  # Chromap Suite C++ sources and public libchromap header
 libchromap.a          # Built static library
-bin/                  # CLI binaries (chromap, chromap_callpeaks)
+chromap               # Chromap Suite CLI
+rapidmacs             # RapidMACS CLI copied from the vendored submodule
+chromap_callpeaks     # Compatibility symlink to rapidmacs
 third_party/
   htslib/             # Vendored htslib (BAM read/write/sort/index)
-  libMACS3/           # Vendored libMACS3 submodule (narrow peak caller)
+  rapidmacs/          # Vendored RapidMACS submodule (librapidmacs + CLI)
 mcp_server/           # MCP server + Launchpad UI
   recipes/            # YAML recipe registry consumed by both MCP and Launchpad
   workflows/          # Workflow schemas
@@ -57,8 +59,9 @@ scripts/              # Helper scripts (validators, launchpad runner, ...)
 
 - **chromap** (`src/`, `bin/chromap`) — the CLI binary covering bulk ATAC, scATAC, ChIP-seq, and Hi-C. Supports the standard ATAC, ChIP, scATAC, and Hi-C flag surfaces, plus the Chromap Suite additions above (BAM, sort, peak-call, sidecar, Y-filtering). Build: `make`.
 - **libchromap** (`libchromap.a`, `src/libchromap.h`) — the same code as a callable C++ library. The `RunAtacMapping()` entry point + `ChromapAtacConfig` + `ChromapPermitHooks` structs let a host process embed Chromap Suite's ATAC pipeline directly with shared thread coordination. Build: produced as a side effect of `make`.
-- **libMACS3** (`third_party/libMACS3/lib/libmacs3.a`) — vendored submodule providing a portable C++ implementation of MACS3's narrow peak-calling capability. Standalone CLI `macs3frag` reads a fragments TSV and produces byte-identical narrowPeak. It also exposes opt-in MACS BED compatibility profiles, including `--macs-profile signac-atac`; Chromap/MorPHiC FRAG defaults remain unchanged. Build: `make libmacs3` (or transitively via `make`). See [the libMACS3 repo](https://github.com/morphic-bio/libMACS3).
-- **chromap_callpeaks** (`bin/chromap_callpeaks`) — alias for libMACS3's `macs3frag` binary, kept for harness compatibility. Reads standard fragments files and produces narrowPeak; the optional `--macs-profile signac-atac` path projects fragments to MACS BED for Signac-style parity checks.
+- **RapidMACS / librapidmacs** (`third_party/rapidmacs/lib/librapidmacs.a`) — vendored submodule providing a portable C++ implementation of MACS3's narrow peak-calling capability. The standalone `rapidmacs` CLI reads FRAG, BAMPE, BEDPE, or compatible BED inputs and emits narrowPeak plus summits. It also exposes opt-in MACS BED compatibility profiles, including `--macs-profile signac-atac`; Chromap/MorPHiC FRAG defaults remain unchanged. Build: `make librapidmacs` (or transitively via `make`). See [the RapidMACS repo](https://github.com/morphic-bio/rapidmacs).
+- **rapidmacs** (`rapidmacs`) — canonical standalone peak-caller executable copied from the vendored submodule.
+- **chromap_callpeaks** (`chromap_callpeaks`) — compatibility symlink to `rapidmacs`, retained for existing Chromap Suite harnesses.
 - **MCP server + Launchpad** (`mcp_server/`) — agent automation service plus browser recipe UI. Initial recipes: `chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_fragments`, `chromap_hic_pairs`. See [`mcp_server/README.md`](mcp_server/README.md).
 
 ## Benchmarks
@@ -71,14 +74,14 @@ Chromap Suite command from the established Chromap + samtools + MACS3 workflow.
 
 | Workflow | Surface | Baseline | Result | Note |
 |---|---|---|---|---|
-| Multiome (RNA + ATAC) | Single `STAR` invocation: alignment + Solo + GEX `EmptyDrops_CR` + concurrent libchromap + libMACS3 narrow peaks + ATAC `evidence-from-peaks` (T=32, lease=256, pool=48) | Cell Ranger ARC v2.2.0 (`cellranger-arc count --create-bam=true --nosecondary --disable-cell-annotation --localcores=32`); **40:04 / 79.07 GB peak RSS** | **18:17.52 / 64.80 GB; 2.19× faster, ~18% lower memory** | Apples-to-apples scope: alignment + GEX UMI counting + GEX `EmptyDrops_CR` + ATAC mapping + narrow peak calling + ATAC per-barcode cell call. ARC RSS read from cellranger's own `_perf` JSON (ARC forks 252 child processes at peak, so parent-process `/usr/bin/time -v` is misleading). |
+| Multiome (RNA + ATAC) | Single `STAR` invocation: alignment + Solo + GEX `EmptyDrops_CR` + concurrent libchromap + librapidmacs narrow peaks + ATAC `evidence-from-peaks` (T=32, lease=256, pool=48) | Cell Ranger ARC v2.2.0 (`cellranger-arc count --create-bam=true --nosecondary --disable-cell-annotation --localcores=32`); **40:04 / 79.07 GB peak RSS** | **18:17.52 / 64.80 GB; 2.19× faster, ~18% lower memory** | Apples-to-apples scope: alignment + GEX UMI counting + GEX `EmptyDrops_CR` + ATAC mapping + narrow peak calling + ATAC per-barcode cell call. ARC RSS read from cellranger's own `_perf` JSON (ARC forks 252 child processes at peak, so parent-process `/usr/bin/time -v` is misleading). |
 | Narrow peaks vs MACS3 | Same multiomic pipeline output | MACS3 v3.0.3 standalone on the same input | **50,274 peaks, byte-identical** (md5 `34f9f991…`); summits also byte-identical (md5 `b54a556…`) | The pipeline delivers the MACS3 narrow peaks downstream ATAC analyses already use; ARC produces 81,157 peaks via its own custom wide caller, which is not a parameterisation of MACS. |
-| libMACS3 standalone | Fragments TSV in → narrowPeak out | MACS3 v3.0.3 single-threaded (721 s, 2.50 GB) | **92 s / 2.77 GB at 1 thread (7.8×)**; **70 s at 4 threads (10.3×)**; 64 s at 24 threads (11.3×) | All thread counts produce byte-identical narrowPeak. Memory parity at the practical 4-thread budget; sublinear scaling beyond 4 threads because the per-chromosome serial sweep dominates the remaining wall time. |
+| librapidmacs standalone | Fragments TSV in → narrowPeak out | MACS3 v3.0.3 single-threaded (721 s, 2.50 GB) | **92 s / 2.77 GB at 1 thread (7.8×)**; **70 s at 4 threads (10.3×)**; 64 s at 24 threads (11.3×) | All thread counts produce byte-identical narrowPeak. Memory parity at the practical 4-thread budget; sublinear scaling beyond 4 threads because the per-chromosome serial sweep dominates the remaining wall time. |
 | ATAC fragment sidecar | AEV1 binary, 32-byte header + 24-byte records + `.chroms.tsv` metadata | gzipped fragments TSV re-parse | 53,969,811 records, 1,295,275,496 B (md5 `a4251bbc…`) | Consumed by `libscrna::atac::RunAtacEvidenceFromBinary` for ATAC cell calling; integration guard fires when `atacAcquire=0` after `--chromapAtacEnable 1 --dynamicThreadInterface 1`. |
 
 The end-to-end multiomic comparison anchors on a fully public dataset for direct reproducibility.
 
-### Chromap CLI + libMACS3 parity benchmark
+### Chromap CLI + librapidmacs parity benchmark
 
 This benchmark compares the integrated Chromap Suite command against the
 established command-chain baseline:
@@ -134,10 +137,10 @@ Reusable scripts and recorded outputs:
 ### From source
 
 ```sh
-# Initialise submodules (htslib + libMACS3)
+# Initialise submodules (htslib + RapidMACS)
 git submodule update --init --recursive
 
-# Build chromap CLI + libchromap.a + chromap_callpeaks (libMACS3 standalone)
+# Build chromap CLI + libchromap.a + rapidmacs (plus chromap_callpeaks compatibility symlink)
 make
 ```
 
@@ -381,7 +384,7 @@ Initial public recipes: `chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_f
 - Changes by release: [CHANGELOG.md](CHANGELOG.md)
 - BAM sort specification: [docs/sort_spec.md](docs/sort_spec.md)
 - Launchpad design: [docs/chromap_launchpad.md](docs/chromap_launchpad.md)
-- libMACS3 repository: https://github.com/morphic-bio/libMACS3
+- RapidMACS repository: https://github.com/morphic-bio/rapidmacs
 - STAR Suite (multiomic integration entry point): https://github.com/morphic-bio/STAR-suite
 - Chromap Suite preprint: https://github.com/morphic-bio/chromap_suite_paper
 
@@ -404,5 +407,5 @@ Chromap Suite extensions copyright Ling-Hong Hung. Preprint co-authors: Ling-Hon
 ## Licence
 
 - `libchromap` and the `chromap` CLI: MIT (see [LICENSE](LICENSE)).
-- `libMACS3`: BSD-3 — a single source-inspected adaptation for summit edge cases necessitates BSD-3 distribution; see [the libMACS3 repo](https://github.com/morphic-bio/libMACS3) for the methodology.
+- `librapidmacs`: BSD-3 — a single source-inspected adaptation for summit edge cases necessitates BSD-3 distribution; see [the RapidMACS repo](https://github.com/morphic-bio/rapidmacs) for the methodology.
 - MCP server + Launchpad (`mcp_server/`): MIT.

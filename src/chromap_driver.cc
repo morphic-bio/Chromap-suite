@@ -15,10 +15,10 @@
 
 #include "chromap.h"
 #include "cxxopts.hpp"
-#include "libmacs3/fragment_input.h"
-#include "libmacs3/frag_compact_store.h"
-#include "libmacs3/fragments.h"
-#include "libmacs3/macs3_frag_peak_pipeline.h"
+#include "rapidmacs/fragment_input.h"
+#include "rapidmacs/frag_compact_store.h"
+#include "rapidmacs/fragments.h"
+#include "rapidmacs/macs3_frag_peak_pipeline.h"
 #include "y_noy_path_utils.h"
 
 namespace chromap {
@@ -1593,6 +1593,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       pr.max_gap = mapping_parameters.macs3_frag_max_gap;
       pr.macs3_uint8_counts = mapping_parameters.macs3_frag_uint8_counts;
       pr.peak_caller_threads = mapping_parameters.num_threads;
+      pr.name_prefix = "NA";
       std::string err;
       std::string work_used;
       const std::string &keep = mapping_parameters.macs3_frag_keep_intermediates_dir;

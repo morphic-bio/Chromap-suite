@@ -78,7 +78,7 @@ Chromap-suite and STAR-suite collapse the common multi-step path into single
 deterministic binaries that emit standard interchange formats:
 
 - **Chromap-suite** — alignment → fragments → in-process narrow peaks
-  (libMACS3, **byte-identical to MACS3 v3.0.3**) → matrices; BED/BAM/CRAM/TagAlign,
+  (librapidmacs, **byte-identical to MACS3 v3.0.3**) → matrices; BED/BAM/CRAM/TagAlign,
   and Hi-C `.pairs` via the same binary; an embeddable `libchromap` API; native CBQ
   (BINSEQ) input as a FASTQ drop-in; an AEV1 ATAC fragment sidecar.
 - **STAR-suite** — STARsolo RNA (intron-inclusive `GeneFull` for single-nucleus),
@@ -142,7 +142,7 @@ dasatinib resistance) and iPSC (CRISPRa). The reviewer-runnable K562 subset
 `fasterq-dump --include-technical`) is downloaded to `/mnt/pikachu/catatac_gse288996`.
 
 The planned demonstration:
-- Chromap-suite maps the ATAC arm → fragments + libMACS3 narrow peaks (the dataset
+- Chromap-suite maps the ATAC arm → fragments + librapidmacs narrow peaks (the dataset
   itself used MACS2 via Signac `CallPeaks` — peaks equivalent to MACS3).
 - STAR-suite maps RNA (`GeneFull`) + guide counts → MuData with the peak matrix.
 - Hi-C and ChIP **validation arms** are added *through recipes* using legacy

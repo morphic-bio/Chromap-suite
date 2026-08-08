@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for Chromap + libMACS3 publication benchmarks.
+# Shared helpers for Chromap + librapidmacs publication benchmarks.
 # shellcheck shell=bash
 
 set -euo pipefail

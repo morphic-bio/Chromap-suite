@@ -16,7 +16,8 @@ upstream; see [`HISTORY.md`](../HISTORY.md) for lineage.
   produced directly by the aligner, alongside the existing BED/BEDPE/PAF and
   fragments outputs. Bulk ATAC, scATAC, ChIP-seq, and Hi-C all run through the
   same `chromap` binary.
-- **In-process libMACS3 narrow peak calling** (`--call-macs3-frag-peaks`) — a
+- **In-process RapidMACS (`librapidmacs`) narrow peak calling**
+  (`--call-macs3-frag-peaks`) — a
   single `chromap` invocation produces sorted/indexed BAM, fragments, and
   MACS3-equivalent narrowPeak + summit outputs with no intermediate
   `fragments.tsv.gz` write. Output is **byte-identical to standalone MACS3
@@ -72,7 +73,7 @@ upstream; see [`HISTORY.md`](../HISTORY.md) for lineage.
   parameterised YAML recipe registry.
 - **Regression suite (C01–C11)** — an 11-area parity matrix (index build, paired
   BED, ChIP/ATAC presets, scATAC barcodes, sorted BAM + index, low-mem BED
-  parity, ATAC BAM + fragments, libMACS3 narrow peaks, Hi-C pairs, Y/noY split)
+  parity, ATAC BAM + fragments, librapidmacs narrow peaks, Hi-C pairs, Y/noY split)
   across three tiers (S0 hermetic synthetic, S1 ENCODE downsample, S2 heavy
   fixtures). S0 is mandatory for pre-commit checks.
 

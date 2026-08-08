@@ -7,9 +7,9 @@
 #include <string>
 #include <vector>
 
-#include "libmacs3/frag_compact_store.h"
-#include "libmacs3/fragments.h"
-#include "libmacs3/macs3_frag_peak_pipeline.h"
+#include "rapidmacs/frag_compact_store.h"
+#include "rapidmacs/fragments.h"
+#include "rapidmacs/macs3_frag_peak_pipeline.h"
 
 namespace chromap {
 
