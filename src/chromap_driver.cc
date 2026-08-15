@@ -107,6 +107,10 @@ void AddInputOptions(cxxopts::Options &options) {
   options.add_options("Input")("r,ref", "Reference file",
                                cxxopts::value<std::string>(), "FILE")(
       "x,index", "Index file", cxxopts::value<std::string>(), "FILE")(
+      "reference-sidecar",
+      "Materialized reference sidecar: write with --build-index or load "
+      "instead of parsing FASTA during mapping",
+      cxxopts::value<std::string>(), "FILE")(
       "input-format", "Read input format: fastq or cbq [fastq]",
       cxxopts::value<std::string>(), "STR")(
       "1,read1", "Single-end read files or paired-end read files 1",
@@ -217,7 +221,35 @@ void AddOutputOptions(cxxopts::Options &options) {
           "With paired reads, --BAM/--CRAM, and --atac-fragments: also write the "
           "compact AEV1 binary sidecar to this path (plus <path>.chroms.tsv). "
           "Fragment rows are still written to the --atac-fragments path.",
-          cxxopts::value<std::string>(), "FILE");
+          cxxopts::value<std::string>(), "FILE")(
+          "create-mergeable-spill-record",
+          "Stage-only ATAC mode: write one durable, sorted, pre-dedup "
+          "AtacSpillRecord shard for post-alignment gather/materialization. "
+          "Suppresses ordinary mapping outputs and automatically enables "
+          "--low-mem. Requires sample/input identity and shard ordinal/count. "
+          "The final record count and global prefix default to late-bound.",
+          cxxopts::value<std::string>(), "FILE")(
+          "mergeable-spill-sample-id",
+          "Stable sample identity stored in a mergeable ATAC spill header",
+          cxxopts::value<std::string>(), "STR")(
+          "mergeable-spill-input-id",
+          "Stable synchronized-input identity stored in a mergeable ATAC spill header",
+          cxxopts::value<std::string>(), "STR")(
+          "mergeable-spill-shard-ordinal",
+          "Zero-based worker/shard ordinal for a mergeable ATAC spill",
+          cxxopts::value<uint32_t>(), "INT")(
+          "mergeable-spill-shard-count",
+          "Expected total worker/shard count for a mergeable ATAC spill set",
+          cxxopts::value<uint32_t>(), "INT")(
+          "mergeable-spill-first-global-read",
+          "Optional first global read ordinal for a precomputed contiguous "
+          "worker range; requires --mergeable-spill-input-record-count",
+          cxxopts::value<uint64_t>(), "INT")(
+          "mergeable-spill-input-record-count",
+          "Optional precomputed synchronized-record count; requires "
+          "--mergeable-spill-first-global-read. If both are omitted, the "
+          "worker records its observed EOF count and gather derives prefixes",
+          cxxopts::value<uint64_t>(), "INT");
   //("PAF", "Output mappings in PAF format (only for test)");
 }
 
@@ -625,6 +657,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
   }
   if (result.count("t")) {
     mapping_parameters.num_threads = result["num-threads"].as<int>();
+    index_parameters.num_threads = mapping_parameters.num_threads;
   }
 
 
@@ -652,6 +685,63 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
   } 
   if (result.count("temp-dir")) {
     mapping_parameters.temp_directory_path = result["temp-dir"].as<std::string>();
+  }
+  if (result.count("create-mergeable-spill-record")) {
+    mapping_parameters.create_mergeable_spill_record_path =
+        result["create-mergeable-spill-record"].as<std::string>();
+    const std::array<const char *, 4> required = {{
+        "mergeable-spill-sample-id", "mergeable-spill-input-id",
+        "mergeable-spill-shard-ordinal", "mergeable-spill-shard-count"}};
+    for (const char *option : required) {
+      if (result.count(option) == 0) {
+        chromap::ExitWithMessage(
+            std::string("--create-mergeable-spill-record requires --") +
+            option);
+      }
+    }
+    mapping_parameters.mergeable_spill_sample_id =
+        result["mergeable-spill-sample-id"].as<std::string>();
+    mapping_parameters.mergeable_spill_input_id =
+        result["mergeable-spill-input-id"].as<std::string>();
+    mapping_parameters.mergeable_spill_shard_ordinal =
+        result["mergeable-spill-shard-ordinal"].as<uint32_t>();
+    mapping_parameters.mergeable_spill_shard_count =
+        result["mergeable-spill-shard-count"].as<uint32_t>();
+    const bool has_first_global =
+        result.count("mergeable-spill-first-global-read") != 0;
+    const bool has_input_count =
+        result.count("mergeable-spill-input-record-count") != 0;
+    if (has_first_global != has_input_count) {
+      chromap::ExitWithMessage(
+          "--mergeable-spill-first-global-read and "
+          "--mergeable-spill-input-record-count must be supplied together");
+    }
+    mapping_parameters.mergeable_spill_read_range_late_bound =
+        !has_first_global;
+    if (has_first_global) {
+      mapping_parameters.mergeable_spill_first_global_read =
+          result["mergeable-spill-first-global-read"].as<uint64_t>();
+      mapping_parameters.mergeable_spill_input_record_count =
+          result["mergeable-spill-input-record-count"].as<uint64_t>();
+    }
+    if (mapping_parameters.mergeable_spill_sample_id.empty() ||
+        mapping_parameters.mergeable_spill_input_id.empty() ||
+        mapping_parameters.mergeable_spill_shard_count == 0 ||
+        mapping_parameters.mergeable_spill_shard_ordinal >=
+            mapping_parameters.mergeable_spill_shard_count) {
+      chromap::ExitWithMessage(
+          "Invalid mergeable ATAC spill identity or shard ordinal/count");
+    }
+    mapping_parameters.low_memory_mode = true;
+  } else if (result.count("mergeable-spill-sample-id") ||
+             result.count("mergeable-spill-input-id") ||
+             result.count("mergeable-spill-shard-ordinal") ||
+             result.count("mergeable-spill-shard-count") ||
+             result.count("mergeable-spill-first-global-read") ||
+             result.count("mergeable-spill-input-record-count")) {
+    chromap::ExitWithMessage(
+        "--mergeable-spill-* options require "
+        "--create-mergeable-spill-record");
   }
   if (result.count("k-for-minhash")) {
     mapping_parameters.k_for_minhash = result["k-for-minhash"].as<int>();
@@ -802,6 +892,13 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     } else {
       chromap::ExitWithMessage("No output file specified!");
     }
+    if (result.count("reference-sidecar")) {
+      index_parameters.reference_sidecar_path =
+          result["reference-sidecar"].as<std::string>();
+      if (index_parameters.reference_sidecar_path.empty()) {
+        chromap::ExitWithMessage("--reference-sidecar path is empty");
+      }
+    }
     std::cerr << "Build index for the reference.\n";
     std::cerr << "Kmer length: " << index_parameters.kmer_size
               << ", window size: " << index_parameters.window_size << "\n";
@@ -809,19 +906,35 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
               << "\n";
     std::cerr << "Output file: " << index_parameters.index_output_file_path
               << "\n";
+    if (!index_parameters.reference_sidecar_path.empty()) {
+      std::cerr << "Materialized reference sidecar: "
+                << index_parameters.reference_sidecar_path << "\n";
+    }
     chromap::Chromap chromap_for_indexing(index_parameters);
     chromap_for_indexing.ConstructIndex();
   } else if (result.count("1") || result.count("read-pair-cbq") ||
              result.count("input-format")) {
     std::cerr << "Start to map reads.\n";
+    if (result.count("reference-sidecar")) {
+      mapping_parameters.reference_sidecar_path =
+          result["reference-sidecar"].as<std::string>();
+      if (mapping_parameters.reference_sidecar_path.empty()) {
+        chromap::ExitWithMessage("--reference-sidecar path is empty");
+      }
+    }
     if (result.count("r")) {
       mapping_parameters.reference_file_path = result["ref"].as<std::string>();
-    } else {
-      chromap::ExitWithMessage("No reference specified!");
+    } else if (mapping_parameters.reference_sidecar_path.empty()) {
+      chromap::ExitWithMessage(
+          "No reference specified; use --ref or --reference-sidecar");
     }
     if (result.count("o")) {
       mapping_parameters.mapping_output_file_path =
           result["output"].as<std::string>();
+    } else if (mapping_parameters.CreatesMergeableAtacSpill()) {
+      // The staging flag is intentionally sidecar-only. Keep the historical
+      // MappingParameters output field non-empty without creating a file.
+      mapping_parameters.mapping_output_file_path = "/dev/null";
     } else {
       chromap::ExitWithMessage("No output file specified!");
     }
@@ -868,6 +981,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     } else {
       chromap::ExitWithMessage("No read file specified!");
     }
+
     if (!mapping_parameters.UsesCbqInput() && result.count("2")) {
       mapping_parameters.read_file2_paths =
           GetMatchedFilePaths(result["read2"].as<std::vector<std::string>>());
@@ -909,6 +1023,19 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
           mapping_parameters.barcode_cbq_paths.empty()) {
         chromap::ExitWithMessage(
             "--barcode-whitelist with CBQ input requires --barcode-cbq");
+      }
+    }
+
+    if (mapping_parameters.CreatesMergeableAtacSpill()) {
+      if (!mapping_parameters.HasPairedEndInput()) {
+        chromap::ExitWithMessage(
+            "--create-mergeable-spill-record requires paired-end ATAC input");
+      }
+      if (!mapping_parameters.is_bulk_data &&
+          mapping_parameters.barcode_whitelist_file_path.empty()) {
+        chromap::ExitWithMessage(
+            "barcoded --create-mergeable-spill-record v3 requires "
+            "--barcode-whitelist so local abundance evidence is complete");
       }
     }
 
@@ -1408,8 +1535,14 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         break;
     }
 
-    std::cerr << "Reference file: " << mapping_parameters.reference_file_path
-              << "\n";
+    if (!mapping_parameters.reference_file_path.empty()) {
+      std::cerr << "Reference file: " << mapping_parameters.reference_file_path
+                << "\n";
+    }
+    if (!mapping_parameters.reference_sidecar_path.empty()) {
+      std::cerr << "Materialized reference sidecar: "
+                << mapping_parameters.reference_sidecar_path << "\n";
+    }
     std::cerr << "Index file: " << mapping_parameters.index_file_path << "\n";
     std::cerr << "Input format: "
               << (mapping_parameters.UsesCbqInput() ? "cbq" : "fastq")
@@ -1502,7 +1635,8 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       }
     } else {
       // Paired-end reads.
-      if (mapping_parameters.AtacDualFragmentAndBam()) {
+      if (mapping_parameters.AtacDualFragmentAndBam() ||
+          mapping_parameters.CreatesMergeableAtacSpill()) {
         chromap_for_mapping.MapPairedEndReads<chromap::AtacSpillRecord>();
       } else if (mapping_parameters.low_memory_mode &&
                  !mapping_parameters.is_bulk_data &&

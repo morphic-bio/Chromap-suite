@@ -10,7 +10,7 @@ namespace chromap {
 // Format for pairtools for HiC data.
 class PairsMapping : public Mapping {
  public:
-  uint32_t read_id_;
+  uint64_t read_id_;
   std::string read_name_;
   uint64_t cell_barcode_;
   int rid1_;
@@ -22,7 +22,7 @@ class PairsMapping : public Mapping {
   uint16_t mapq_ : 8, is_unique_ : 1, num_dups_ : 7;
 
   PairsMapping() : num_dups_(0) {}
-  PairsMapping(uint32_t read_id, std::string read_name, uint64_t cell_barcode,
+  PairsMapping(uint64_t read_id, std::string read_name, uint64_t cell_barcode,
                int rid1, int rid2, uint32_t pos1, uint32_t pos2, int strand1,
                int strand2, uint8_t mapq, uint8_t is_unique, uint8_t num_dups)
       : read_id_(read_id),
@@ -80,7 +80,8 @@ class PairsMapping : public Mapping {
     return pos2_;
   }
   uint16_t GetByteSize() const {
-    return 5 * sizeof(uint32_t) + 1 * sizeof(uint16_t) + 4 * sizeof(int) +
+    return 2 * sizeof(uint64_t) + 2 * sizeof(uint32_t) +
+           2 * sizeof(uint16_t) + 4 * sizeof(int) +
            read_name_.length() * sizeof(char);
   }
   
@@ -89,7 +90,7 @@ class PairsMapping : public Mapping {
   size_t WriteToFile(FILE *temp_mapping_output_file) const {
     size_t num_written_bytes = 0;
     num_written_bytes +=
-        fwrite(&read_id_, sizeof(uint32_t), 1, temp_mapping_output_file);
+        fwrite(&read_id_, sizeof(uint64_t), 1, temp_mapping_output_file);
     uint16_t read_name_length = read_name_.length();
     num_written_bytes += fwrite(&read_name_length, sizeof(uint16_t), 1,
                                 temp_mapping_output_file);
@@ -117,7 +118,7 @@ class PairsMapping : public Mapping {
   size_t LoadFromFile(FILE *temp_mapping_output_file) {
     size_t num_read_bytes = 0;
     num_read_bytes +=
-        fread(&read_id_, sizeof(uint32_t), 1, temp_mapping_output_file);
+        fread(&read_id_, sizeof(uint64_t), 1, temp_mapping_output_file);
     uint16_t read_name_length = 0;
     num_read_bytes +=
         fread(&read_name_length, sizeof(uint16_t), 1, temp_mapping_output_file);

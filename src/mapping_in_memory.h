@@ -16,7 +16,7 @@ namespace chromap {
 // memory is released once a SAMMapping is created.) Since this struct is large,
 // we should never create a huge vector of this struct.
 struct MappingInMemory {
-  uint32_t read_id = 0;
+  uint64_t read_id = 0;
   int read_split_site = 0;
   int read_length = 0;
 
@@ -66,12 +66,14 @@ struct PairedEndMappingInMemory {
   MappingInMemory mapping_in_memory2;
   uint8_t is_unique;
   uint8_t mapq;
+  uint32_t raw_barcode_n_mask = 0;
+  std::string raw_barcode_qual;
 
   inline uint8_t GetStrand() const {
     return (mapping_in_memory1.strand == kPositive ? 1 : 0);
   }
 
-  inline uint32_t GetReadId() const { return mapping_in_memory1.read_id; }
+  inline uint64_t GetReadId() const { return mapping_in_memory1.read_id; }
 
   inline uint64_t GetBarcode() const { return mapping_in_memory1.barcode_key; }
 

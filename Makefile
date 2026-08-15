@@ -19,21 +19,26 @@ CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(RAPIDMACS_DI
 DEPFLAGS=-MMD -MP
 LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -ldl -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
-core_cpp_source=sequence_batch.cc cbq_reader.cc cbq_batch_producer.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
+core_cpp_source=sequence_batch.cc materialized_reference.cc cbq_reader.cc cbq_batch_producer.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc atac_mergeable_spill.cc atac_spill_materializer.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
 driver_cpp_source=chromap_driver.cc
 libchromap_cpp_source=libchromap.cc
 runner_cpp_source=chromap_lib_runner.cc
+atac_materializer_cpp_source=atac_spill_materializer_main.cc
 src_dir=src
 objs_dir=objs
 core_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(core_cpp_source))
 driver_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(driver_cpp_source))
 libchromap_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(libchromap_cpp_source))
 runner_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(runner_cpp_source))
-deps=$(core_objs:.o=.d) $(driver_objs:.o=.d) $(libchromap_objs:.o=.d) $(runner_objs:.o=.d)
+atac_materializer_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(atac_materializer_cpp_source))
+deps=$(core_objs:.o=.d) $(driver_objs:.o=.d) $(libchromap_objs:.o=.d) $(runner_objs:.o=.d) $(atac_materializer_objs:.o=.d)
 
 exec=chromap
 libchromap=libchromap.a
 runner=chromap_lib_runner
+atac_materializer=chromap_atac_spill_materializer
+index_load_probe=tests/index_load_probe
+reference_load_probe=tests/materialized_reference_load_probe
 peak_caller=rapidmacs
 peak_caller_compat=chromap_callpeaks
 
@@ -48,7 +53,7 @@ ifneq ($(LEGACY_OVERFLOW),)
 	CXXFLAGS+=-DLEGACY_OVERFLOW
 endif
 
-all: dir $(exec) $(peak_caller) $(peak_caller_compat)
+all: dir $(exec) $(atac_materializer) $(peak_caller) $(peak_caller_compat)
 
 dir:
 	mkdir -p $(objs_dir)
@@ -58,7 +63,7 @@ dir:
 # to date. Output: third_party/rapidmacs/lib/librapidmacs.a + bin/rapidmacs.
 .PHONY: librapidmacs
 librapidmacs:
-	$(MAKE) -C $(RAPIDMACS_DIR)
+	$(MAKE) -C $(RAPIDMACS_DIR) HTSLIB_DIR=$(abspath $(HTSLIB_DIR))
 
 $(RAPIDMACS_LIB) $(RAPIDMACS_CLI): librapidmacs
 
@@ -71,6 +76,15 @@ $(libchromap): $(core_objs) $(libchromap_objs)
 
 $(runner): $(libchromap) $(runner_objs) $(RAPIDMACS_LIB)
 	$(CXX) $(CXXFLAGS) $(runner_objs) $(libchromap) $(RAPIDMACS_LIB) -o $(runner) $(LDFLAGS)
+
+$(atac_materializer): $(libchromap) $(atac_materializer_objs) $(RAPIDMACS_LIB)
+	$(CXX) $(CXXFLAGS) $(atac_materializer_objs) $(libchromap) $(RAPIDMACS_LIB) -o $(atac_materializer) $(LDFLAGS)
+
+$(index_load_probe): tests/index_load_probe.cc $(libchromap)
+	$(CXX) $(CXXFLAGS) -I$(src_dir) $< $(libchromap) -o $@ $(LDFLAGS)
+
+$(reference_load_probe): tests/materialized_reference_load_probe.cc $(libchromap)
+	$(CXX) $(CXXFLAGS) -I$(src_dir) $< $(libchromap) -o $@ $(LDFLAGS)
 
 # Install the canonical RapidMACS CLI at the suite root.
 $(peak_caller): $(RAPIDMACS_CLI)
@@ -86,7 +100,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 
 -include $(deps)
 
-.PHONY: clean test-unit test-atac-spill-record-roundtrip test-atac-runtime-spill-schema-harness test-frag-compact-store test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke \
+.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
 	 test-encode-cbq-cross-assay-smoke \
@@ -98,7 +112,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 	test-peak-narrowpeak-100k test-peak-integration-100k \
 	test-peak-integration-matrix-100k test-lowmem-bed-100k test-smoke librapidmacs
 clean:
-	-rm -rf $(exec) $(libchromap) $(runner) $(peak_caller) $(peak_caller_compat) $(objs_dir)
+	-rm -rf $(exec) $(libchromap) $(runner) $(atac_materializer) $(index_load_probe) $(reference_load_probe) $(peak_caller) $(peak_caller_compat) $(objs_dir)
 	-$(MAKE) -C $(RAPIDMACS_DIR) clean
 
 # 100K fragment peak-caller benchmark. Pair inputs: CHROMAP_PEAK_RUN_ROOT, or
@@ -159,8 +173,9 @@ test-lowmem-bed-100k: chromap
 # Cheap smoke bundle: unit + frag_compact_store + the two integration
 # matrices that cover the chromap+MACS3 integration surface end-to-end.
 # ~3 min total; suitable for pre-commit CI.
-test-smoke: test-unit test-frag-compact-store test-macs3-frag-qvalue-cli \
+test-smoke: test-unit test-materialized-reference test-frag-compact-store test-macs3-frag-qvalue-cli \
             test-atac-spill-record-roundtrip \
+            test-atac-mergeable-spill-materializer \
             test-lowmem-bed-100k \
             test-peak-integration-matrix-100k
 
@@ -170,6 +185,16 @@ test-atac-spill-record-roundtrip: dir
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_atac_spill_record_roundtrip.cc \
 		-o tests/test_atac_spill_record_roundtrip $(LDFLAGS)
 	./tests/test_atac_spill_record_roundtrip
+
+tests/test_atac_mergeable_spill_materializer: tests/test_atac_mergeable_spill_materializer.cc $(libchromap) $(RAPIDMACS_LIB)
+	$(CXX) $(CXXFLAGS) -I$(src_dir) $< $(libchromap) $(RAPIDMACS_LIB) \
+		-o $@ $(LDFLAGS)
+
+test-atac-mergeable-spill-materializer: tests/test_atac_mergeable_spill_materializer
+	bash ./tests/run_atac_mergeable_spill_materializer_smoke.sh
+
+test-materialized-reference: chromap
+	bash ./tests/run_materialized_reference_smoke.sh
 
 # ATAC spill schema + low-memory parity harness (100K fixture; optional paths).
 test-atac-runtime-spill-schema-harness: chromap

@@ -56,7 +56,7 @@ class YReadNamesWriter {
   }
 
   // Write a normalized read name (deduplicates automatically)
-  void WriteReadName(uint32_t read_id, const char *read_name) {
+  void WriteReadName(uint64_t read_id, const char *read_name) {
     if (written_read_ids_.count(read_id) > 0) {
       return;  // Already written (read-level deduplication)
     }
@@ -70,9 +70,9 @@ class YReadNamesWriter {
   }
 
   // Write multiple read names from a set of read IDs
-  void WriteReadNames(const std::unordered_set<uint32_t> &read_ids,
+  void WriteReadNames(const std::unordered_set<uint64_t> &read_ids,
                       const std::vector<const char*> &read_names) {
-    for (uint32_t read_id : read_ids) {
+    for (uint64_t read_id : read_ids) {
       if (read_id < read_names.size() && read_names[read_id]) {
         WriteReadName(read_id, read_names[read_id]);
       }
@@ -84,7 +84,7 @@ class YReadNamesWriter {
  private:
   std::string output_path_;
   std::ofstream output_file_;
-  std::unordered_set<uint32_t> written_read_ids_;
+  std::unordered_set<uint64_t> written_read_ids_;
   uint64_t num_written_;
 };
 

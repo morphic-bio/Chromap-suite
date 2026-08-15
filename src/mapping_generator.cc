@@ -4,11 +4,11 @@ namespace chromap {
 
 namespace {
 thread_local const std::unordered_set<uint32_t> *tls_y_contig_rids = nullptr;
-thread_local std::vector<uint32_t> *tls_y_hit_read_ids = nullptr;
+thread_local std::vector<uint64_t> *tls_y_hit_read_ids = nullptr;
 }  // namespace
 
 void SetThreadYHitTracking(const std::unordered_set<uint32_t> *y_contig_rids,
-                           std::vector<uint32_t> *thread_y_hit_read_ids) {
+                           std::vector<uint64_t> *thread_y_hit_read_ids) {
   tls_y_contig_rids = y_contig_rids;
   tls_y_hit_read_ids = thread_y_hit_read_ids;
 }
@@ -17,7 +17,7 @@ const std::unordered_set<uint32_t> *GetThreadYContigRids() {
   return tls_y_contig_rids;
 }
 
-std::vector<uint32_t> *GetThreadYHitReadIds() {
+std::vector<uint64_t> *GetThreadYHitReadIds() {
   return tls_y_hit_read_ids;
 }
 
@@ -194,7 +194,8 @@ void MappingGenerator<AtacSpillRecord>::EmplaceBackPairedEndMappingRecord(
       paired_end_mapping_in_memory.GetNegativeAlignmentLength());
   const uint32_t rid =
       paired_end_mapping_in_memory.mapping_in_memory1.rid;
-  if (mapping_parameters_.AtacDualFragmentAndBam()) {
+  if (mapping_parameters_.AtacDualFragmentAndBam() ||
+      mapping_parameters_.CreatesMergeableAtacSpill()) {
     const int tlen =
         static_cast<int>(paired_end_mapping_in_memory.GetFragmentLength());
     SAMMapping sam_a;
@@ -229,6 +230,15 @@ void MappingGenerator<AtacSpillRecord>::EmplaceBackPairedEndMappingRecord(
     }
     mappings_on_diff_ref_seqs[rid].emplace_back(bed, std::move(sam_a),
                                                  std::move(sam_b));
+    // Bulk ATAC has no barcode section in the run-level spill schema. Marking
+    // an empty raw-barcode section on each bulk payload makes the payload mask
+    // disagree with the overflow header and prevents the durable spill merge.
+    if (mapping_parameters_.CreatesMergeableAtacSpill() &&
+        !mapping_parameters_.is_bulk_data) {
+      mappings_on_diff_ref_seqs[rid].back().SetRawBarcodeEvidence(
+          paired_end_mapping_in_memory.raw_barcode_n_mask,
+          paired_end_mapping_in_memory.raw_barcode_qual);
+    }
   } else {
     mappings_on_diff_ref_seqs[rid].emplace_back(bed);
   }

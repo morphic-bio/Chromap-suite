@@ -28,9 +28,9 @@
 namespace chromap {
 
 void SetThreadYHitTracking(const std::unordered_set<uint32_t> *y_contig_rids,
-                           std::vector<uint32_t> *thread_y_hit_read_ids);
+                           std::vector<uint64_t> *thread_y_hit_read_ids);
 const std::unordered_set<uint32_t> *GetThreadYContigRids();
-std::vector<uint32_t> *GetThreadYHitReadIds();
+std::vector<uint64_t> *GetThreadYHitReadIds();
 
 // Class to process draft mappings and generate best mappings and alignments. It
 // supports multi-threadidng as only the parameters are owned by the class.
@@ -217,12 +217,33 @@ void MappingGenerator<MappingRecord>::GenerateBestMappingsForPairedEndRead(
   std::iota(best_mapping_indices.begin(), best_mapping_indices.end(), 0);
   if (paired_end_mapping_metadata.GetNumBestMappings() >
       mapping_parameters_.max_num_best_mappings) {
-    // std::mt19937 generator(11);
+    // A durable mergeable spill must not depend on which OpenMP thread or
+    // shard happened to map a read. The historical per-thread generator makes
+    // reservoir selection depend on scheduling because each thread advances
+    // its own RNG stream. Seed a read-local generator from the stable FASTQ
+    // name for spill production; ordinary Chromap runs retain their existing
+    // generator stream.
+    std::mt19937 spill_generator;
+    std::mt19937 *selection_generator = &generator;
+    if (mapping_parameters_.CreatesMergeableAtacSpill()) {
+      uint64_t name_hash = 1469598103934665603ULL;
+      const char *name = read_batch1.GetSequenceNameAt(pair_index);
+      const uint32_t name_length =
+          read_batch1.GetSequenceNameLengthAt(pair_index);
+      for (uint32_t i = 0; i < name_length; ++i) {
+        name_hash ^= static_cast<unsigned char>(name[i]);
+        name_hash *= 1099511628211ULL;
+      }
+      const uint32_t seed = static_cast<uint32_t>(name_hash) ^
+                            static_cast<uint32_t>(name_hash >> 32U) ^ 11U;
+      spill_generator.seed(seed);
+      selection_generator = &spill_generator;
+    }
     for (int i = mapping_parameters_.max_num_best_mappings;
          i < paired_end_mapping_metadata.GetNumBestMappings(); ++i) {
       // Important: inclusive range.
       std::uniform_int_distribution<int> distribution(0, i);
-      int j = distribution(generator);
+      int j = distribution(*selection_generator);
       // int j = distribution(tmp_generator);
       if (j < mapping_parameters_.max_num_best_mappings) {
         best_mapping_indices[j] = i;
@@ -286,7 +307,7 @@ void MappingGenerator<MappingRecord>::ProcessBestMappingsForSingleEndRead(
                                   : mapping_metadata.negative_split_sites_;
 
   const char *read = read_batch.GetSequenceAt(read_index);
-  const uint32_t read_id = read_batch.GetSequenceIdAt(read_index);
+  const uint64_t read_id = read_batch.GetSequenceIdAt(read_index);
   const char *read_name = read_batch.GetSequenceNameAt(read_index);
   const uint32_t read_length = read_batch.GetSequenceLengthAt(read_index);
   const std::string &negative_read =
@@ -311,7 +332,7 @@ void MappingGenerator<MappingRecord>::ProcessBestMappingsForSingleEndRead(
   mapping_in_memory.read_length = read_length;
 
   const std::unordered_set<uint32_t> *y_contig_rids = GetThreadYContigRids();
-  std::vector<uint32_t> *thread_y_hit_read_ids = GetThreadYHitReadIds();
+  std::vector<uint64_t> *thread_y_hit_read_ids = GetThreadYHitReadIds();
 
   for (uint32_t mi = 0; mi < mappings.size(); ++mi) {
     if (mappings[mi].GetNumErrors() > mapping_metadata.min_num_errors_) {
@@ -535,9 +556,9 @@ void MappingGenerator<MappingRecord>::
       read_batch1.GetNegativeSequenceAt(pair_index);
   const std::string &negative_read2 =
       read_batch2.GetNegativeSequenceAt(pair_index);
-  const uint32_t read_id = read_batch1.GetSequenceIdAt(pair_index);
+  const uint64_t read_id = read_batch1.GetSequenceIdAt(pair_index);
   const std::unordered_set<uint32_t> *y_contig_rids = GetThreadYContigRids();
-  std::vector<uint32_t> *thread_y_hit_read_ids = GetThreadYHitReadIds();
+  std::vector<uint64_t> *thread_y_hit_read_ids = GetThreadYHitReadIds();
 
   paired_end_mapping_in_memory.mapping_in_memory1.read_id = read_id;
   paired_end_mapping_in_memory.mapping_in_memory2.read_id = read_id;
@@ -584,6 +605,19 @@ void MappingGenerator<MappingRecord>::
     barcode_key = barcode_batch.GenerateSeedFromSequenceAt(
         pair_index, /*start_position=*/0,
         barcode_batch.GetSequenceLengthAt(pair_index));
+    if (mapping_parameters_.CreatesMergeableAtacSpill()) {
+      const uint32_t barcode_length =
+          barcode_batch.GetSequenceLengthAt(pair_index);
+      paired_end_mapping_in_memory.raw_barcode_qual.assign(
+          barcode_batch.GetSequenceQualAt(pair_index), barcode_length);
+      std::vector<int> n_positions;
+      barcode_batch.GetSequenceNsAt(pair_index, /*little_endian=*/true,
+                                    n_positions);
+      for (int position : n_positions) {
+        paired_end_mapping_in_memory.raw_barcode_n_mask |=
+            uint32_t{1} << static_cast<uint32_t>(position);
+      }
+    }
   }
   paired_end_mapping_in_memory.mapping_in_memory1.barcode_key = barcode_key;
   paired_end_mapping_in_memory.mapping_in_memory2.barcode_key = barcode_key;
@@ -638,7 +672,8 @@ void MappingGenerator<MappingRecord>::
       paired_end_mapping_in_memory.mapping_in_memory1.mapq = mapq;
       paired_end_mapping_in_memory.mapping_in_memory2.mapq = mapq;
 
-      if (IsSamLike() || mapping_parameters_.AtacDualFragmentAndBam()) {
+      if (IsSamLike() || mapping_parameters_.AtacDualFragmentAndBam() ||
+          mapping_parameters_.CreatesMergeableAtacSpill()) {
         uint16_t flag1 = 3;
         uint16_t flag2 = 3;
         if (first_read_strand == kNegative) {

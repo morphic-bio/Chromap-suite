@@ -12,7 +12,7 @@ namespace chromap {
 
 class MappingWithBarcode : public Mapping {
  public:
-  uint32_t read_id_;
+  uint64_t read_id_;
   uint64_t cell_barcode_;
   uint32_t fragment_start_position_;
   uint16_t fragment_length_;
@@ -20,7 +20,7 @@ class MappingWithBarcode : public Mapping {
   uint8_t num_dups_;
   // uint8_t mapq;
   MappingWithBarcode() : num_dups_(0) {}
-  MappingWithBarcode(uint32_t read_id, uint64_t cell_barcode,
+  MappingWithBarcode(uint64_t read_id, uint64_t cell_barcode,
                      uint32_t fragment_start_position, uint16_t fragment_length,
                      uint8_t mapq, uint8_t direction, uint8_t is_unique,
                      uint8_t num_dups)
@@ -70,7 +70,7 @@ class MappingWithBarcode : public Mapping {
   static constexpr uint32_t kSerdeMagic = 0x6263736Du;  // 'bcsm' (Barcode Single Mapping)
   static constexpr size_t SerializedSize() {
     return sizeof(uint32_t)        // magic
-         + sizeof(uint32_t)        // read_id_
+         + sizeof(uint64_t)        // read_id_
          + sizeof(uint64_t)        // cell_barcode_
          + sizeof(uint32_t)        // fragment_start_position_
          + sizeof(uint16_t)        // fragment_length_
@@ -117,7 +117,7 @@ class MappingWithBarcode : public Mapping {
 
 class MappingWithoutBarcode : public Mapping {
  public:
-  uint32_t read_id_;
+  uint64_t read_id_;
   uint32_t fragment_start_position_;
   uint16_t fragment_length_;
   // uint8_t mapq;
@@ -125,7 +125,7 @@ class MappingWithoutBarcode : public Mapping {
   uint16_t num_dups_; // Need higher limit in bulk setting
 
   MappingWithoutBarcode() : num_dups_(0) {}
-  MappingWithoutBarcode(uint32_t read_id, uint32_t fragment_start_position,
+  MappingWithoutBarcode(uint64_t read_id, uint32_t fragment_start_position,
                         uint16_t fragment_length, uint16_t mapq,
                         uint8_t direction, uint8_t is_unique, uint8_t num_dups)
       : read_id_(read_id),
@@ -169,7 +169,7 @@ class MappingWithoutBarcode : public Mapping {
   static constexpr uint32_t kSerdeMagic = 0x6E63736Du;  // 'ncsm' (No-barcode Single Mapping)
   static constexpr size_t SerializedSize() {
     return sizeof(uint32_t)        // magic
-         + sizeof(uint32_t)        // read_id_
+         + sizeof(uint64_t)        // read_id_
          + sizeof(uint32_t)        // fragment_start_position_
          + sizeof(uint16_t)        // fragment_length_
          + 3 * sizeof(uint8_t)     // mapq/direction/is_unique
@@ -213,7 +213,7 @@ class MappingWithoutBarcode : public Mapping {
 
 class PairedEndMappingWithBarcode : public Mapping {
  public:
-  uint32_t read_id_;
+  uint64_t read_id_;
   uint64_t cell_barcode_;
   uint32_t fragment_start_position_;
   uint16_t fragment_length_;
@@ -223,7 +223,7 @@ class PairedEndMappingWithBarcode : public Mapping {
   uint16_t positive_alignment_length_;
   uint16_t negative_alignment_length_;
   PairedEndMappingWithBarcode() : num_dups_(0) {}
-  PairedEndMappingWithBarcode(uint32_t read_id, uint64_t cell_barcode,
+  PairedEndMappingWithBarcode(uint64_t read_id, uint64_t cell_barcode,
                               uint32_t fragment_start_position,
                               uint16_t fragment_length, uint8_t mapq,
                               uint8_t direction, uint8_t is_unique,
@@ -281,7 +281,7 @@ class PairedEndMappingWithBarcode : public Mapping {
   static constexpr uint32_t kSerdeMagic = 0x6263706Du;  // 'bcpm' (Barcode Paired Mapping)
   static constexpr size_t SerializedSize() {
     return sizeof(uint32_t)        // magic
-         + sizeof(uint32_t)        // read_id_
+         + sizeof(uint64_t)        // read_id_
          + sizeof(uint64_t)        // cell_barcode_
          + sizeof(uint32_t)        // fragment_start_position_
          + sizeof(uint16_t)        // fragment_length_
@@ -334,7 +334,7 @@ class PairedEndMappingWithBarcode : public Mapping {
 
 class PairedEndMappingWithoutBarcode : public Mapping {
  public:
-  uint32_t read_id_;
+  uint64_t read_id_;
   uint32_t fragment_start_position_;
   uint16_t fragment_length_;
   uint8_t mapq_ : 6, direction_ : 1, is_unique_ : 1;
@@ -343,7 +343,7 @@ class PairedEndMappingWithoutBarcode : public Mapping {
   uint16_t positive_alignment_length_;
   uint16_t negative_alignment_length_;
   PairedEndMappingWithoutBarcode() : num_dups_(0) {}
-  PairedEndMappingWithoutBarcode(uint32_t read_id,
+  PairedEndMappingWithoutBarcode(uint64_t read_id,
                                  uint32_t fragment_start_position,
                                  uint16_t fragment_length, uint8_t mapq,
                                  uint8_t direction, uint8_t is_unique,
@@ -394,7 +394,7 @@ class PairedEndMappingWithoutBarcode : public Mapping {
   static constexpr uint32_t kSerdeMagic = 0x6E63706Du;  // 'ncpm' (No-barcode Paired Mapping)
   static constexpr size_t SerializedSize() {
     return sizeof(uint32_t)        // magic
-         + sizeof(uint32_t)        // read_id_
+         + sizeof(uint64_t)        // read_id_
          + sizeof(uint32_t)        // fragment_start_position_
          + sizeof(uint16_t)        // fragment_length_
          + 3 * sizeof(uint8_t)     // mapq/direction/is_unique

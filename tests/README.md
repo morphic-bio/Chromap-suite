@@ -54,6 +54,28 @@ make test-cbq-atac-smoke
 Set `CBQ_ORDERED_ENCODER=/path/to/cbq_ordered_encoder` only when intentionally
 testing a non-default encoder.
 
+## Mergeable ATAC Spill Materializer Smoke
+
+`run_atac_mergeable_spill_materializer_smoke.sh` is a synthetic, HDD-safe
+correctness gate for the post-alignment gather contract. It verifies the
+v3 header, mapped-record and input-summary barcode evidence, mergeable
+whitelist histograms, post-spill ambiguous-barcode correction, shuffled input
+ordering, exact ordinal/range validation, cell- and bulk-level cross-shard
+deduplication, gathered multimapping allocation, summary synthesis, unsigned
+64-bit read-id rebasing above `UINT32_MAX`, sorted BAM, CRAM, Y/no-Y BAM
+routing, and rejection of incomplete, duplicate, empty, or model-mismatched
+shard sets.
+
+Run it with:
+
+```bash
+make test-atac-mergeable-spill-materializer
+```
+
+Set `CHROMAP_ARTIFACT_ROOT` to relocate its tiny generated artifacts. See
+[`docs/mergeable_atac_spill.md`](../docs/mergeable_atac_spill.md) for the
+worker and materializer CLI contract.
+
 ## CBQ Modality Matrix
 
 `run_cbq_modality_matrix.sh` is the hermetic full-surface CBQ parity gate. It
@@ -250,6 +272,46 @@ serial unless a runbook explicitly says otherwise.
 # Tests for Y-Chromosome Filtering Feature
 
 This directory contains tests for the three-stream SAM Y-filtering feature.
+
+## Materialized Reference Smoke
+
+**File**: `run_materialized_reference_smoke.sh`
+
+The hermetic gate builds a normal index plus the optional binary reference
+sidecar, maps the same reads through FASTA and sidecar paths, and requires
+byte-identical BED output. It also checks legacy-index rejection, mismatched
+reference/index rejection, truncated-file rejection, and use of the aligned
+parallel direct-I/O loader.
+
+```bash
+make test-materialized-reference
+```
+
+Artifacts are written under
+`plans/artifacts/materialized_reference_smoke/<timestamp>/`.
+
+## Materialized-reference load probe
+
+Build `tests/materialized_reference_load_probe` to time the production
+`SequenceBatch::LoadMaterializedReference()` path without index loading or
+mapping:
+
+```bash
+make tests/materialized_reference_load_probe
+tests/materialized_reference_load_probe /path/to/genome.chromapref 32
+```
+
+## Index-only load probe
+
+Build `tests/index_load_probe` to time the production `Index::Load()` path
+without FASTA loading or mapping:
+
+```bash
+make tests/index_load_probe
+tests/index_load_probe /path/to/genome.index
+```
+
+The probe is intentionally read-only and writes no output artifact.
 
 ## Unit Tests
 

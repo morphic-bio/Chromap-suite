@@ -42,7 +42,7 @@ bool OverflowReader::ConsumeAtacSpillFilePrefixIfPresent() {
               sizeof(hdr) - sizeof(uint32_t), 1, file_) != 1) {
         return false;
     }
-    if (hdr.format_version != 1 ||
+    if (hdr.format_version != chromap::kAtacSpillFileFormatVersion ||
         hdr.record_codec_version != chromap::kAtacSpillRecordCodecVersion) {
         chromap::ExitWithMessage(
             "Unsupported ATAC spill overflow file header version/codec");

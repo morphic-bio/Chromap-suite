@@ -15,7 +15,7 @@ BAM/CRAM records are sorted using the following **primary key** (numeric fields,
 5. **mpos** (mate position)
 6. **isize** (insert size)
 
-**Tie-break**: `read_id` (uint32, deterministic within run)
+**Tie-break**: `read_id` (uint64, deterministic within run)
 
 The `read_id` is an internal identifier assigned during mapping that is deterministic for identical input across runs (with fixed threading and compression settings).
 
@@ -85,4 +85,3 @@ chromap --SAM -x index -r ref.fa -1 reads.fq -o - | samtools sort -o output.bam
 ```
 
 Note: This bypasses internal sorting but loses Y/noY stream capability during sort.
-

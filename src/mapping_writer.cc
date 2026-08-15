@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <cstdlib>
 #include <limits>
+#include <sstream>
 #include "chromap.h"
 #include "bam_sorter.h"
 #include "rapidmacs/frag_compact_store.h"
@@ -863,8 +864,11 @@ void MappingWriter<AtacSpillRecord>::OutputTempMappingsToOverflow(
         std::unique_ptr<OverflowWriter>(new OverflowWriter(base_dir, "chromap"));
   }
   const uint16_t sm = AtacSpillSchemaMaskForParameters(
-      mapping_parameters_.AtacDualFragmentAndBam(),
-      mapping_parameters_.is_bulk_data);
+      mapping_parameters_.AtacDualFragmentAndBam() ||
+          mapping_parameters_.CreatesMergeableAtacSpill(),
+      mapping_parameters_.is_bulk_data,
+      mapping_parameters_.CreatesMergeableAtacSpill() &&
+          !mapping_parameters_.is_bulk_data);
   tls_overflow_writer_->EnableAtacSpillFileHeader(sm);
   for (uint32_t rid = 0; rid < num_reference_sequences; ++rid) {
     for (const auto &mapping : mappings_on_diff_ref_seqs[rid]) {
@@ -907,6 +911,327 @@ uint16_t OverflowSpillSchemaMaskFromReader<AtacSpillRecord>(
 }
 
 }  // namespace
+
+template <typename MappingRecord>
+void MappingWriter<MappingRecord>::WriteMergeableAtacSpillFromOverflow(
+    uint32_t, const SequenceBatch &, const khash_t(k64_seq) *, uint64_t) {
+  ExitWithMessage(
+      "Durable mergeable spill output is supported only for ATAC records");
+}
+
+template <>
+void MappingWriter<AtacSpillRecord>::WriteMergeableAtacSpillFromOverflow(
+    uint32_t num_reference_sequences, const SequenceBatch &reference,
+    const khash_t(k64_seq) *barcode_whitelist_lookup_table,
+    uint64_t local_num_sample_barcodes) {
+  AtacMergeableSpillMetadata metadata;
+  metadata.schema_mask = AtacSpillSchemaMaskForParameters(
+      /*dual_bam_fragments=*/true, mapping_parameters_.is_bulk_data,
+      /*raw_barcode_evidence=*/!mapping_parameters_.is_bulk_data);
+  if (mapping_parameters_.emit_noY_stream ||
+      mapping_parameters_.emit_Y_stream ||
+      mapping_parameters_.emit_y_read_names ||
+      mapping_parameters_.emit_y_noy_fastq) {
+    metadata.schema_mask = static_cast<uint16_t>(
+        metadata.schema_mask | kAtacSpillSchemaHasYHit);
+  }
+  if (mapping_parameters_.remove_pcr_duplicates) {
+    metadata.flags = static_cast<uint16_t>(
+        metadata.flags | kAtacMergeableRemovePcrDuplicates);
+  }
+  if (mapping_parameters_.remove_pcr_duplicates_at_bulk_level) {
+    metadata.flags = static_cast<uint16_t>(
+        metadata.flags | kAtacMergeableBulkLevelDedup);
+  }
+  if (mapping_parameters_.Tn5_shift) {
+    metadata.flags =
+        static_cast<uint16_t>(metadata.flags | kAtacMergeableTn5Shift);
+  }
+  if (mapping_parameters_.output_mappings_not_in_whitelist) {
+    metadata.flags = static_cast<uint16_t>(
+        metadata.flags | kAtacMergeableOutputMappingsNotInWhitelist);
+  }
+  if (mapping_parameters_.allocate_multi_mappings) {
+    metadata.flags = static_cast<uint16_t>(
+        metadata.flags | kAtacMergeableAllocateMultiMappings);
+  }
+  metadata.flags = static_cast<uint16_t>(
+      metadata.flags | kAtacMergeableHasSummaryEvidence);
+  if (mapping_parameters_.output_num_uniq_cache_slots) {
+    metadata.flags = static_cast<uint16_t>(
+        metadata.flags | kAtacMergeableSummaryCardinality);
+  }
+  if (mapping_parameters_.mergeable_spill_read_range_late_bound) {
+    metadata.flags = static_cast<uint16_t>(
+        metadata.flags | kAtacMergeableReadRangeLateBound);
+  }
+  metadata.shard_ordinal = mapping_parameters_.mergeable_spill_shard_ordinal;
+  metadata.shard_count = mapping_parameters_.mergeable_spill_shard_count;
+  if (mapping_parameters_.mergeable_spill_read_range_late_bound) {
+    metadata.first_global_read_ordinal = 0;
+    metadata.input_record_count = mergeable_summary_evidence_count_;
+  } else {
+    metadata.first_global_read_ordinal =
+        mapping_parameters_.mergeable_spill_first_global_read;
+    metadata.input_record_count =
+        mapping_parameters_.mergeable_spill_input_record_count;
+    if (metadata.input_record_count != mergeable_summary_evidence_count_) {
+      ExitWithMessage(
+          "Observed synchronized input count disagrees with the explicit "
+          "mergeable ATAC shard range");
+    }
+  }
+  metadata.local_num_sample_barcodes = local_num_sample_barcodes;
+  metadata.barcode_whitelist_fingerprint =
+      mapping_parameters_.barcode_whitelist_fingerprint;
+  metadata.barcode_correction_error_threshold = static_cast<uint8_t>(
+      mapping_parameters_.barcode_correction_error_threshold);
+  metadata.barcode_correction_probability_threshold =
+      mapping_parameters_.barcode_correction_probability_threshold;
+  metadata.multi_mapping_allocation_distance =
+      mapping_parameters_.multi_mapping_allocation_distance;
+  metadata.multi_mapping_allocation_seed =
+      mapping_parameters_.multi_mapping_allocation_seed;
+  metadata.max_num_best_mappings = static_cast<uint32_t>(
+      mapping_parameters_.max_num_best_mappings);
+  metadata.summary_evidence_count = mergeable_summary_evidence_count_;
+  metadata.cache_size = static_cast<uint32_t>(mapping_parameters_.cache_size);
+  metadata.k_for_minhash =
+      static_cast<uint32_t>(mapping_parameters_.k_for_minhash);
+  std::stringstream coefficient_stream(mapping_parameters_.frip_est_params);
+  std::string coefficient;
+  while (std::getline(coefficient_stream, coefficient, ';')) {
+    try {
+      metadata.frip_est_coefficients.push_back(std::stod(coefficient));
+    } catch (...) {
+      ExitWithMessage("Invalid mergeable ATAC FRIP summary coefficients");
+    }
+  }
+  if (metadata.frip_est_coefficients.size() != 5) {
+    ExitWithMessage("Mergeable ATAC requires five FRIP summary coefficients");
+  }
+  metadata.barcode_length = cell_barcode_length_;
+  metadata.mapq_threshold = mapping_parameters_.mapq_threshold;
+  metadata.tn5_forward_shift =
+      static_cast<int8_t>(mapping_parameters_.Tn5_forward_shift);
+  metadata.tn5_reverse_shift =
+      static_cast<int8_t>(mapping_parameters_.Tn5_reverse_shift);
+  metadata.sample_id = mapping_parameters_.mergeable_spill_sample_id;
+  metadata.input_id = mapping_parameters_.mergeable_spill_input_id;
+  metadata.references.reserve(num_reference_sequences);
+  for (uint32_t rid = 0; rid < num_reference_sequences; ++rid) {
+    AtacMergeableSpillReference entry;
+    entry.name = reference.GetSequenceNameAt(rid);
+    entry.length = reference.GetSequenceLengthAt(rid);
+    metadata.references.push_back(std::move(entry));
+  }
+  if (!mapping_parameters_.is_bulk_data) {
+    if (barcode_whitelist_lookup_table == nullptr) {
+      ExitWithMessage(
+          "barcoded ATAC mergeable spill requires a barcode whitelist");
+    }
+    metadata.barcode_abundance_entries.reserve(
+        kh_size(barcode_whitelist_lookup_table));
+    for (khiter_t it = kh_begin(barcode_whitelist_lookup_table);
+         it != kh_end(barcode_whitelist_lookup_table); ++it) {
+      if (kh_exist(barcode_whitelist_lookup_table, it)) {
+        AtacBarcodeAbundanceEntry entry;
+        entry.barcode_key = kh_key(barcode_whitelist_lookup_table, it);
+        entry.count = kh_value(barcode_whitelist_lookup_table, it);
+        metadata.barcode_abundance_entries.push_back(entry);
+      }
+    }
+    std::sort(metadata.barcode_abundance_entries.begin(),
+              metadata.barcode_abundance_entries.end(),
+              [](const AtacBarcodeAbundanceEntry &a,
+                 const AtacBarcodeAbundanceEntry &b) {
+                return a.barcode_key < b.barcode_key;
+              });
+  }
+
+  AtacMergeableSpillWriter writer;
+  std::string error;
+  if (!writer.Open(mapping_parameters_.create_mergeable_spill_record_path,
+                   metadata, &error)) {
+    ExitWithMessage(error);
+  }
+  if (mergeable_summary_evidence_file_ == nullptr ||
+      fflush(mergeable_summary_evidence_file_) != 0 ||
+      fseek(mergeable_summary_evidence_file_, 0, SEEK_SET) != 0) {
+    ExitWithMessage("Cannot replay mergeable ATAC summary evidence");
+  }
+  for (uint64_t i = 0; i < mergeable_summary_evidence_count_; ++i) {
+    AtacSummaryEvidence evidence;
+    evidence.raw_barcode_qual.assign(
+        mapping_parameters_.is_bulk_data ? 0 : cell_barcode_length_, '\0');
+    if (fread(&evidence.raw_barcode_key, sizeof(evidence.raw_barcode_key), 1,
+              mergeable_summary_evidence_file_) != 1 ||
+        fread(&evidence.raw_barcode_n_mask,
+              sizeof(evidence.raw_barcode_n_mask), 1,
+              mergeable_summary_evidence_file_) != 1 ||
+        fread(&evidence.cache_slot1, sizeof(evidence.cache_slot1), 1,
+              mergeable_summary_evidence_file_) != 1 ||
+        fread(&evidence.cache_slot2, sizeof(evidence.cache_slot2), 1,
+              mergeable_summary_evidence_file_) != 1 ||
+        (!evidence.raw_barcode_qual.empty() &&
+         fread(&evidence.raw_barcode_qual[0], 1,
+               evidence.raw_barcode_qual.size(),
+               mergeable_summary_evidence_file_) !=
+             evidence.raw_barcode_qual.size()) ||
+        !writer.AppendSummaryEvidence(evidence, &error)) {
+      ExitWithMessage(error.empty()
+                          ? "Cannot read mergeable ATAC summary evidence"
+                          : error);
+    }
+  }
+
+  struct FileRecord {
+    uint32_t rid = 0;
+    AtacSpillRecord mapping;
+    size_t file_index = 0;
+
+    bool operator<(const FileRecord &other) const {
+      if (rid != other.rid) {
+        return rid > other.rid;
+      }
+      const bool a_less_b = mapping < other.mapping;
+      const bool b_less_a = other.mapping < mapping;
+      if (!a_less_b && !b_less_a) {
+        return file_index > other.file_index;
+      }
+      return !a_less_b;
+    }
+  };
+
+  std::unordered_map<uint32_t, std::vector<size_t>> rid_to_files;
+  std::unordered_set<uint32_t> all_rids;
+  uint16_t agreed_schema = 0;
+  bool have_agreed_schema = false;
+  for (size_t fi = 0; fi < shared_overflow_file_paths_.size(); ++fi) {
+    OverflowReader scanner(shared_overflow_file_paths_[fi]);
+    if (!scanner.IsValid()) {
+      ExitWithMessage("Cannot open ATAC overflow run for durable spill: " +
+                      shared_overflow_file_paths_[fi]);
+    }
+    uint32_t rid = 0;
+    std::string payload;
+    std::unordered_set<uint32_t> rids_in_file;
+    while (scanner.ReadNext(rid, payload)) {
+      rids_in_file.insert(rid);
+      all_rids.insert(rid);
+    }
+    const uint16_t schema =
+        OverflowSpillSchemaMaskFromReader<AtacSpillRecord>(&scanner);
+    if (!have_agreed_schema) {
+      agreed_schema = schema;
+      have_agreed_schema = true;
+    } else if (schema != agreed_schema) {
+      ExitWithMessage(
+          "Mismatched ATAC spill schema between worker overflow runs");
+    }
+    if ((schema & kAtacSpillSchemaHasBamPair) == 0) {
+      ExitWithMessage(
+          "Mergeable ATAC spill source is missing BAM-pair payloads");
+    }
+    for (uint32_t file_rid : rids_in_file) {
+      rid_to_files[file_rid].push_back(fi);
+    }
+  }
+
+  std::vector<uint32_t> rids(all_rids.begin(), all_rids.end());
+  std::sort(rids.begin(), rids.end());
+  std::vector<std::unique_ptr<OverflowReader>> readers(
+      shared_overflow_file_paths_.size());
+
+  auto load_record = [&](size_t fi, uint32_t expected_rid,
+                         FileRecord *output, bool *eof) {
+    uint32_t rid = 0;
+    std::string payload;
+    if (!readers[fi]->ReadNext(rid, payload)) {
+      *eof = true;
+      return;
+    }
+    *eof = false;
+    if (rid != expected_rid) {
+      ExitWithMessage(
+          "ATAC overflow run crossed reference buckets during durable merge");
+    }
+    FILE *memory =
+        fmemopen(const_cast<char *>(payload.data()), payload.size(), "rb");
+    if (memory == nullptr) {
+      ExitWithMessage("Cannot decode ATAC overflow payload");
+    }
+    AtacSpillRecord mapping;
+    mapping.LoadFromFile(memory, agreed_schema);
+    const long consumed = ftell(memory);
+    fclose(memory);
+    if (consumed < 0 || static_cast<size_t>(consumed) != payload.size() ||
+        mapping.SerializedSize() != payload.size() ||
+        !mapping.HasBamPairSection()) {
+      ExitWithMessage("Invalid ATAC overflow payload during durable merge");
+    }
+    output->rid = rid;
+    output->mapping = std::move(mapping);
+    output->file_index = fi;
+  };
+
+  for (uint32_t current_rid : rids) {
+    const auto &file_indices = rid_to_files[current_rid];
+    std::priority_queue<FileRecord> heap;
+    for (size_t fi : file_indices) {
+      readers[fi].reset(new OverflowReader(shared_overflow_file_paths_[fi]));
+      if (!readers[fi]->IsValid()) {
+        ExitWithMessage("Cannot reopen ATAC overflow run for durable merge");
+      }
+      FileRecord record;
+      bool eof = false;
+      load_record(fi, current_rid, &record, &eof);
+      if (!eof) {
+        heap.push(std::move(record));
+      }
+    }
+    while (!heap.empty()) {
+      FileRecord record = heap.top();
+      heap.pop();
+      if (record.mapping.num_dups_ != 1 ||
+          record.mapping.read_id_ >= metadata.input_record_count ||
+          record.mapping.sam1.read_id_ != record.mapping.read_id_ ||
+          record.mapping.sam2.read_id_ != record.mapping.read_id_) {
+        ExitWithMessage(
+            "ATAC mergeable spill source is not a pre-dedup local-id record");
+      }
+      const bool y_hit =
+          reads_with_y_hit_ != nullptr &&
+          reads_with_y_hit_->count(record.mapping.read_id_) != 0;
+      record.mapping.SetYHit(y_hit);
+      if (!writer.Append(record.rid, record.mapping, &error)) {
+        ExitWithMessage(error);
+      }
+
+      FileRecord next;
+      bool eof = false;
+      load_record(record.file_index, current_rid, &next, &eof);
+      if (!eof) {
+        heap.push(std::move(next));
+      }
+    }
+    for (size_t fi : file_indices) {
+      readers[fi].reset();
+    }
+  }
+
+  if (!writer.Finalize(&error)) {
+    ExitWithMessage(error);
+  }
+  for (const std::string &file_path : shared_overflow_file_paths_) {
+    unlink(file_path.c_str());
+  }
+  shared_overflow_file_paths_.clear();
+  std::cerr << "Wrote mergeable pre-dedup ATAC spill shard "
+            << metadata.shard_ordinal << "/" << metadata.shard_count << " ("
+            << writer.record_count() << " records) to "
+            << mapping_parameters_.create_mergeable_spill_record_path << "\n";
+}
 
 template <typename MappingRecord>
 void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
@@ -1853,13 +2178,23 @@ void MappingWriter<AtacSpillRecord>::AppendMapping(
       std::string strand = mwb.IsPositiveStrand() ? "+" : "-";
       const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
       uint32_t mapping_end_position = mwb.GetEndPosition();
-      const std::string translated_barcode = barcode_translator_.Translate(
-          mwb.cell_barcode_, cell_barcode_length_);
-      this->AppendMappingOutput(std::string(reference_sequence_name) + "\t" +
-                                std::to_string(mwb.GetStartPosition()) + "\t" +
-                                std::to_string(mapping_end_position) + "\t" +
-                                translated_barcode + "\t" +
-                                std::to_string(mwb.num_dups_) + "\n");
+      if (mapping_parameters_.is_bulk_data) {
+        this->AppendMappingOutput(
+            std::string(reference_sequence_name) + "\t" +
+            std::to_string(mwb.GetStartPosition()) + "\t" +
+            std::to_string(mapping_end_position) + "\tN\t" +
+            std::to_string(mwb.mapq_) + "\t" + strand + "\t" +
+            std::to_string(mwb.num_dups_) + "\n");
+      } else {
+        const std::string translated_barcode = barcode_translator_.Translate(
+            mwb.cell_barcode_, cell_barcode_length_);
+        this->AppendMappingOutput(
+            std::string(reference_sequence_name) + "\t" +
+            std::to_string(mwb.GetStartPosition()) + "\t" +
+            std::to_string(mapping_end_position) + "\t" +
+            translated_barcode + "\t" + std::to_string(mwb.num_dups_) +
+            "\n");
+      }
       if (mapping_parameters_.macs3_frag_buffer) {
         macs3::FragmentRecord rec;
         rec.chrom_id = static_cast<int32_t>(rid);
@@ -1974,7 +2309,8 @@ void MappingWriter<AtacSpillRecord>::AppendMapping(
             reference, m);
     if (mapping_parameters_.sort_bam && bam_sorter_) {
       bool hasY =
-          reads_with_y_hit_ && reads_with_y_hit_->count(m.read_id_) > 0;
+          mapping.HasYHit() ||
+          (reads_with_y_hit_ && reads_with_y_hit_->count(m.read_id_) > 0);
       bam_sorter_->addRecord(b, m.read_id_, hasY);
       bam_destroy1(b);
     } else {
@@ -1982,8 +2318,11 @@ void MappingWriter<AtacSpillRecord>::AppendMapping(
         bam_destroy1(b);
         ExitWithMessage("Failed to write BAM/CRAM record");
       }
-      if (reads_with_y_hit_ && (noY_hts_out_ || Y_hts_out_)) {
-        bool is_y_hit = reads_with_y_hit_->count(m.read_id_) > 0;
+      if ((reads_with_y_hit_ || mapping.HasYHit()) &&
+          (noY_hts_out_ || Y_hts_out_)) {
+        bool is_y_hit = mapping.HasYHit() ||
+                        (reads_with_y_hit_ &&
+                         reads_with_y_hit_->count(m.read_id_) > 0);
         if (Y_hts_out_ && is_y_hit) {
           if (sam_write1(Y_hts_out_, hts_hdr_, b) < 0) {
             bam_destroy1(b);

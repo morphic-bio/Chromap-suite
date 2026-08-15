@@ -19,8 +19,14 @@ void SequenceBatch::InitializeLoading(const std::string &sequence_file_path) {
 }
 
 void SequenceBatch::FinalizeLoading() {
-  kseq_destroy(sequence_kseq_);
-  gzclose(sequence_file_);
+  if (sequence_kseq_ != nullptr) {
+    kseq_destroy(sequence_kseq_);
+    sequence_kseq_ = nullptr;
+  }
+  if (sequence_file_ != nullptr) {
+    gzclose(sequence_file_);
+    sequence_file_ = nullptr;
+  }
 }
 
 void SequenceBatch::ResetLoadedSequences() {
@@ -83,6 +89,37 @@ void SequenceBatch::AssignLoadedSequence(uint32_t sequence_index,
   }
 }
 
+void SequenceBatch::AssignLoadedReferenceMetadata(uint32_t sequence_index,
+                                                  const std::string &name,
+                                                  uint32_t sequence_length) {
+  if (sequence_index >= sequence_batch_.size()) {
+    ExitWithMessage("Reference metadata index exceeds batch capacity");
+  }
+  if (sequence_index > num_loaded_sequences_) {
+    ExitWithMessage("Reference metadata must be filled in order");
+  }
+  kseq_t *sequence = sequence_batch_[sequence_index];
+  AssignKstring(sequence->name, name.data(), name.size());
+  AssignKstring(sequence->comment, nullptr, 0);
+  AssignKstring(sequence->qual, nullptr, 0);
+  // No genome bases are allocated. Consumers of this path may use only the
+  // reference name and declared length.
+  if (sequence->seq.s != nullptr) {
+    free(sequence->seq.s);
+    sequence->seq.s = nullptr;
+  }
+  sequence->seq.l = sequence_length;
+  sequence->seq.m = 0;
+  sequence->id = sequence_index;
+  if (sequence_index == num_loaded_sequences_) {
+    ++num_loaded_sequences_;
+  }
+  if (sequence_index >= total_num_loaded_sequences_) {
+    total_num_loaded_sequences_ = static_cast<uint64_t>(sequence_index) + 1;
+  }
+  num_bases_ += sequence_length;
+}
+
 char *SequenceBatch::PrepareLoadedSequenceBuffer(uint32_t sequence_index,
                                                  size_t seq_len) {
   if (sequence_index >= sequence_batch_.size()) {
@@ -116,7 +153,7 @@ void SequenceBatch::CommitLoadedSequenceBuffer(
     uint32_t sequence_index, const char *name, size_t name_len,
     const char *comment, size_t comment_len, size_t seq_len, const char *qual,
     size_t qual_len) {
-  const uint32_t sequence_id = total_num_loaded_sequences_;
+  const uint64_t sequence_id = total_num_loaded_sequences_;
   CommitLoadedSequenceBufferWithId(sequence_index, sequence_id, name, name_len,
                                    comment, comment_len, seq_len, qual,
                                    qual_len);
@@ -124,7 +161,7 @@ void SequenceBatch::CommitLoadedSequenceBuffer(
 }
 
 void SequenceBatch::CommitLoadedSequenceBufferWithId(
-    uint32_t sequence_index, uint32_t sequence_id, const char *name,
+    uint32_t sequence_index, uint64_t sequence_id, const char *name,
     size_t name_len, const char *comment, size_t comment_len, size_t seq_len,
     const char *qual, size_t qual_len) {
   if (sequence_index >= sequence_batch_.size()) {
@@ -151,10 +188,10 @@ void SequenceBatch::CommitLoadedSequenceBufferWithId(
   }
   sequence->id = sequence_id;
   if (sequence_id >= total_num_loaded_sequences_) {
-    total_num_loaded_sequences_ =
-        sequence_id == std::numeric_limits<uint32_t>::max()
-            ? sequence_id
-            : sequence_id + 1;
+    if (sequence_id == std::numeric_limits<uint64_t>::max()) {
+      ExitWithMessage("Sequence identifier space exhausted");
+    }
+    total_num_loaded_sequences_ = sequence_id + 1;
   }
   if (sequence_index == num_loaded_sequences_) {
     ++num_loaded_sequences_;

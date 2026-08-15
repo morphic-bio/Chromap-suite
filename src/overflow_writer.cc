@@ -59,7 +59,7 @@ bool OverflowWriter::WriteAtacSpillFileHeaderIfNeeded(FILE* fp) {
     }
     chromap::AtacSpillFileHeader hdr = {};
     hdr.magic = chromap::kAtacSpillFileMagic;
-    hdr.format_version = 1;
+    hdr.format_version = chromap::kAtacSpillFileFormatVersion;
     hdr.schema_mask = atac_spill_schema_mask_;
     hdr.record_codec_version = chromap::kAtacSpillRecordCodecVersion;
     hdr.reserved0 = 0;

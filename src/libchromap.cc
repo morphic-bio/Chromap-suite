@@ -45,6 +45,21 @@ ChromapRunResult MakeFailure(const MappingParameters &mapping_parameters,
 ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
   try {
     MappingParameters params = mapping_parameters;
+    if (params.CreatesMergeableAtacSpill()) {
+      params.low_memory_mode = true;
+    }
+    if (params.UsesPairedEndReadProvider() &&
+        !params.CreatesMergeableAtacSpill()) {
+      return MakeFailure(
+          params,
+          "paired-end read providers currently require mergeable ATAC spill output");
+    }
+    if (params.UsesPairedEndReadProvider() &&
+        params.HasBarcodeInput() == params.is_bulk_data) {
+      return MakeFailure(
+          params,
+          "paired-end read provider barcode topology differs from assay mode");
+    }
     if (params.emit_y_noy_fastq &&
         (params.y_fastq_output_paths_per_file.empty() ||
          params.noy_fastq_output_paths_per_file.empty())) {
@@ -82,7 +97,8 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
           return MakeFailure(params, "unknown mapping output format");
       }
     } else {
-      if (params.AtacDualFragmentAndBam()) {
+      if (params.AtacDualFragmentAndBam() ||
+          params.CreatesMergeableAtacSpill()) {
         chromap_for_mapping.MapPairedEndReads<AtacSpillRecord>();
       } else if (params.low_memory_mode &&
                  !params.is_bulk_data &&

@@ -147,8 +147,14 @@ std::string DeriveYReadNamesOutputPath(const std::string &primary_path) {
 }
 
 void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
-  if (mapping_parameters.reference_file_path.empty()) {
-    chromap::ExitWithMessage("No reference specified");
+  if (mapping_parameters.reference_file_path.empty() &&
+      mapping_parameters.reference_sidecar_path.empty()) {
+    chromap::ExitWithMessage(
+        "No reference specified; use --ref or --reference-sidecar");
+  }
+  if (mapping_parameters.mapping_output_format == chromap::MAPPINGFORMAT_CRAM &&
+      mapping_parameters.reference_file_path.empty()) {
+    chromap::ExitWithMessage("--CRAM requires --ref/-r reference file");
   }
   if (mapping_parameters.index_file_path.empty()) {
     chromap::ExitWithMessage("No index specified");
@@ -237,8 +243,14 @@ void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
 
 void PrintRunSummary(const chromap::MappingParameters &mapping_parameters) {
   std::cerr << "chromap_lib_runner launching libchromap\n";
-  std::cerr << "Reference file: " << mapping_parameters.reference_file_path
-            << "\n";
+  if (!mapping_parameters.reference_file_path.empty()) {
+    std::cerr << "Reference file: " << mapping_parameters.reference_file_path
+              << "\n";
+  }
+  if (!mapping_parameters.reference_sidecar_path.empty()) {
+    std::cerr << "Materialized reference sidecar: "
+              << mapping_parameters.reference_sidecar_path << "\n";
+  }
   std::cerr << "Index file: " << mapping_parameters.index_file_path << "\n";
   std::cerr << "Output file: " << mapping_parameters.mapping_output_file_path
             << "\n";
@@ -270,6 +282,8 @@ int main(int argc, char **argv) {
       ("x,index", "Chromap index file",
        cxxopts::value<std::string>(), "FILE")
       ("r,ref", "Reference FASTA",
+       cxxopts::value<std::string>(), "FILE")
+      ("reference-sidecar", "Materialized reference sidecar",
        cxxopts::value<std::string>(), "FILE")
       ("input-format", "Read input format: fastq or cbq [fastq]",
        cxxopts::value<std::string>(), "STR")
@@ -407,6 +421,10 @@ int main(int argc, char **argv) {
     }
     if (result.count("ref")) {
       mapping_parameters.reference_file_path = result["ref"].as<std::string>();
+    }
+    if (result.count("reference-sidecar")) {
+      mapping_parameters.reference_sidecar_path =
+          result["reference-sidecar"].as<std::string>();
     }
     if (result.count("input-format")) {
       const std::string input_format =
