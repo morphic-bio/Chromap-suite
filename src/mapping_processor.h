@@ -7,6 +7,8 @@
 #include <cstring>
 #include <functional>
 #include <iostream>
+#include <limits>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -278,6 +280,9 @@ uint32_t MappingProcessor<MappingRecord>::GetNumOverlappedMappings(
   int num_overlapped_mappings = 0;
   int max_level = tree_info[ref_id].first;
   uint32_t num_tree_nodes = tree_info[ref_id].second;
+  if (max_level < 0 || num_tree_nodes == 0) {
+    return 0;
+  }
   const std::vector<MappingRecord> &mappings = allocated_mappings[ref_id];
   const std::vector<uint32_t> &extras = tree_extras[ref_id];
   // uint32_t interval_start = mapping.fragment_start_position;
@@ -387,16 +392,16 @@ void MappingProcessor<MappingRecord>::AllocateMultiMappings(
   weights.reserve(max_num_best_mappings_);
   uint32_t sum_weight = 0;
   assert(multi_mappings.size() > 0);
-  uint32_t previous_read_id = multi_mappings[0].second.read_id_;
+  uint64_t previous_read_id = multi_mappings[0].second.read_id_;
   uint32_t start_mapping_index = 0;
   // add a fake mapping at the end and make sure its id is different from the
   // last one
-  assert(multi_mappings.size() != UINT32_MAX);
+  assert(multi_mappings.size() != std::numeric_limits<uint64_t>::max());
   std::pair<uint32_t, MappingRecord> foo_mapping = multi_mappings.back();
-  foo_mapping.second.read_id_ = UINT32_MAX;
+  foo_mapping.second.read_id_ = std::numeric_limits<uint64_t>::max();
   multi_mappings.emplace_back(foo_mapping);
   std::mt19937 generator(multi_mapping_allocation_seed_);
-  uint32_t current_read_id;  //, reference_id, mapping_index;
+  uint64_t current_read_id;  //, reference_id, mapping_index;
   // uint32_t allocated_read_id, allocated_reference_id,
   // allocated_mapping_index;
   uint32_t num_allocated_multi_mappings = 0;

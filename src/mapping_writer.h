@@ -3,6 +3,7 @@
 
 #include <assert.h>
 
+#include <cerrno>
 #include <cinttypes>
 #include <cstring>
 #include <functional>
@@ -17,6 +18,7 @@
 #include "barcode_translator.h"
 #include "bed_mapping.h"
 #include "atac_dual_mapping.h"
+#include "atac_mergeable_spill.h"
 #include "mapping.h"
 #include "mapping_parameters.h"
 #include "paf_mapping.h"
@@ -99,6 +101,9 @@ class MappingWriter {
           mapping_parameters_.barcode_translate_from_first_column);
     }
     summary_metadata_.SetBarcodeLength(cell_barcode_length);
+    if (mapping_parameters_.CreatesMergeableAtacSpill()) {
+      return;
+    }
     if (mapping_parameters_.AtacDualFragmentAndBam()) {
       const std::string &af =
           mapping_parameters_.atac_fragment_output_file_path;
@@ -118,6 +123,10 @@ class MappingWriter {
       mapping_output_file_ =
           fopen(mapping_parameters_.mapping_output_file_path.c_str(), "w");
       assert(mapping_output_file_ != nullptr);
+      // Gather emits tens of millions of short BED rows. A large userspace
+      // buffer avoids turning those writes into small Lustre transactions.
+      (void)setvbuf(mapping_output_file_, nullptr, _IOFBF,
+                    4u * 1024u * 1024u);
     }
   }
 
@@ -138,6 +147,10 @@ class MappingWriter {
     FinalizeSortedOutput();  // No-op for non-SAMMapping, specialized for SAMMapping
     CloseYFilterStreams();
     CloseHtsOutput();  // No-op for non-SAMMapping, specialized for SAMMapping
+    if (mergeable_summary_evidence_file_ != nullptr) {
+      fclose(mergeable_summary_evidence_file_);
+      mergeable_summary_evidence_file_ = nullptr;
+    }
   }
 
   void OutputTempMappings(
@@ -155,6 +168,14 @@ class MappingWriter {
       uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
       const SequenceBatch &reference,
       const khash_t(k64_seq) * barcode_whitelist_lookup_table);
+
+  // Consolidate the sorted, pre-dedup low-memory runs into one durable shard
+  // artifact. This is the terminal worker operation selected by
+  // --create-mergeable-spill-record.
+  void WriteMergeableAtacSpillFromOverflow(
+      uint32_t num_reference_sequences, const SequenceBatch &reference,
+      const khash_t(k64_seq) *barcode_whitelist_lookup_table,
+      uint64_t local_num_sample_barcodes);
   
   // Helper to close thread-local writer and collect paths
   static void CloseThreadOverflowWriter();
@@ -179,12 +200,75 @@ class MappingWriter {
           &temp_mapping_file_handles);
 
   void OutputSummaryMetadata(std::vector<double> frip_est_coeffs = {0.0, 0.0, 0.0, 0.0, 0.0}, bool output_num_cache_slots_info = true);
-  void UpdateSummaryMetadata(uint64_t barcode, int type, int change);
-  void UpdateSpeicalCategorySummaryMetadata(int category, int type, int change);
+  void UpdateSummaryMetadata(uint64_t barcode, int type, uint64_t change);
+  void UpdateSpeicalCategorySummaryMetadata(int category, int type,
+                                            uint64_t change);
   void AdjustSummaryPairedEndOverCount();
 
+  void RecordMergeableAtacSummaryEvidence(
+      const AtacSummaryEvidence &evidence) {
+    if (!mapping_parameters_.CreatesMergeableAtacSpill()) {
+      return;
+    }
+    if (mergeable_summary_evidence_file_ == nullptr) {
+      std::string directory = mapping_parameters_.temp_directory_path.empty()
+                                  ? std::string(".")
+                                  : mapping_parameters_.temp_directory_path;
+      if (directory.back() != '/') {
+        directory.push_back('/');
+      }
+      std::string pattern = directory + "chromap_atac_summary.XXXXXX";
+      std::vector<char> writable(pattern.begin(), pattern.end());
+      writable.push_back('\0');
+      const int descriptor = mkstemp(writable.data());
+      if (descriptor < 0) {
+        ExitWithMessage("Cannot create mergeable ATAC summary evidence in " +
+                        directory + ": " + std::strerror(errno));
+      }
+      unlink(writable.data());
+      mergeable_summary_evidence_file_ = fdopen(descriptor, "wb+");
+      if (mergeable_summary_evidence_file_ == nullptr) {
+        close(descriptor);
+        ExitWithMessage("Cannot open mergeable ATAC summary evidence stream");
+      }
+      setvbuf(mergeable_summary_evidence_file_, nullptr, _IOFBF, 1 << 20);
+    }
+    const bool is_bulk = mapping_parameters_.is_bulk_data;
+    if ((is_bulk && (evidence.raw_barcode_key != 0 ||
+                     evidence.raw_barcode_n_mask != 0 ||
+                     !evidence.raw_barcode_qual.empty())) ||
+        (!is_bulk &&
+         evidence.raw_barcode_qual.size() != cell_barcode_length_)) {
+      ExitWithMessage("Invalid mergeable ATAC summary barcode evidence");
+    }
+    if (fwrite(&evidence.raw_barcode_key, sizeof(evidence.raw_barcode_key), 1,
+               mergeable_summary_evidence_file_) != 1 ||
+        fwrite(&evidence.raw_barcode_n_mask,
+               sizeof(evidence.raw_barcode_n_mask), 1,
+               mergeable_summary_evidence_file_) != 1 ||
+        fwrite(&evidence.cache_slot1, sizeof(evidence.cache_slot1), 1,
+               mergeable_summary_evidence_file_) != 1 ||
+        fwrite(&evidence.cache_slot2, sizeof(evidence.cache_slot2), 1,
+               mergeable_summary_evidence_file_) != 1 ||
+        (!evidence.raw_barcode_qual.empty() &&
+         fwrite(evidence.raw_barcode_qual.data(), 1,
+                evidence.raw_barcode_qual.size(),
+                mergeable_summary_evidence_file_) !=
+             evidence.raw_barcode_qual.size())) {
+      ExitWithMessage("Cannot write mergeable ATAC summary evidence");
+    }
+    ++mergeable_summary_evidence_count_;
+  }
+
+  // Public, narrow output hook used by the standalone gather materializer.
+  void AppendMaterializedMapping(uint32_t rid,
+                                 const SequenceBatch &reference,
+                                 const MappingRecord &mapping) {
+    AppendMapping(rid, reference, mapping);
+  }
+
   // Set the Y-hit read IDs for filtering (call before any output)
-  void SetYHitFilter(const std::unordered_set<uint32_t> *reads_with_y_hit) {
+  void SetYHitFilter(const std::unordered_set<uint64_t> *reads_with_y_hit) {
     reads_with_y_hit_ = reads_with_y_hit;
   }
   
@@ -407,11 +491,13 @@ class MappingWriter {
   std::string atac_evidence_tmp_path_;
   std::string atac_evidence_chroms_path_;
   std::string atac_evidence_chroms_tmp_path_;
+  FILE *mergeable_summary_evidence_file_ = nullptr;
+  uint64_t mergeable_summary_evidence_count_ = 0;
 
   // Y-chromosome filtering (SAM/BAM/CRAM mode)
   FILE *noY_output_file_ = nullptr;
   FILE *Y_output_file_ = nullptr;
-  const std::unordered_set<uint32_t> *reads_with_y_hit_ = nullptr;
+  const std::unordered_set<uint64_t> *reads_with_y_hit_ = nullptr;
   
   // htslib handles for BAM/CRAM output
   samFile *hts_out_ = nullptr;
@@ -781,14 +867,16 @@ void MappingWriter<MappingRecord>::OutputSummaryMetadata(std::vector<double> fri
 }
 
 template <typename MappingRecord>
-  void MappingWriter<MappingRecord>::UpdateSummaryMetadata(uint64_t barcode, int type, int change) {
+  void MappingWriter<MappingRecord>::UpdateSummaryMetadata(
+      uint64_t barcode, int type, uint64_t change) {
   if (!mapping_parameters_.summary_metadata_file_path.empty())
     summary_metadata_.UpdateCount(barcode, type, change);
 }
 
 // category: 0: non-whitelist barcode
 template <typename MappingRecord>
-  void MappingWriter<MappingRecord>::UpdateSpeicalCategorySummaryMetadata(int category, int type, int change) {
+  void MappingWriter<MappingRecord>::UpdateSpeicalCategorySummaryMetadata(
+      int category, int type, uint64_t change) {
   if (!mapping_parameters_.summary_metadata_file_path.empty()) {
     if (category == 0)
       summary_metadata_.UpdateNonWhitelistCount(type, change);

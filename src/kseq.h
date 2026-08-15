@@ -222,7 +222,7 @@ typedef struct __kstring_t {
 		kstring_t name, comment, seq, qual;		\
 		int last_char;							\
 		kstream_t *f;							\
-    uint32_t id; \
+    uint64_t id; \
 	} kseq_t;
 
 #define KSEQ_INIT2(SCOPE, type_t, __read)		\

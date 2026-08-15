@@ -24,12 +24,8 @@ namespace {
 // strands in parallel across worker threads.
 const bool kPrefillCbqNegativeSequences = false;
 
-uint32_t CheckedCbqSequenceId(uint64_t sequence_id) {
-  if (sequence_id > std::numeric_limits<uint32_t>::max()) {
-    ExitWithMessage(
-        "CBQ record ordinal exceeds Chromap's uint32 read-id limit");
-  }
-  return static_cast<uint32_t>(sequence_id);
+uint64_t CheckedCbqSequenceId(uint64_t sequence_id) {
+  return sequence_id;
 }
 
 uint64_t CbqRecordGlobalId(const CbqReadView &record,
@@ -37,7 +33,12 @@ uint64_t CbqRecordGlobalId(const CbqReadView &record,
   if (record.lane_read_ordinal == 0) {
     ExitWithMessage("CBQ record has a zero lane ordinal");
   }
-  return global_record_offset + record.lane_read_ordinal - 1U;
+  const uint64_t lane_offset = record.lane_read_ordinal - 1U;
+  if (lane_offset >
+      std::numeric_limits<uint64_t>::max() - global_record_offset) {
+    ExitWithMessage("CBQ record ordinal overflows uint64 read ids");
+  }
+  return global_record_offset + lane_offset;
 }
 
 bool ReadCbqRangeMetadata(const std::string &path, uint32_t mate_count,
@@ -98,7 +99,7 @@ void AssignCbqSegmentToBatch(const CbqReadView &record,
                              uint32_t sequence_index,
                              SequenceBatch &sequence_batch,
                              bool prepare_negative_sequence,
-                             uint32_t sequence_id) {
+                             uint64_t sequence_id) {
   const size_t sequence_length = CbqSegmentSequenceLength(segment);
   char *sequence_buffer =
       sequence_batch.PrepareLoadedSequenceBuffer(sequence_index,
@@ -174,7 +175,7 @@ uint32_t LoadCbqReadPairsIntoBatches(CbqLaneReader &read_reader,
         ExitWithMessage("CBQ paired-read input yielded fewer than two mates");
       }
       const uint32_t sequence_index = num_loaded_pairs + i;
-      const uint32_t sequence_id = CheckedCbqSequenceId(
+      const uint64_t sequence_id = CheckedCbqSequenceId(
           CbqRecordGlobalId(read_record, global_record_offset));
       AssignCbqSegmentToBatch(read_record, read_record.segments[0],
                               sequence_index, read_batch1,
@@ -220,7 +221,7 @@ uint32_t LoadCbqBarcodesIntoBatch(CbqLaneReader &barcode_reader,
       if (barcode_record.segment_count < 1) {
         ExitWithMessage("CBQ barcode input yielded no barcode segment");
       }
-      const uint32_t sequence_id = CheckedCbqSequenceId(
+      const uint64_t sequence_id = CheckedCbqSequenceId(
           CbqRecordGlobalId(barcode_record, global_record_offset));
       AssignCbqSegmentToBatch(barcode_record, barcode_record.segments[0],
                               num_loaded_barcodes + i, barcode_batch,
@@ -266,8 +267,49 @@ void Chromap::ConstructIndex() {
   Index index(index_parameters_);
   index.Construct(num_sequences, reference);
   index.Statistics(num_sequences, reference);
-  index.Save();
+  MaterializedReferenceInfo reference_info;
+  const MaterializedReferenceInfo *reference_info_ptr = nullptr;
+  if (!index_parameters_.reference_sidecar_path.empty()) {
+    const double sidecar_start_time = GetRealTime();
+    std::string error;
+    if (!reference.SaveMaterializedReference(
+            index_parameters_.reference_sidecar_path, &reference_info,
+            &error)) {
+      ExitWithMessage("Cannot write materialized reference: " + error);
+    }
+    reference_info_ptr = &reference_info;
+    std::cerr << "Saved materialized reference successfully in "
+              << GetRealTime() - sidecar_start_time << "s, number of sequences: "
+              << reference_info.num_sequences << ", number of bases: "
+              << reference_info.num_bases << ".\n";
+  }
+  index.Save(reference_info_ptr);
   reference.FinalizeLoading();
+}
+
+void Chromap::LoadReferenceAndIndex(SequenceBatch &reference, Index &index) {
+  index.Load();
+  if (!mapping_parameters_.reference_sidecar_path.empty()) {
+    if (!index.HasMaterializedReferenceBinding()) {
+      ExitWithMessage(
+          "Chromap index does not declare a materialized reference; rebuild "
+          "it with --reference-sidecar");
+    }
+    MaterializedReferenceInfo reference_info;
+    std::string error;
+    if (!reference.LoadMaterializedReference(
+            mapping_parameters_.reference_sidecar_path,
+            mapping_parameters_.num_threads, &reference_info, &error)) {
+      ExitWithMessage("Cannot load materialized reference: " + error);
+    }
+    if (!index.ValidateMaterializedReference(reference_info, &error)) {
+      ExitWithMessage("Cannot use materialized reference: " + error);
+    }
+    return;
+  }
+
+  reference.InitializeLoading(mapping_parameters_.reference_file_path);
+  reference.LoadAllSequences();
 }
 
 uint32_t Chromap::LoadSingleEndReadsWithBarcodes(SequenceBatch &read_batch,
@@ -360,43 +402,79 @@ uint32_t Chromap::LoadPairedEndReadsWithBarcodes(SequenceBatch &read_batch1,
     uint32_t num_loaded_read1 = 0;
     uint32_t num_loaded_read2 = 0;
     uint32_t num_loaded_barcode = 0;
-    
-#pragma omp task shared(num_loaded_read1, read_batch1)
-    {
-      uint32_t i = 0 ;
-      for (i = 0 ; i < read_batch_size_; ++i) {
-        if (read_batch1.LoadOneSequenceAndSaveAt(i) == true) { // true: no more read
-          break ;
-        }
-      }
-      num_loaded_read1 = i ;
-    }
 
-#pragma omp task shared(num_loaded_read2, read_batch2)
-    {
-      uint32_t i = 0 ;
-      for (i = 0 ; i < read_batch_size_; ++i) {
-        if (read_batch2.LoadOneSequenceAndSaveAt(i) == true) { // true: no more read
-          break ;
+    // The first batch is loaded before MapPairedEndReads enters its OpenMP
+    // parallel region. OpenMP tasks created there are included tasks and run
+    // serially, which is invisible for regular files but deadlocks bounded,
+    // synchronized FIFOs whose producer interleaves R1/barcode/R2 records.
+    // Use real reader threads only for that initial, out-of-region batch;
+    // later batches retain the existing OpenMP task path.
+    if (!omp_in_parallel()) {
+      std::thread read1_thread([&]() {
+        uint32_t i = 0;
+        for (; i < read_batch_size_; ++i) {
+          if (read_batch1.LoadOneSequenceAndSaveAt(i)) break;
         }
-      }
-      num_loaded_read2 = i ;
-    }
-
-#pragma omp task shared(num_loaded_barcode, barcode_batch)
-    {
+        num_loaded_read1 = i;
+      });
+      std::thread read2_thread([&]() {
+        uint32_t i = 0;
+        for (; i < read_batch_size_; ++i) {
+          if (read_batch2.LoadOneSequenceAndSaveAt(i)) break;
+        }
+        num_loaded_read2 = i;
+      });
+      std::unique_ptr<std::thread> barcode_thread;
       if (!mapping_parameters_.is_bulk_data) {
+        barcode_thread.reset(new std::thread([&]() {
+          uint32_t i = 0;
+          for (; i < read_batch_size_; ++i) {
+            if (barcode_batch.LoadOneSequenceAndSaveAt(i)) break;
+          }
+          num_loaded_barcode = i;
+        }));
+      }
+      read1_thread.join();
+      read2_thread.join();
+      if (barcode_thread) barcode_thread->join();
+    } else {
+#pragma omp task shared(num_loaded_read1, read_batch1)
+      {
         uint32_t i = 0 ;
         for (i = 0 ; i < read_batch_size_; ++i) {
-          if (barcode_batch.LoadOneSequenceAndSaveAt(i) == true) { // true: no more read
+          if (read_batch1.LoadOneSequenceAndSaveAt(i) == true) { // true: no more read
             break ;
           }
         }
-        num_loaded_barcode = i ;
+        num_loaded_read1 = i ;
       }
-    }
+
+#pragma omp task shared(num_loaded_read2, read_batch2)
+      {
+        uint32_t i = 0 ;
+        for (i = 0 ; i < read_batch_size_; ++i) {
+          if (read_batch2.LoadOneSequenceAndSaveAt(i) == true) { // true: no more read
+            break ;
+          }
+        }
+        num_loaded_read2 = i ;
+      }
+
+#pragma omp task shared(num_loaded_barcode, barcode_batch)
+      {
+        if (!mapping_parameters_.is_bulk_data) {
+          uint32_t i = 0 ;
+          for (i = 0 ; i < read_batch_size_; ++i) {
+            if (barcode_batch.LoadOneSequenceAndSaveAt(i) == true) { // true: no more read
+              break ;
+            }
+          }
+          num_loaded_barcode = i ;
+        }
+      }
 
 #pragma omp taskwait
+    }
     if (mapping_parameters_.is_bulk_data) {
       num_loaded_barcode = num_loaded_read2;
     }
@@ -789,7 +867,9 @@ void Chromap::LoadBarcodeWhitelist() {
         ExitWithMessage("ERROR: barcode length is greater than 32!");
       }
 
-      if (barcode_length != barcode_length_) {
+      if (num_barcodes == 0 && barcode_length_ == 0) {
+        barcode_length_ = barcode_length;
+      } else if (barcode_length != barcode_length_) {
         if (num_barcodes == 0) {
           ExitWithMessage(
               "ERROR: whitelist and input barcode lengths are not equal!");
@@ -835,7 +915,9 @@ void Chromap::LoadBarcodeWhitelist() {
         ExitWithMessage("ERROR: barcode length is greater than 32!");
       }
 
-      if (barcode_length != barcode_length_) {
+      if (num_barcodes == 0 && barcode_length_ == 0) {
+        barcode_length_ = barcode_length;
+      } else if (barcode_length != barcode_length_) {
         if (num_barcodes == 0) {
           ExitWithMessage(
               "ERROR: whitelist and input barcode lengths are not equal!");
@@ -877,20 +959,25 @@ void Chromap::LoadBarcodeWhitelist() {
 void Chromap::ComputeBarcodeAbundance(uint64_t max_num_sample_barcodes) {
   double real_start_time = GetRealTime();
   SequenceBatch barcode_batch(read_batch_size_, barcode_effective_range_);
+  const size_t num_sources = mapping_parameters_.NumInputLanes();
   for (size_t read_file_index = 0;
-       read_file_index < mapping_parameters_.NumInputLanes();
+       read_file_index < num_sources;
        ++read_file_index) {
     std::unique_ptr<CbqLaneReader> barcode_cbq_reader;
     if (mapping_parameters_.UsesCbqInput()) {
       std::string error;
+      const std::string &barcode_path =
+          mapping_parameters_.barcode_cbq_paths[read_file_index];
       barcode_cbq_reader.reset(new CbqLaneReader(
-          mapping_parameters_.barcode_cbq_paths[read_file_index], 1));
+          barcode_path, 1));
       if (!barcode_cbq_reader->Open(&error)) {
         ExitWithMessage("Cannot open CBQ barcode input: " + error);
       }
     } else {
+      const std::string &barcode_path =
+          mapping_parameters_.barcode_file_paths[read_file_index];
       barcode_batch.InitializeLoading(
-          mapping_parameters_.barcode_file_paths[read_file_index]);
+          barcode_path);
     }
     uint32_t num_loaded_barcodes =
         mapping_parameters_.UsesCbqInput()
@@ -920,6 +1007,7 @@ void Chromap::ComputeBarcodeAbundance(uint64_t max_num_sample_barcodes) {
         }
       }
       if (!mapping_parameters_.skip_barcode_check &&
+          !mapping_parameters_.CreatesMergeableAtacSpill() &&
           num_sample_barcodes_ * 20 < num_loaded_barcodes) {
         // Since num_loaded_pairs is a constant, this if is actuaclly only
         // effective in the first iteration
@@ -950,8 +1038,41 @@ void Chromap::ComputeBarcodeAbundance(uint64_t max_num_sample_barcodes) {
     }
   }
 
+  mapping_parameters_.barcode_whitelist_fingerprint =
+      ComputeBarcodeWhitelistFingerprint();
+
   std::cerr << "Compute barcode abundance using " << num_sample_barcodes_
-            << " in " << GetRealTime() - real_start_time << "s.\n";
+            << " in " << GetRealTime() - real_start_time
+            << "s; whitelist fingerprint "
+            << mapping_parameters_.barcode_whitelist_fingerprint << ".\n";
+}
+
+uint64_t Chromap::ComputeBarcodeWhitelistFingerprint() const {
+  std::vector<std::pair<uint64_t, uint64_t>> entries;
+  entries.reserve(kh_size(barcode_whitelist_lookup_table_));
+  for (khiter_t it = kh_begin(barcode_whitelist_lookup_table_);
+       it != kh_end(barcode_whitelist_lookup_table_); ++it) {
+    if (kh_exist(barcode_whitelist_lookup_table_, it)) {
+      entries.emplace_back(kh_key(barcode_whitelist_lookup_table_, it),
+                           kh_value(barcode_whitelist_lookup_table_, it));
+    }
+  }
+  std::sort(entries.begin(), entries.end());
+
+  uint64_t hash = 1469598103934665603ULL;
+  auto hash_u64 = [&](uint64_t value) {
+    for (unsigned int byte = 0; byte < 8; ++byte) {
+      hash ^= static_cast<uint8_t>(value >> (byte * 8));
+      hash *= 1099511628211ULL;
+    }
+  };
+  hash_u64(1);  // fingerprint codec version
+  hash_u64(barcode_length_);
+  hash_u64(entries.size());
+  for (const auto &entry : entries) {
+    hash_u64(entry.first);
+  }
+  return hash == 0 ? 1 : hash;
 }
 
 void Chromap::UpdateBarcodeAbundance(uint32_t num_loaded_barcodes,

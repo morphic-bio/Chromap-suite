@@ -9,6 +9,8 @@ struct IndexParameters {
   int num_threads = 1;
   std::string reference_file_path;
   std::string index_output_file_path;
+  // Optional binary reference sidecar written together with the index.
+  std::string reference_sidecar_path;
 };
 
 }  // namespace chromap

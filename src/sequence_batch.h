@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "kseq.h"
+#include "materialized_reference.h"
 #include "sequence_effective_range.h"
 #include "utils.h"
 
@@ -93,7 +94,7 @@ class SequenceBatch {
   inline uint32_t GetSequenceQualLengthAt(uint32_t sequence_index) const {
     return sequence_batch_[sequence_index]->qual.l;
   }
-  inline uint32_t GetSequenceIdAt(uint32_t sequence_index) const {
+  inline uint64_t GetSequenceIdAt(uint32_t sequence_index) const {
     return sequence_batch_[sequence_index]->id;
   }
 
@@ -117,7 +118,7 @@ class SequenceBatch {
   // e.g: If the sequence is "ACN", big endian returns N at 2,
   //      little endian returns N at 0.
   inline void GetSequenceNsAt(uint32_t sequence_index, bool little_endian,
-                              std::vector<int> &N_pos) {
+                              std::vector<int> &N_pos) const {
     const int l = sequence_batch_[sequence_index]->seq.l;
     const char *s = sequence_batch_[sequence_index]->seq.s;
     N_pos.clear();
@@ -236,6 +237,13 @@ class SequenceBatch {
                             size_t seq_len, const char *qual,
                             size_t qual_len);
 
+  // Populate only reference name/length metadata. This is for post-alignment
+  // materializers whose records already carry all read/alignment payloads and
+  // therefore must not reload or allocate the genome sequence.
+  void AssignLoadedReferenceMetadata(uint32_t sequence_index,
+                                     const std::string &name,
+                                     uint32_t sequence_length);
+
   char *PrepareLoadedSequenceBuffer(uint32_t sequence_index, size_t seq_len);
 
   void CommitLoadedSequenceBuffer(uint32_t sequence_index, const char *name,
@@ -244,7 +252,7 @@ class SequenceBatch {
                                   const char *qual, size_t qual_len);
 
   void CommitLoadedSequenceBufferWithId(
-      uint32_t sequence_index, uint32_t sequence_id, const char *name,
+      uint32_t sequence_index, uint64_t sequence_id, const char *name,
       size_t name_len, const char *comment, size_t comment_len, size_t seq_len,
       const char *qual, size_t qual_len);
 
@@ -261,6 +269,18 @@ class SequenceBatch {
   // reference. And once the reference is loaded, the batch should never be
   // updated. This func is slow when there are large number of sequences.
   void LoadAllSequences();
+
+  // Write/read the optional binary reference representation produced together
+  // with a Chromap index. The sidecar contains the exact bases and reference
+  // dictionary and is loaded with disjoint pread calls, avoiding FASTA parsing
+  // on every mapping worker.
+  bool SaveMaterializedReference(const std::string &path,
+                                 MaterializedReferenceInfo *info,
+                                 std::string *error) const;
+
+  bool LoadMaterializedReference(const std::string &path, int num_threads,
+                                 MaterializedReferenceInfo *info,
+                                 std::string *error);
 
   inline void CorrectBaseAt(uint32_t sequence_index, uint32_t base_position,
                             char correct_base) {
@@ -312,7 +332,7 @@ class SequenceBatch {
 
   // This is the accumulated number of sequences that have ever been loaded into
   // the batch. It is useful for tracking read ids.
-  uint32_t total_num_loaded_sequences_ = 0;
+  uint64_t total_num_loaded_sequences_ = 0;
 
   // This is the number of sequences loaded into the current batch.
   uint32_t num_loaded_sequences_ = 0;
@@ -325,7 +345,7 @@ class SequenceBatch {
   // is set to 0 when there is no such restriction.
   uint32_t max_num_sequences_ = 0;
 
-  gzFile sequence_file_;
+  gzFile sequence_file_ = nullptr;
   kseq_t *sequence_kseq_ = nullptr;
   std::vector<kseq_t *> sequence_batch_;
 

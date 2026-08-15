@@ -7,7 +7,7 @@
 namespace chromap {
 
 // Static member initialization
-std::atomic<uint32_t> BamSorter::monotonic_id_{0};
+std::atomic<uint64_t> BamSorter::monotonic_id_{0};
 
 // SpillFileReader implementation for k-way merge
 struct BamSorter::SpillFileReader {
@@ -36,7 +36,7 @@ struct BamSorter::SpillFileReader {
             return false;
         }
         
-        const size_t METADATA_SIZE = sizeof(uint8_t) + sizeof(uint32_t);
+        const size_t METADATA_SIZE = sizeof(uint8_t) + sizeof(uint64_t);
         const size_t CORE_SIZE = sizeof(bam1_core_t);
         
         // Read the rest: [hasY][readId][core][data]
@@ -64,8 +64,8 @@ struct BamSorter::SpillFileReader {
         
         // Extract fields for key and metadata
         uint8_t hasYFlag = currentRecord.data[sizeof(uint32_t)];
-        uint32_t readId;
-        memcpy(&readId, currentRecord.data.data() + sizeof(uint32_t) + sizeof(uint8_t), sizeof(uint32_t));
+        uint64_t readId;
+        memcpy(&readId, currentRecord.data.data() + sizeof(uint32_t) + sizeof(uint8_t), sizeof(uint64_t));
         
         bam1_core_t core;
         memcpy(&core, currentRecord.data.data() + sizeof(uint32_t) + METADATA_SIZE, CORE_SIZE);
@@ -86,11 +86,11 @@ SortKey BamSorter::extractSortKey(const bam1_core_t* core) {
     return SortKey{core->tid, core->pos, core->flag, core->mtid, core->mpos, core->isize};
 }
 
-void BamSorter::serializeBam1(bam1_t* b, uint32_t readId, bool hasY, std::vector<char>& out) {
-    const size_t METADATA_SIZE = sizeof(uint8_t) + sizeof(uint32_t);
+void BamSorter::serializeBam1(bam1_t* b, uint64_t readId, bool hasY, std::vector<char>& out) {
+    const size_t METADATA_SIZE = sizeof(uint8_t) + sizeof(uint64_t);
     const size_t CORE_SIZE = sizeof(bam1_core_t);
     
-    // Format: [totalSize:uint32][hasY:uint8][readId:uint32][core:bam1_core_t][data:l_data bytes]
+    // Format: [totalSize:uint32][hasY:uint8][readId:uint64][core:bam1_core_t][data:l_data bytes]
     uint32_t totalSize = sizeof(uint32_t) + METADATA_SIZE + CORE_SIZE + b->l_data;
     out.resize(totalSize);
     
@@ -104,8 +104,8 @@ void BamSorter::serializeBam1(bam1_t* b, uint32_t readId, bool hasY, std::vector
     // Write metadata
     memcpy(ptr, &hasYFlag, sizeof(uint8_t));
     ptr += sizeof(uint8_t);
-    memcpy(ptr, &readId, sizeof(uint32_t));
-    ptr += sizeof(uint32_t);
+    memcpy(ptr, &readId, sizeof(uint64_t));
+    ptr += sizeof(uint64_t);
     
     // Write core
     memcpy(ptr, &b->core, CORE_SIZE);
@@ -116,10 +116,10 @@ void BamSorter::serializeBam1(bam1_t* b, uint32_t readId, bool hasY, std::vector
 }
 
 bam1_t* BamSorter::reconstructBam1(const char* storedData, uint32_t storedSize) {
-    const size_t METADATA_SIZE = sizeof(uint8_t) + sizeof(uint32_t);
+    const size_t METADATA_SIZE = sizeof(uint8_t) + sizeof(uint64_t);
     const size_t CORE_SIZE = sizeof(bam1_core_t);
     
-    // storedData format: [totalSize:uint32][hasY:uint8][readId:uint32][core:bam1_core_t][data:l_data]
+    // storedData format: [totalSize:uint32][hasY:uint8][readId:uint64][core:bam1_core_t][data:l_data]
     // Skip totalSize (already known), hasY, readId
     const char* corePtr = storedData + sizeof(uint32_t) + METADATA_SIZE;
     const char* dataPtr = corePtr + CORE_SIZE;
@@ -163,11 +163,11 @@ BamSorter::~BamSorter() {
     }
 }
 
-void BamSorter::addRecord(bam1_t* b, uint32_t readId, bool hasY) {
+void BamSorter::addRecord(bam1_t* b, uint64_t readId, bool hasY) {
     if (!b || b->l_data == 0) return;
     
     // Use provided readId, or assign monotonic if needed
-    uint32_t assigned_readId = readId;
+    uint64_t assigned_readId = readId;
     if (use_monotonic_id_) {
         assigned_readId = monotonic_id_.fetch_add(1, std::memory_order_relaxed);
     }
@@ -235,7 +235,7 @@ void BamSorter::sortAndSpill() {
     }
     
     // Write records to spill file
-    // Format: [totalSize:uint32][hasY:uint8][readId:uint32][core:bam1_core_t][data:l_data bytes]
+    // Format: [totalSize:uint32][hasY:uint8][readId:uint64][core:bam1_core_t][data:l_data bytes]
     // Note: record.data already contains totalSize at the start (from serializeBam1)
     for (auto& record : recordsToSpill) {
         spillStream.write(record.data.data(), record.data.size());
@@ -324,7 +324,7 @@ bool BamSorter::nextRecord(bam1_t** b, bool* hasY) {
         mergeHeap_.pop();
         
         // Reconstruct bam1_t from stored data
-        // top.data format: [totalSize:uint32][hasY:uint8][readId:uint32][core:bam1_core_t][data:l_data]
+        // top.data format: [totalSize:uint32][hasY:uint8][readId:uint64][core:bam1_core_t][data:l_data]
         uint32_t totalSize = top.data.size();
         returnedBam_ = reconstructBam1(top.data.data(), totalSize);
         *hasY = top.hasY;
@@ -385,4 +385,3 @@ void BamSorter::cleanupSpillFiles() {
 }
 
 }  // namespace chromap
-

@@ -10,6 +10,7 @@
 #include "index_parameters.h"
 #include "index_utils.h"
 #include "mapping_metadata.h"
+#include "materialized_reference.h"
 #include "minimizer.h"
 #include "sequence_batch.h"
 #include "utils.h"
@@ -48,9 +49,20 @@ class Index {
 
   void Construct(uint32_t num_sequences, const SequenceBatch &reference);
 
-  void Save() const;
+  // Legacy indexes are unchanged when reference_info is null. When a
+  // materialized-reference sidecar is requested, append a small versioned
+  // binding footer so mapping can reject stale or mismatched sidecars.
+  void Save(const MaterializedReferenceInfo *reference_info = nullptr) const;
 
   void Load();
+
+  bool ValidateMaterializedReference(
+      const MaterializedReferenceInfo &reference_info,
+      std::string *error) const;
+
+  bool HasMaterializedReferenceBinding() const {
+    return has_materialized_reference_binding_;
+  }
 
   // Output index stats.
   void Statistics(uint32_t num_sequences, const SequenceBatch &reference) const;
@@ -96,6 +108,8 @@ class Index {
   const std::string index_file_path_;
   khash_t(k64) *lookup_table_ = nullptr;
   std::vector<uint64_t> occurrence_table_;
+  bool has_materialized_reference_binding_ = false;
+  MaterializedReferenceInfo materialized_reference_binding_;
 };
 
 }  // namespace chromap

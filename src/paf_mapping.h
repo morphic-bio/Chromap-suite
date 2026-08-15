@@ -10,7 +10,7 @@ namespace chromap {
 // When direction = 1, strand is positive
 class PAFMapping : public Mapping {
  public:
-  uint32_t read_id_;
+  uint64_t read_id_;
   std::string read_name_;
   uint16_t read_length_;
   uint32_t fragment_start_position_;
@@ -18,7 +18,7 @@ class PAFMapping : public Mapping {
   uint8_t mapq_ : 6, direction_ : 1, is_unique_ : 1;
   uint8_t num_dups_;
   PAFMapping() : num_dups_(0) {}
-  PAFMapping(uint32_t read_id, const std::string &read_name,
+  PAFMapping(uint64_t read_id, const std::string &read_name,
              uint16_t read_length, uint32_t fragment_start_position,
              uint16_t fragment_length, uint8_t mapq, uint8_t direction,
              uint8_t is_unique, uint8_t num_dups)
@@ -61,7 +61,8 @@ class PAFMapping : public Mapping {
     return fragment_start_position_ + fragment_length_;
   }
   uint16_t GetByteSize() const {
-    return 2 * sizeof(uint32_t) + 2 * sizeof(uint16_t) + 2 * sizeof(uint8_t) +
+    return sizeof(uint64_t) + sizeof(uint32_t) + 3 * sizeof(uint16_t) +
+           2 * sizeof(uint8_t) +
            read_name_.length() * sizeof(char);
   }
   
@@ -78,7 +79,7 @@ class PAFMapping : public Mapping {
       p += n;
     };
 
-    PUSH(&read_id_, sizeof(uint32_t));
+    PUSH(&read_id_, sizeof(uint64_t));
 
     uint16_t read_name_length = static_cast<uint16_t>(read_name_.length());
     PUSH(&read_name_length, sizeof(uint16_t));
@@ -98,7 +99,7 @@ class PAFMapping : public Mapping {
   size_t LoadFromFile(FILE *temp_mapping_output_file) {
     size_t num_read_bytes = 0;
     num_read_bytes +=
-        fread(&read_id_, sizeof(uint32_t), 1, temp_mapping_output_file);
+        fread(&read_id_, sizeof(uint64_t), 1, temp_mapping_output_file);
     uint16_t read_name_length = 0;
     num_read_bytes +=
         fread(&read_name_length, sizeof(uint16_t), 1, temp_mapping_output_file);
@@ -125,7 +126,7 @@ class PAFMapping : public Mapping {
 
 class PairedPAFMapping : public Mapping {
  public:
-  uint32_t read_id_;
+  uint64_t read_id_;
   std::string read1_name_;
   std::string read2_name_;
   uint16_t read1_length_;
@@ -140,7 +141,7 @@ class PairedPAFMapping : public Mapping {
   uint8_t num_dups_;
   // uint8_t mapq; // least significant bit saves the direction of mapping
   PairedPAFMapping() : num_dups_(0) {}
-  PairedPAFMapping(uint32_t read_id, std::string read1_name,
+  PairedPAFMapping(uint64_t read_id, std::string read1_name,
                    std::string read2_name, uint16_t read1_length,
                    uint16_t read2_length, uint32_t fragment_start_position,
                    uint16_t fragment_length, uint16_t positive_alignment_length,
@@ -193,7 +194,8 @@ class PairedPAFMapping : public Mapping {
     return fragment_start_position_ + fragment_length_;
   }
   uint16_t GetByteSize() const {
-    return 2 * sizeof(uint32_t) + 6 * sizeof(uint16_t) + 2 * sizeof(uint8_t) +
+    return sizeof(uint64_t) + sizeof(uint32_t) + 8 * sizeof(uint16_t) +
+           2 * sizeof(uint8_t) +
            (read1_name_.length() + read2_name_.length()) * sizeof(char);
   }
   
@@ -202,7 +204,7 @@ class PairedPAFMapping : public Mapping {
   size_t WriteToFile(FILE *temp_mapping_output_file) const {
     size_t num_written_bytes = 0;
     num_written_bytes +=
-        fwrite(&read_id_, sizeof(uint32_t), 1, temp_mapping_output_file);
+        fwrite(&read_id_, sizeof(uint64_t), 1, temp_mapping_output_file);
     uint16_t read1_name_length = read1_name_.length();
     num_written_bytes += fwrite(&read1_name_length, sizeof(uint16_t), 1,
                                 temp_mapping_output_file);
@@ -238,7 +240,7 @@ class PairedPAFMapping : public Mapping {
   size_t LoadFromFile(FILE *temp_mapping_output_file) {
     size_t num_read_bytes = 0;
     num_read_bytes +=
-        fread(&read_id_, sizeof(uint32_t), 1, temp_mapping_output_file);
+        fread(&read_id_, sizeof(uint64_t), 1, temp_mapping_output_file);
     uint16_t read1_name_length = 0;
     num_read_bytes += fread(&read1_name_length, sizeof(uint16_t), 1,
                             temp_mapping_output_file);

@@ -18,8 +18,21 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 - **In-process librapidmacs narrow peak calling** (`--call-macs3-frag-peaks`). Fragments are handed to `librapidmacs` through the `FragmentIterator` API without an intermediate `fragments.tsv.gz` write, so a single chromap invocation produces sorted-and-indexed BAM, fragments, and MACS3-equivalent narrowPeak and summit outputs. The default threshold remains MACS-style p-mode (`--macs3-frag-pvalue 1e-5`); `--macs3-frag-qvalue Q` switches to q-value/FDR thresholding for `macs3 callpeak -q` compatibility. Bulk ATAC supported via `--macs3-frag-peaks-source memory` (no barcode required); scATAC/multiomic via barcoded fragments. Output is byte-identical to standalone MACS3 v3.0.3 in the default p-mode path (50,274 peaks, md5 `34f9f991…` on the 3K PBMC ATAC channel).
 - **Y-chromosome filtering** (`--emit-Y-bam`, `--emit-noY-bam`, `--emit-Y-noY-fastq`, `--emit-Y-read-names`). Three-stream output (all / Y-only / noY) for sex-aware analyses. Works with `--sort-bam`. Detection is case-insensitive and matches `Y`, `chrY`, `CHR_Y`, `chr_y`; decoy/random/alt contigs (`chrY_random`, etc.) are intentionally excluded. See the [Y-chromosome filtering](#y-chromosome-filtering) section below.
 - **`libchromap.a` callable library**. The full Chromap Suite ATAC pipeline is exposed through the `libchromap` API (`RunAtacMapping()`, `ChromapAtacConfig`, `ChromapPermitHooks`). The same library backs the `chromap` CLI binary and is the integration point used by STAR Suite for multiomic processing. See [`src/libchromap.h`](src/libchromap.h) and [`src/libchromap.cc`](src/libchromap.cc).
+- **Direct minimizer-index loading**. Existing Chromap index files are loaded
+  through one aligned 256 MiB `O_DIRECT` stream when the filesystem supports
+  it, bypassing pathological buffered/page-cache behavior on parallel file
+  systems. The four historical khash/occurrence sections and their on-disk
+  format are unchanged. Unsupported filesystems automatically fall back to
+  positioned buffered reads; neither path performs a production checksum pass.
 - **`--Tn5-shift-mode {classical|symmetric}`** picks the Tn5 cut-site offset convention on BED/BEDPE/PAF. `classical` (`+4 / -5`; Buenrostro 2013 / Cell Ranger ARC) is the default; `symmetric` (`+4 / -4`; ChromBPNet) is the alternative. Implies `--Tn5-shift`. Active offsets are echoed at startup. SAM/BAM output remains intentionally unshifted (shifting would require coordinated edits to `POS`, `MPOS`, `TLEN`, `CIGAR`, `NM`, `MD`).
 - **`--temp-dir DIR`** for custom temporary directory (helpful in Docker/container environments).
+- **Optional materialized reference sidecar** (`--reference-sidecar`). Index
+  construction can store the decoded reference bases and contig dictionary in
+  a versioned companion file. Mapping loads unchanged sidecars through aligned
+  256 MiB parallel direct-I/O `pread` blocks instead of reparsing the FASTA in
+  every worker, with a positioned buffered fallback. The index binds the
+  expected reference fingerprint; legacy FASTA/index operation is unchanged.
+  See [`docs/materialized_reference_sidecar.md`](docs/materialized_reference_sidecar.md).
 
 ### Reliability and tooling
 
@@ -31,6 +44,7 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 ### ATAC-multiomic
 
 - **ATAC fragment sidecar** (AEV1 format, `--atac-fragment-binary-output`). Compact binary file emitted alongside BAM/CRAM plus fragments TSV: a 32-byte header followed by 24-byte fragment records keyed by the run's barcode length, with `(size - 32) / 24 == record-count` parity. Chromosome ids are paired with names in `<sidecar>.chroms.tsv`. The runtime spill harness decodes sidecar records back to full `(chrom, start, end, barcode, count)` tuples and compares them with the fragments TSV/BED baseline. Lets STAR Suite's `libscrna` empty-cells function call cells without re-parsing the gzipped fragments TSV. On the 3K PBMC headline run the sidecar contains 53,969,811 records (md5 `a4251bbc…`). See [`src/mapping_writer.h`](src/mapping_writer.h) and [`docs/atac_runtime_spill_schema_runbook.md`](docs/atac_runtime_spill_schema_runbook.md).
+- **Opt-in mergeable ATAC spill** (`--create-mergeable-spill-record`). Writes a versioned, pre-deduplication shard carrying mapped-record barcode payloads, input-level summary evidence, and a mergeable local whitelist histogram. The standalone `chromap_atac_spill_materializer` validates the exact shard ordinal/range set, performs global barcode correction, deduplication, and optional multimapping allocation, and writes the summary plus canonical fragments, AEV1, BAM, or CRAM. BED/BAM gathering loads neither the genome nor mapping index; CRAM requires only its reference FASTA. See [`docs/mergeable_atac_spill.md`](docs/mergeable_atac_spill.md).
 - **Multiomic integration with STAR Suite**. `libchromap.a` runs as a STAR Suite worker thread for concurrent ATAC + GEX processing in a single `STAR` invocation. STAR Suite's permit allocator partitions a shared thread budget across GEX mapping, feature processing, and ATAC mapping by observing per-domain drain rates and rebalancing toward simultaneous completion. End-to-end on 3K PBMC: 18:17 / 64.8 GB / 2.19× faster than Cell Ranger ARC v2.2.0. See [STAR Suite](https://github.com/morphic-bio/STAR-suite) for the integration entry point.
 - **Native CBQ input** (`--input-format cbq`, `--read-pair-cbq`, `--barcode-cbq`). Maps paired-end ATAC/scATAC reads straight from BINSEQ CBQ files with no intermediate FASTQ, producing fragments byte-identical (under canonical sort) to the FASTQ path. CBQ sequence decode writes directly into Chromap's `SequenceBatch` buffers, including Y/noY FASTQ sidecar emission. FASTQ remains the default. ATAC-only for this milestone; see the [Native CBQ input (ATAC)](#native-cbq-input-atac) sample command below.
 
@@ -174,6 +188,23 @@ make test-smoke
 
 ```sh
 chromap -i -r ref.fa -o ref.index
+```
+
+To generate the optional binary reference representation together with the
+index:
+
+```sh
+chromap -i -r ref.fa -o ref.index \
+  --reference-sidecar ref.chromapref -t 32
+```
+
+Mapping can then omit `--ref` and load the sidecar instead. CRAM output still
+requires `--ref` for HTSlib:
+
+```sh
+chromap --preset atac \
+  -x ref.index --reference-sidecar ref.chromapref \
+  -1 read1.fq.gz -2 read2.fq.gz -o aln.bed -t 32
 ```
 
 ### Bulk ATAC (BED + inline narrow peaks, no barcode)

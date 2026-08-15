@@ -9,6 +9,7 @@ chromap
 chromap_callpeaks
 rapidmacs
 chromap_lib_runner
+chromap_atac_spill_materializer
 objs/
 *.o
 *.a
@@ -27,6 +28,9 @@ objs/
 # Test binaries
 tests/test_y_filter
 tests/test_atac_spill_record_roundtrip
+tests/test_atac_mergeable_spill_materializer
+tests/index_load_probe
+tests/materialized_reference_load_probe
 tests/cbq_range_reader_harness
 tests/cbq_ordered_encoder
 

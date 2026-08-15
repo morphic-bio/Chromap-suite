@@ -123,7 +123,7 @@ const int8_t bam_cigar_table[256] = {
 
 class SAMMapping : public Mapping {
  public:
-  uint32_t read_id_;
+  uint64_t read_id_;
   std::string read_name_;
   uint64_t cell_barcode_;
   // uint16_t read_length;
@@ -154,7 +154,7 @@ class SAMMapping : public Mapping {
 
   SAMMapping() {}
 
-  SAMMapping(uint32_t read_id, const std::string &read_name,
+  SAMMapping(uint64_t read_id, const std::string &read_name,
              uint64_t cell_barcode, uint8_t num_dups, int64_t pos, int rid,
              int64_t mpos, int mrid, int tlen, 
              int flag, uint8_t is_rev, uint8_t is_alt, uint8_t is_unique,
@@ -302,7 +302,7 @@ class SAMMapping : public Mapping {
     const uint16_t seq_len       = static_cast<uint16_t>(sequence_.length());
 
     size_t size = 0;
-    size += sizeof(uint32_t);              // read_id_
+    size += sizeof(uint64_t);              // read_id_
     size += sizeof(uint16_t);              // read_name_len
     size += read_name_len;                // read_name chars
     size += sizeof(uint64_t);              // cell_barcode_
@@ -336,7 +336,7 @@ class SAMMapping : public Mapping {
       p += n;
     };
 
-    PUSH(&read_id_, sizeof(uint32_t));
+    PUSH(&read_id_, sizeof(uint64_t));
 
     uint16_t read_name_length = static_cast<uint16_t>(read_name_.length());
     PUSH(&read_name_length, sizeof(uint16_t));
@@ -378,7 +378,7 @@ class SAMMapping : public Mapping {
   size_t LoadFromFile(FILE *temp_mapping_output_file) {
     int num_read_bytes = 0;
     num_read_bytes +=
-        fread(&read_id_, sizeof(uint32_t), 1, temp_mapping_output_file);
+        fread(&read_id_, sizeof(uint64_t), 1, temp_mapping_output_file);
     uint16_t read_name_length = 0;
     num_read_bytes +=
         fread(&read_name_length, sizeof(uint16_t), 1, temp_mapping_output_file);

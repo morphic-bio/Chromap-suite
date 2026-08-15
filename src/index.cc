@@ -1,13 +1,289 @@
 #include "index.h"
 
 #include <assert.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
+#include <limits>
+#include <string>
+#include <vector>
 
 #include "minimizer_generator.h"
 
 namespace chromap {
+namespace {
+
+const char kIndexReferenceFooterMagic[8] = {'C', 'H', 'R', 'I',
+                                           'D', 'X', 'R', 'F'};
+const uint32_t kIndexReferenceFooterVersion = 1;
+const size_t kIndexDirectAlignment = 4096;
+const size_t kIndexDirectBlockBytes = 256U * 1024U * 1024U;
+
+#pragma pack(push, 1)
+struct IndexPrefixV1 {
+  int32_t kmer_size;
+  int32_t window_size;
+  uint32_t declared_lookup_size;
+  uint32_t n_buckets;
+  uint32_t size;
+  uint32_t n_occupied;
+  uint32_t upper_bound;
+};
+
+struct IndexReferenceFooterV1 {
+  char magic[8];
+  uint32_t version;
+  uint32_t footer_bytes;
+  uint64_t reference_fingerprint;
+  uint64_t total_bases;
+  uint32_t sequence_count;
+  uint32_t reserved;
+};
+#pragma pack(pop)
+
+static_assert(sizeof(int) == sizeof(int32_t),
+              "Chromap index requires a 32-bit int");
+static_assert(sizeof(IndexPrefixV1) == 28,
+              "unexpected Chromap index prefix layout");
+static_assert(sizeof(IndexReferenceFooterV1) == 40,
+              "unexpected Chromap index reference footer layout");
+static_assert(kIndexDirectBlockBytes % kIndexDirectAlignment == 0,
+              "direct-I/O block must be alignment-sized");
+
+struct IndexDiskLayout {
+  IndexPrefixV1 prefix = {};
+  uint32_t occurrence_count = 0;
+  uint64_t flags_offset = 0;
+  uint64_t flags_bytes = 0;
+  uint64_t keys_offset = 0;
+  uint64_t keys_bytes = 0;
+  uint64_t values_offset = 0;
+  uint64_t values_bytes = 0;
+  uint64_t occurrence_count_offset = 0;
+  uint64_t occurrences_offset = 0;
+  uint64_t occurrences_bytes = 0;
+  uint64_t payload_end = 0;
+  uint64_t file_bytes = 0;
+  bool has_reference_footer = false;
+  IndexReferenceFooterV1 reference_footer = {};
+};
+
+struct IndexLoadSpan {
+  uint64_t file_offset;
+  uint64_t bytes;
+  char *destination;
+};
+
+void SetIndexLoadError(std::string *error, const std::string &message) {
+  if (error != nullptr) *error = message;
+}
+
+bool AddIndexU64(uint64_t left, uint64_t right, uint64_t *result) {
+  if (right > std::numeric_limits<uint64_t>::max() - left) return false;
+  *result = left + right;
+  return true;
+}
+
+bool MultiplyIndexU64(uint64_t left, uint64_t right, uint64_t *result) {
+  if (left != 0 && right > std::numeric_limits<uint64_t>::max() / left) {
+    return false;
+  }
+  *result = left * right;
+  return true;
+}
+
+bool PreadIndexExact(int fd, void *destination, size_t bytes,
+                     uint64_t offset, std::string *error) {
+  char *cursor = static_cast<char *>(destination);
+  size_t remaining = bytes;
+  while (remaining > 0) {
+    const ssize_t got =
+        pread(fd, cursor, remaining, static_cast<off_t>(offset));
+    if (got < 0 && errno == EINTR) continue;
+    if (got < 0) {
+      SetIndexLoadError(error, std::strerror(errno));
+      return false;
+    }
+    if (got == 0) {
+      SetIndexLoadError(error, "unexpected end of file");
+      return false;
+    }
+    cursor += got;
+    remaining -= static_cast<size_t>(got);
+    offset += static_cast<uint64_t>(got);
+  }
+  return true;
+}
+
+bool InspectIndexLayout(int fd, uint64_t file_bytes, IndexDiskLayout *layout,
+                        std::string *error) {
+  layout->file_bytes = file_bytes;
+  if (!PreadIndexExact(fd, &layout->prefix, sizeof(layout->prefix), 0,
+                       error)) {
+    SetIndexLoadError(error, "cannot read Chromap index prefix: " + *error);
+    return false;
+  }
+  const IndexPrefixV1 &prefix = layout->prefix;
+  if (prefix.kmer_size <= 0 || prefix.window_size <= 0 ||
+      prefix.n_buckets == 0 ||
+      (prefix.n_buckets & (prefix.n_buckets - 1)) != 0 ||
+      prefix.declared_lookup_size != prefix.size ||
+      prefix.size > prefix.n_occupied ||
+      prefix.n_occupied > prefix.n_buckets ||
+      prefix.upper_bound > prefix.n_buckets) {
+    SetIndexLoadError(error, "invalid Chromap index dimensions");
+    return false;
+  }
+
+  const uint64_t flag_words =
+      prefix.n_buckets < 16 ? 1 : prefix.n_buckets >> 4;
+  layout->flags_offset = sizeof(IndexPrefixV1);
+  if (!MultiplyIndexU64(flag_words, sizeof(uint32_t),
+                        &layout->flags_bytes) ||
+      !AddIndexU64(layout->flags_offset, layout->flags_bytes,
+                   &layout->keys_offset) ||
+      !MultiplyIndexU64(prefix.n_buckets, sizeof(uint64_t),
+                        &layout->keys_bytes) ||
+      !AddIndexU64(layout->keys_offset, layout->keys_bytes,
+                   &layout->values_offset)) {
+    SetIndexLoadError(error, "Chromap index khash layout overflows");
+    return false;
+  }
+  layout->values_bytes = layout->keys_bytes;
+  if (!AddIndexU64(layout->values_offset, layout->values_bytes,
+                   &layout->occurrence_count_offset) ||
+      !AddIndexU64(layout->occurrence_count_offset, sizeof(uint32_t),
+                   &layout->occurrences_offset) ||
+      layout->occurrence_count_offset + sizeof(uint32_t) > file_bytes ||
+      !PreadIndexExact(fd, &layout->occurrence_count,
+                       sizeof(layout->occurrence_count),
+                       layout->occurrence_count_offset, error) ||
+      !MultiplyIndexU64(layout->occurrence_count, sizeof(uint64_t),
+                        &layout->occurrences_bytes) ||
+      !AddIndexU64(layout->occurrences_offset, layout->occurrences_bytes,
+                   &layout->payload_end)) {
+    SetIndexLoadError(error, "invalid Chromap occurrence-table layout");
+    return false;
+  }
+
+  if (file_bytes == layout->payload_end) return true;
+  uint64_t footer_end = 0;
+  if (!AddIndexU64(layout->payload_end, sizeof(IndexReferenceFooterV1),
+                   &footer_end) ||
+      file_bytes != footer_end ||
+      !PreadIndexExact(fd, &layout->reference_footer,
+                       sizeof(layout->reference_footer), layout->payload_end,
+                       error)) {
+    SetIndexLoadError(error, "invalid trailing Chromap index data");
+    return false;
+  }
+  const IndexReferenceFooterV1 &footer = layout->reference_footer;
+  if (memcmp(footer.magic, kIndexReferenceFooterMagic,
+             sizeof(footer.magic)) != 0 ||
+      footer.version != kIndexReferenceFooterVersion ||
+      footer.footer_bytes != sizeof(footer) ||
+      footer.reference_fingerprint == 0 || footer.total_bases == 0 ||
+      footer.sequence_count == 0) {
+    SetIndexLoadError(error, "invalid Chromap index reference footer");
+    return false;
+  }
+  layout->has_reference_footer = true;
+  return true;
+}
+
+void CopyIndexBlock(const char *block, uint64_t block_offset,
+                    size_t block_bytes,
+                    const std::vector<IndexLoadSpan> &spans) {
+  const uint64_t block_end = block_offset + block_bytes;
+  for (size_t i = 0; i < spans.size(); ++i) {
+    const IndexLoadSpan &span = spans[i];
+    const uint64_t span_end = span.file_offset + span.bytes;
+    const uint64_t copy_begin = std::max(block_offset, span.file_offset);
+    const uint64_t copy_end = std::min(block_end, span_end);
+    if (copy_begin < copy_end) {
+      memcpy(span.destination + (copy_begin - span.file_offset),
+             block + (copy_begin - block_offset), copy_end - copy_begin);
+    }
+  }
+}
+
+bool LoadIndexSpansDirect(const std::string &path, int buffered_fd,
+                          uint64_t file_bytes,
+                          const std::vector<IndexLoadSpan> &spans,
+                          std::string *error) {
+#ifdef O_DIRECT
+  const int direct_fd = open(path.c_str(), O_RDONLY | O_DIRECT);
+  if (direct_fd < 0) {
+    SetIndexLoadError(error, "O_DIRECT open failed: " +
+                                 std::string(std::strerror(errno)));
+    return false;
+  }
+  void *raw_buffer = nullptr;
+  if (posix_memalign(&raw_buffer, kIndexDirectAlignment,
+                     kIndexDirectBlockBytes) != 0) {
+    close(direct_fd);
+    SetIndexLoadError(error, "cannot allocate aligned direct-I/O buffer");
+    return false;
+  }
+  char *buffer = static_cast<char *>(raw_buffer);
+  const uint64_t aligned_bytes =
+      file_bytes - file_bytes % kIndexDirectAlignment;
+  bool ok = true;
+  uint64_t offset = 0;
+  while (offset < aligned_bytes) {
+    const size_t bytes = static_cast<size_t>(std::min<uint64_t>(
+        kIndexDirectBlockBytes, aligned_bytes - offset));
+    if (!PreadIndexExact(direct_fd, buffer, bytes, offset, error)) {
+      ok = false;
+      break;
+    }
+    CopyIndexBlock(buffer, offset, bytes, spans);
+    offset += bytes;
+  }
+  if (ok && aligned_bytes < file_bytes) {
+    const size_t tail_bytes = static_cast<size_t>(file_bytes - aligned_bytes);
+    if (!PreadIndexExact(buffered_fd, buffer, tail_bytes, aligned_bytes,
+                         error)) {
+      ok = false;
+    } else {
+      CopyIndexBlock(buffer, aligned_bytes, tail_bytes, spans);
+    }
+  }
+  free(raw_buffer);
+  close(direct_fd);
+  if (!ok) {
+    SetIndexLoadError(error, "direct-I/O read failed: " + *error);
+  }
+  return ok;
+#else
+  (void)path;
+  (void)buffered_fd;
+  (void)file_bytes;
+  (void)spans;
+  SetIndexLoadError(error, "O_DIRECT is unavailable on this platform");
+  return false;
+#endif
+}
+
+bool LoadIndexSpansBuffered(int fd, const std::vector<IndexLoadSpan> &spans,
+                            std::string *error) {
+  for (size_t i = 0; i < spans.size(); ++i) {
+    if (!PreadIndexExact(fd, spans[i].destination,
+                         static_cast<size_t>(spans[i].bytes),
+                         spans[i].file_offset, error)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
 
 void Index::Construct(uint32_t num_sequences, const SequenceBatch &reference) {
   const double real_start_time = GetRealTime();
@@ -88,7 +364,7 @@ void Index::Construct(uint32_t num_sequences, const SequenceBatch &reference) {
             << "s.\n";
 }
 
-void Index::Save() const {
+void Index::Save(const MaterializedReferenceInfo *reference_info) const {
   const double real_start_time = GetRealTime();
   FILE *index_file = fopen(index_file_path_.c_str(), "wb");
   assert(index_file != nullptr);
@@ -124,6 +400,18 @@ void Index::Save() const {
     assert(err != 0);
   }
 
+  if (reference_info != nullptr) {
+    IndexReferenceFooterV1 footer = {};
+    memcpy(footer.magic, kIndexReferenceFooterMagic, sizeof(footer.magic));
+    footer.version = kIndexReferenceFooterVersion;
+    footer.footer_bytes = sizeof(footer);
+    footer.reference_fingerprint = reference_info->fingerprint;
+    footer.total_bases = reference_info->num_bases;
+    footer.sequence_count = reference_info->num_sequences;
+    err = fwrite(&footer, sizeof(footer), 1, index_file);
+    assert(err != 0);
+  }
+
   fclose(index_file);
   // std::cerr << "Index size: " << num_bytes / (1024.0 * 1024 * 1024) << "GB,
   std::cerr << "Saved in " << GetRealTime() - real_start_time << "s.\n";
@@ -131,34 +419,82 @@ void Index::Save() const {
 
 void Index::Load() {
   const double real_start_time = GetRealTime();
-  FILE *index_file = fopen(index_file_path_.c_str(), "rb");
-  assert(index_file != nullptr);
-
-  int err = 0;
-  err = fread(&kmer_size_, sizeof(int), 1, index_file);
-  assert(err != 0);
-
-  err = fread(&window_size_, sizeof(int), 1, index_file);
-  assert(err != 0);
-
-  uint32_t lookup_table_size = 0;
-  err = fread(&lookup_table_size, sizeof(uint32_t), 1, index_file);
-  assert(err != 0);
-
-  kh_load(k64, lookup_table_, index_file);
-
-  uint32_t occurrence_table_size = 0;
-  err = fread(&occurrence_table_size, sizeof(uint32_t), 1, index_file);
-  assert(err != 0);
-
-  if (occurrence_table_size > 0) {
-    occurrence_table_.resize(occurrence_table_size);
-    err = fread(occurrence_table_.data(), sizeof(uint64_t),
-                occurrence_table_size, index_file);
-    assert(err != 0);
+  const int buffered_fd = open(index_file_path_.c_str(), O_RDONLY);
+  if (buffered_fd < 0) {
+    ExitWithMessage("Cannot open Chromap index " + index_file_path_ + ": " +
+                    std::strerror(errno));
+  }
+  struct stat file_stat = {};
+  if (fstat(buffered_fd, &file_stat) != 0 || file_stat.st_size < 0) {
+    close(buffered_fd);
+    ExitWithMessage("Cannot stat Chromap index " + index_file_path_);
+  }
+  IndexDiskLayout layout;
+  std::string load_error;
+  if (!InspectIndexLayout(buffered_fd,
+                          static_cast<uint64_t>(file_stat.st_size), &layout,
+                          &load_error)) {
+    close(buffered_fd);
+    ExitWithMessage("Cannot inspect Chromap index " + index_file_path_ +
+                    ": " + load_error);
   }
 
-  fclose(index_file);
+  kmer_size_ = layout.prefix.kmer_size;
+  window_size_ = layout.prefix.window_size;
+  lookup_table_->n_buckets = layout.prefix.n_buckets;
+  lookup_table_->size = layout.prefix.size;
+  lookup_table_->n_occupied = layout.prefix.n_occupied;
+  lookup_table_->upper_bound = layout.prefix.upper_bound;
+  lookup_table_->flags =
+      static_cast<khint32_t *>(malloc(layout.flags_bytes));
+  lookup_table_->keys =
+      static_cast<uint64_t *>(malloc(layout.keys_bytes));
+  lookup_table_->vals =
+      static_cast<uint64_t *>(malloc(layout.values_bytes));
+  if (lookup_table_->flags == nullptr || lookup_table_->keys == nullptr ||
+      lookup_table_->vals == nullptr) {
+    close(buffered_fd);
+    ExitWithMessage("Cannot allocate Chromap index khash arrays");
+  }
+  occurrence_table_.resize(layout.occurrence_count);
+
+  const std::vector<IndexLoadSpan> spans = {
+      {layout.flags_offset, layout.flags_bytes,
+       reinterpret_cast<char *>(lookup_table_->flags)},
+      {layout.keys_offset, layout.keys_bytes,
+       reinterpret_cast<char *>(lookup_table_->keys)},
+      {layout.values_offset, layout.values_bytes,
+       reinterpret_cast<char *>(lookup_table_->vals)},
+      {layout.occurrences_offset, layout.occurrences_bytes,
+       reinterpret_cast<char *>(occurrence_table_.data())}};
+
+  const bool used_direct = LoadIndexSpansDirect(
+      index_file_path_, buffered_fd, layout.file_bytes, spans, &load_error);
+  if (!used_direct) {
+    const std::string direct_error = load_error;
+    if (!LoadIndexSpansBuffered(buffered_fd, spans, &load_error)) {
+      close(buffered_fd);
+      ExitWithMessage("Cannot load Chromap index " + index_file_path_ +
+                      ": " + load_error);
+    }
+    std::cerr << "Index input path: buffered positioned-read fallback ("
+              << direct_error << ").\n";
+  } else {
+    std::cerr << "Index input path: direct I/O block reader, block size "
+              << kIndexDirectBlockBytes << " bytes.\n";
+  }
+  close(buffered_fd);
+
+  has_materialized_reference_binding_ = false;
+  materialized_reference_binding_ = MaterializedReferenceInfo();
+  if (layout.has_reference_footer) {
+    const IndexReferenceFooterV1 &footer = layout.reference_footer;
+    has_materialized_reference_binding_ = true;
+    materialized_reference_binding_.fingerprint =
+        footer.reference_fingerprint;
+    materialized_reference_binding_.num_bases = footer.total_bases;
+    materialized_reference_binding_.num_sequences = footer.sequence_count;
+  }
 
   std::cerr << "Kmer size: " << kmer_size_ << ", window size: " << window_size_
             << ".\n";
@@ -166,6 +502,29 @@ void Index::Load() {
             << ", occurrence table size: " << occurrence_table_.size() << ".\n";
   std::cerr << "Loaded index successfully in "
             << GetRealTime() - real_start_time << "s.\n";
+}
+
+bool Index::ValidateMaterializedReference(
+    const MaterializedReferenceInfo &reference_info,
+    std::string *error) const {
+  if (!has_materialized_reference_binding_) {
+    if (error != nullptr) {
+      *error = "Chromap index does not declare a materialized reference; "
+               "rebuild it with --reference-sidecar";
+    }
+    return false;
+  }
+  if (reference_info.fingerprint !=
+          materialized_reference_binding_.fingerprint ||
+      reference_info.num_bases != materialized_reference_binding_.num_bases ||
+      reference_info.num_sequences !=
+          materialized_reference_binding_.num_sequences) {
+    if (error != nullptr) {
+      *error = "materialized reference does not match the Chromap index";
+    }
+    return false;
+  }
+  return true;
 }
 
 void Index::Statistics(uint32_t num_sequences,

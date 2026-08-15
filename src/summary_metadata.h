@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <cinttypes>
 #include <cmath>
 
 #include "khash.h"
@@ -25,9 +26,9 @@ enum SummaryMetadataField {
 };
 
 struct _barcodeSummaryMetadata {
-  int counts[SUMMARY_METADATA_FIELDS];
+  uint64_t counts[SUMMARY_METADATA_FIELDS];
   _barcodeSummaryMetadata() {
-    memset(counts, 0, sizeof(int) * SUMMARY_METADATA_FIELDS);
+    memset(counts, 0, sizeof(uint64_t) * SUMMARY_METADATA_FIELDS);
   }
 };
 
@@ -48,20 +49,20 @@ class SummaryMetadata {
     return (1.0/(1.0 + std::exp(-frip)));
   }
 
-  inline void OutputCounts(const char *barcode, const int *counts, FILE *fp, std::vector<double> frip_est_coeffs, bool output_num_cache_slots_info)
+  inline void OutputCounts(const char *barcode, const uint64_t *counts, FILE *fp, std::vector<double> frip_est_coeffs, bool output_num_cache_slots_info)
   {
     // define variables to store values
-    size_t num_total = counts[SUMMARY_METADATA_TOTAL];
-    size_t num_dup = counts[SUMMARY_METADATA_DUP]; 
+    uint64_t num_total = counts[SUMMARY_METADATA_TOTAL];
+    uint64_t num_dup = counts[SUMMARY_METADATA_DUP];
     
-    size_t num_mapped = counts[SUMMARY_METADATA_MAPPED];
-    size_t num_unmapped = num_total - num_mapped;
+    uint64_t num_mapped = counts[SUMMARY_METADATA_MAPPED];
+    uint64_t num_unmapped = num_total - num_mapped;
 
-    size_t num_lowmapq = counts[SUMMARY_METADATA_LOWMAPQ];
-    size_t num_cachehit = counts[SUMMARY_METADATA_CACHEHIT];
+    uint64_t num_lowmapq = counts[SUMMARY_METADATA_LOWMAPQ];
+    uint64_t num_cachehit = counts[SUMMARY_METADATA_CACHEHIT];
     double fric = (num_mapped != 0) ? (double) num_cachehit / (double) num_mapped : 0.0;
 
-    size_t num_cache_slots = counts[SUMMARY_METADATA_CARDINALITY];
+    uint64_t num_cache_slots = counts[SUMMARY_METADATA_CARDINALITY];
 
     // compute the estimated frip
     double est_frip = (fric != 0.0) ? inverse_logit(frip_est_coeffs[0] + /* constant */
@@ -72,7 +73,8 @@ class SummaryMetadata {
 
     // print out data for current barcode
     if (!output_num_cache_slots_info) {
-      fprintf(fp, "%s,%ld,%ld,%ld,%ld,%ld,%.5lf,%.5lf\n", 
+      fprintf(fp, "%s,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
+                  ",%" PRIu64 ",%.5lf,%.5lf\n",
               barcode,
               num_total,
               num_dup,
@@ -82,7 +84,8 @@ class SummaryMetadata {
               fric,
               est_frip);
     } else {
-      fprintf(fp, "%s,%ld,%ld,%ld,%ld,%ld,%.5lf,%.5lf,%ld\n", 
+      fprintf(fp, "%s,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
+                  ",%" PRIu64 ",%.5lf,%.5lf,%" PRIu64 "\n",
               barcode,
               num_total,
               num_dup,
@@ -127,7 +130,7 @@ class SummaryMetadata {
     fclose(fp);
   }
 
-  void UpdateCount(uint64_t barcode, int type, int change) {
+  void UpdateCount(uint64_t barcode, int type, uint64_t change) {
     int khash_return_code;
     khiter_t barcode_metadata_iter = kh_put(k64_barcode_metadata, barcode_metadata_, barcode, &khash_return_code);
     if (khash_return_code) {
@@ -137,7 +140,7 @@ class SummaryMetadata {
     kh_value(barcode_metadata_, barcode_metadata_iter).counts[type] += change;
   }
 
-  void UpdateNonWhitelistCount(int type, int change) {
+  void UpdateNonWhitelistCount(int type, uint64_t change) {
     nonwhitelist_summary_.counts[type] += change;
   }
 

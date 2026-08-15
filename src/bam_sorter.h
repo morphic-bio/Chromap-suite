@@ -40,13 +40,13 @@ struct BamRecord {
     std::vector<char> data;  // Serialized [core][data]
     SortKey key;             // Extracted sort key (for fast comparison)
     bool hasY;
-    uint32_t readId;         // Final tie-break (deterministic within run)
+    uint64_t readId;         // Final tie-break (deterministic within run)
 };
 
 // Entry for k-way merge heap
 struct HeapEntry {
     SortKey key;
-    uint32_t readId;
+    uint64_t readId;
     int sourceId;           // -1 = in-memory, >=0 = spill file index
     size_t recordIdx;       // Index into records_ when sourceId == -1
     std::vector<char> data; // Owned copy for spill file records
@@ -86,7 +86,7 @@ public:
     // readId: mapping.read_id_ for tie-breaking (or assigned monotonic if not deterministic)
     // hasY: Y-chromosome flag for routing
     // The sorter copies b internally; caller retains ownership
-    void addRecord(bam1_t* b, uint32_t readId, bool hasY);
+    void addRecord(bam1_t* b, uint64_t readId, bool hasY);
     
     // Finalize sorting (sort in-memory buffer, prepare k-way merge)
     void finalize();
@@ -104,7 +104,7 @@ private:
     static SortKey extractSortKey(const bam1_core_t* core);
     
     // Serialize bam1_t to storage format: [hasY][readId][core][data]
-    static void serializeBam1(bam1_t* b, uint32_t readId, bool hasY, std::vector<char>& out);
+    static void serializeBam1(bam1_t* b, uint64_t readId, bool hasY, std::vector<char>& out);
     
     // Reconstruct bam1_t from storage format
     bam1_t* reconstructBam1(const char* data, uint32_t size);
@@ -136,11 +136,10 @@ private:
     std::priority_queue<HeapEntry, std::vector<HeapEntry>, HeapLess> mergeHeap_;
     
     // Fallback: monotonic counter if read_id is not deterministic
-    static std::atomic<uint32_t> monotonic_id_;
+    static std::atomic<uint64_t> monotonic_id_;
     bool use_monotonic_id_;
 };
 
 }  // namespace chromap
 
 #endif  // BAM_SORTER_H_
-
