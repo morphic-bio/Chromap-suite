@@ -8,6 +8,10 @@
 #include <cstdio>
 #include <cstdint>
 
+namespace chromap {
+struct AtacSpillRecord;
+}
+
 // Thread-safe overflow writer for mapping records
 // Each thread writes to its own files, avoiding contention
 class OverflowWriter {
@@ -34,11 +38,17 @@ public:
         rec.WriteToFile(fp);
     }
 
+    // ATAC specialization: write normalized records into bounded binary
+    // blocks. Reference identity lives in the file header and is not repeated
+    // for every record.
+    void WriteAtac(uint32_t rid, const chromap::AtacSpillRecord& rec);
+
     // Finalize all thread-local files and return file paths
     std::vector<std::string> Close();
 
 private:
-    bool WriteAtacSpillFileHeaderIfNeeded(FILE* fp);
+    bool WriteAtacSpillFileHeaderIfNeeded(FILE* fp, uint32_t rid);
+    bool FlushAtacBlock(uint32_t rid);
 
     std::string base_dir_;
     std::string prefix_;
@@ -49,6 +59,8 @@ private:
     // Thread-local storage for file handles
     static thread_local std::unordered_map<uint32_t, FILE*> tls_files_;
     static thread_local std::unordered_map<uint32_t, std::string> tls_file_paths_;
+    static thread_local std::unordered_map<uint32_t, std::vector<uint8_t>> tls_atac_block_buffers_;
+    static thread_local std::unordered_map<uint32_t, uint32_t> tls_atac_block_record_counts_;
     static thread_local bool tls_initialized_;
     
     // Get or create thread-local file for given rid

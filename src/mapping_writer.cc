@@ -10,6 +10,8 @@
 #include <limits>
 #include <sstream>
 #include "chromap.h"
+#include "atac_hot_spill.h"
+#include "atac_kway_spill.h"
 #include "bam_sorter.h"
 #include "rapidmacs/frag_compact_store.h"
 #include "rapidmacs/fragments.h"
@@ -872,7 +874,7 @@ void MappingWriter<AtacSpillRecord>::OutputTempMappingsToOverflow(
   tls_overflow_writer_->EnableAtacSpillFileHeader(sm);
   for (uint32_t rid = 0; rid < num_reference_sequences; ++rid) {
     for (const auto &mapping : mappings_on_diff_ref_seqs[rid]) {
-      tls_overflow_writer_->Write(rid, mapping);
+      tls_overflow_writer_->WriteAtac(rid, mapping);
     }
     mappings_on_diff_ref_seqs[rid].clear();
   }
@@ -887,10 +889,32 @@ void LoadMappingFromOverflowPayload(MappingRecord *out, FILE *fp,
   out->LoadFromFile(fp);
 }
 
+template <typename MappingRecord>
+void LoadMappingFromOverflowPayloadBytes(
+    MappingRecord *out, const std::string &payload,
+    uint16_t atac_spill_file_schema_mask) {
+  FILE *memory =
+      fmemopen(const_cast<char *>(payload.data()), payload.size(), "rb");
+  if (memory == nullptr) {
+    ExitWithMessage("Cannot decode overflow payload");
+  }
+  LoadMappingFromOverflowPayload(out, memory, atac_spill_file_schema_mask);
+  const long consumed = ftell(memory);
+  fclose(memory);
+  if (consumed < 0 || static_cast<size_t>(consumed) != payload.size()) {
+    ExitWithMessage("Overflow payload has trailing or truncated bytes");
+  }
+}
+
 template <>
-void LoadMappingFromOverflowPayload<AtacSpillRecord>(
-    AtacSpillRecord *out, FILE *fp, uint16_t atac_spill_file_schema_mask) {
-  out->LoadFromFile(fp, atac_spill_file_schema_mask);
+void LoadMappingFromOverflowPayloadBytes<AtacSpillRecord>(
+    AtacSpillRecord *out, const std::string &payload,
+    uint16_t atac_spill_file_schema_mask) {
+  std::string error;
+  if (!DecodeAtacKwaySpillRecord(payload.data(), payload.size(),
+                                 atac_spill_file_schema_mask, out, &error)) {
+    ExitWithMessage(error);
+  }
 }
 
 template <typename MappingRecord>
@@ -957,6 +981,8 @@ void MappingWriter<AtacSpillRecord>::WriteMergeableAtacSpillFromOverflow(
   }
   metadata.flags = static_cast<uint16_t>(
       metadata.flags | kAtacMergeableHasSummaryEvidence);
+  metadata.flags = static_cast<uint16_t>(
+      metadata.flags | kAtacMergeableHasHotSidecar);
   if (mapping_parameters_.output_num_uniq_cache_slots) {
     metadata.flags = static_cast<uint16_t>(
         metadata.flags | kAtacMergeableSummaryCardinality);
@@ -1050,9 +1076,15 @@ void MappingWriter<AtacSpillRecord>::WriteMergeableAtacSpillFromOverflow(
   }
 
   AtacMergeableSpillWriter writer;
+  AtacHotSpillWriter hot_writer;
   std::string error;
   if (!writer.Open(mapping_parameters_.create_mergeable_spill_record_path,
                    metadata, &error)) {
+    ExitWithMessage(error);
+  }
+  const std::string hot_spill_path = AtacHotSpillSidecarPath(
+      mapping_parameters_.create_mergeable_spill_record_path);
+  if (!hot_writer.Open(hot_spill_path, metadata, &error)) {
     ExitWithMessage(error);
   }
   if (mergeable_summary_evidence_file_ == nullptr ||
@@ -1116,9 +1148,15 @@ void MappingWriter<AtacSpillRecord>::WriteMergeableAtacSpillFromOverflow(
     uint32_t rid = 0;
     std::string payload;
     std::unordered_set<uint32_t> rids_in_file;
-    while (scanner.ReadNext(rid, payload)) {
+    if (scanner.FileHasAtacKwayHeader()) {
+      rid = scanner.AtacKwayReferenceIdFromFileHeader();
       rids_in_file.insert(rid);
       all_rids.insert(rid);
+    } else {
+      while (scanner.ReadNext(rid, payload)) {
+        rids_in_file.insert(rid);
+        all_rids.insert(rid);
+      }
     }
     const uint16_t schema =
         OverflowSpillSchemaMaskFromReader<AtacSpillRecord>(&scanner);
@@ -1156,18 +1194,9 @@ void MappingWriter<AtacSpillRecord>::WriteMergeableAtacSpillFromOverflow(
       ExitWithMessage(
           "ATAC overflow run crossed reference buckets during durable merge");
     }
-    FILE *memory =
-        fmemopen(const_cast<char *>(payload.data()), payload.size(), "rb");
-    if (memory == nullptr) {
-      ExitWithMessage("Cannot decode ATAC overflow payload");
-    }
     AtacSpillRecord mapping;
-    mapping.LoadFromFile(memory, agreed_schema);
-    const long consumed = ftell(memory);
-    fclose(memory);
-    if (consumed < 0 || static_cast<size_t>(consumed) != payload.size() ||
-        mapping.SerializedSize() != payload.size() ||
-        !mapping.HasBamPairSection()) {
+    LoadMappingFromOverflowPayloadBytes(&mapping, payload, agreed_schema);
+    if (!mapping.HasBamPairSection()) {
       ExitWithMessage("Invalid ATAC overflow payload during durable merge");
     }
     output->rid = rid;
@@ -1207,6 +1236,9 @@ void MappingWriter<AtacSpillRecord>::WriteMergeableAtacSpillFromOverflow(
       if (!writer.Append(record.rid, record.mapping, &error)) {
         ExitWithMessage(error);
       }
+      if (!hot_writer.Append(record.rid, record.mapping, &error)) {
+        ExitWithMessage(error);
+      }
 
       FileRecord next;
       bool eof = false;
@@ -1220,7 +1252,10 @@ void MappingWriter<AtacSpillRecord>::WriteMergeableAtacSpillFromOverflow(
     }
   }
 
-  if (!writer.Finalize(&error)) {
+  // Publish the hot companion first. The parent header advertises it only
+  // after the full spill is atomically renamed, so a completed parent can
+  // never point at an unpublished hot file.
+  if (!hot_writer.Finalize(&error) || !writer.Finalize(&error)) {
     ExitWithMessage(error);
   }
   for (const std::string &file_path : shared_overflow_file_paths_) {
@@ -1230,7 +1265,8 @@ void MappingWriter<AtacSpillRecord>::WriteMergeableAtacSpillFromOverflow(
   std::cerr << "Wrote mergeable pre-dedup ATAC spill shard "
             << metadata.shard_ordinal << "/" << metadata.shard_count << " ("
             << writer.record_count() << " records) to "
-            << mapping_parameters_.create_mergeable_spill_record_path << "\n";
+            << mapping_parameters_.create_mergeable_spill_record_path
+            << " with fixed-width hot companion " << hot_spill_path << "\n";
 }
 
 template <typename MappingRecord>
@@ -1292,9 +1328,15 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
     uint32_t rid;
     std::string payload;
     std::unordered_set<uint32_t> rids_in_file;
-    while (scanner.ReadNext(rid, payload)) {
+    if (scanner.FileHasAtacKwayHeader()) {
+      rid = scanner.AtacKwayReferenceIdFromFileHeader();
       rids_in_file.insert(rid);
       all_rids.insert(rid);
+    } else {
+      while (scanner.ReadNext(rid, payload)) {
+        rids_in_file.insert(rid);
+        all_rids.insert(rid);
+      }
     }
     
     // Add this file to the list for each rid it contains
@@ -1350,31 +1392,25 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
       if (readers[fi]->ReadNext(rid, payload)) {
         // Verify rid matches (should always be true, but check for safety)
         if (rid == current_rid) {
-          FILE *mem_file =
-              fmemopen(const_cast<char *>(payload.data()), payload.size(), "rb");
-          if (mem_file) {
-            const uint16_t spill_mask =
-                OverflowSpillSchemaMaskFromReader<MappingRecord>(
-                    readers[fi].get());
-            if (!merge_spill_schema_agreed_set) {
-              merge_spill_schema_agreed = spill_mask;
-              merge_spill_schema_agreed_set = true;
-            } else if (spill_mask != merge_spill_schema_agreed) {
-              fclose(mem_file);
-              ExitWithMessage(
-                  "Mismatched ATAC spill schema_mask between overflow temp "
-                  "files (merge refused)");
-            }
-            MappingRecord mapping;
-            LoadMappingFromOverflowPayload(&mapping, mem_file, spill_mask);
-            fclose(mem_file);
-
-            FileRecord rec;
-            rec.rid = rid;
-            rec.mapping = mapping;
-            rec.file_index = fi;
-            merge_heap.push(rec);
+          const uint16_t spill_mask =
+              OverflowSpillSchemaMaskFromReader<MappingRecord>(
+                  readers[fi].get());
+          if (!merge_spill_schema_agreed_set) {
+            merge_spill_schema_agreed = spill_mask;
+            merge_spill_schema_agreed_set = true;
+          } else if (spill_mask != merge_spill_schema_agreed) {
+            ExitWithMessage(
+                "Mismatched ATAC spill schema_mask between overflow temp "
+                "files (merge refused)");
           }
+          MappingRecord mapping;
+          LoadMappingFromOverflowPayloadBytes(&mapping, payload, spill_mask);
+
+          FileRecord rec;
+          rec.rid = rid;
+          rec.mapping = mapping;
+          rec.file_index = fi;
+          merge_heap.push(rec);
         }
       }
     }
@@ -1475,28 +1511,22 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
         if (readers[min_rec.file_index]->ReadNext(rid, payload)) {
           // Should always be current_rid, but verify for safety
           if (rid == current_rid) {
-            FILE *mem_file =
-                fmemopen(const_cast<char *>(payload.data()), payload.size(), "rb");
-            if (mem_file) {
-              const uint16_t spill_mask =
-                  OverflowSpillSchemaMaskFromReader<MappingRecord>(
-                      readers[min_rec.file_index].get());
-              if (spill_mask != merge_spill_schema_agreed) {
-                fclose(mem_file);
-                ExitWithMessage(
-                    "Mismatched ATAC spill schema_mask within overflow merge "
-                    "(merge refused)");
-              }
-              MappingRecord mapping;
-              LoadMappingFromOverflowPayload(&mapping, mem_file, spill_mask);
-              fclose(mem_file);
-
-              FileRecord rec;
-              rec.rid = rid;
-              rec.mapping = mapping;
-              rec.file_index = min_rec.file_index;
-              merge_heap.push(rec);
+            const uint16_t spill_mask =
+                OverflowSpillSchemaMaskFromReader<MappingRecord>(
+                    readers[min_rec.file_index].get());
+            if (spill_mask != merge_spill_schema_agreed) {
+              ExitWithMessage(
+                  "Mismatched ATAC spill schema_mask within overflow merge "
+                  "(merge refused)");
             }
+            MappingRecord mapping;
+            LoadMappingFromOverflowPayloadBytes(&mapping, payload, spill_mask);
+
+            FileRecord rec;
+            rec.rid = rid;
+            rec.mapping = mapping;
+            rec.file_index = min_rec.file_index;
+            merge_heap.push(rec);
           }
         }
       }

@@ -25,6 +25,9 @@ enum AtacMergeableSpillFlags : uint16_t {
   // at process start. input_record_count is the count observed at EOF and the
   // materializer derives first_global_read_ordinal from ordered shard counts.
   kAtacMergeableReadRangeLateBound = 1u << 7,
+  // A fixed-width, per-reference ATACHOT1 companion was published beside the
+  // full spill for parallel BED gather.
+  kAtacMergeableHasHotSidecar = 1u << 8,
 };
 
 #pragma pack(push, 1)

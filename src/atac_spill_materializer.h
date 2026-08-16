@@ -20,6 +20,11 @@ struct AtacSpillMaterializationResult {
   uint64_t corrected_barcode_record_count = 0;
   uint64_t rejected_barcode_record_count = 0;
   uint64_t output_fragment_count = 0;
+  bool used_parallel_hot_spill = false;
+  // Timed application phases only. Up-front contract validation is not added
+  // to either value.
+  double merge_output_seconds = 0.0;
+  double terminal_bed_export_seconds = 0.0;
 };
 
 // Validates an ordinal-complete mergeable-spill set, globally merges and

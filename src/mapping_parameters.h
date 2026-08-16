@@ -108,6 +108,10 @@ struct MappingParameters {
   // TSV. Records store chrom_id/start/end/count/packed barcode key; chrom
   // names are written to <path>.chroms.tsv.
   std::string atac_fragment_binary_output_file_path;
+  // Optional canonical post-correction/post-dedup binary fragment container.
+  // BED materialization always passes through this representation; setting a
+  // path preserves it instead of deleting the temporary binary after export.
+  std::string atac_materialized_binary_output_file_path;
   // Stage-only, durable pre-dedup ATAC record stream for a later global
   // gather/materialization pass. When non-empty, ordinary post-alignment
   // mapping outputs are suppressed for this worker.

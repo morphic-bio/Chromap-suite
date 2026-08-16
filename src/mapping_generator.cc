@@ -182,11 +182,17 @@ void MappingGenerator<AtacSpillRecord>::EmplaceBackPairedEndMappingRecord(
     PairedEndMappingInMemory &paired_end_mapping_in_memory,
     std::vector<std::vector<AtacSpillRecord>>
         &mappings_on_diff_ref_seqs) {
+  const int fragment_length = paired_end_mapping_in_memory.GetFragmentLength();
+  if (!IsAtacSpillFragmentLengthRepresentable(fragment_length)) {
+    ExitWithMessage(
+        "ATAC fragment length is outside the 1..65535 mergeable-spill "
+        "contract");
+  }
   PairedEndMappingWithBarcode bed(
       paired_end_mapping_in_memory.GetReadId(),
       paired_end_mapping_in_memory.GetBarcode(),
       paired_end_mapping_in_memory.GetFragmentStartPosition(),
-      paired_end_mapping_in_memory.GetFragmentLength(),
+      static_cast<uint16_t>(fragment_length),
       paired_end_mapping_in_memory.mapq,
       paired_end_mapping_in_memory.GetStrand(),
       paired_end_mapping_in_memory.is_unique, /*num_dups=*/1,
@@ -196,8 +202,7 @@ void MappingGenerator<AtacSpillRecord>::EmplaceBackPairedEndMappingRecord(
       paired_end_mapping_in_memory.mapping_in_memory1.rid;
   if (mapping_parameters_.AtacDualFragmentAndBam() ||
       mapping_parameters_.CreatesMergeableAtacSpill()) {
-    const int tlen =
-        static_cast<int>(paired_end_mapping_in_memory.GetFragmentLength());
+    const int tlen = fragment_length;
     SAMMapping sam_a;
     SAMMapping sam_b;
     for (int i = 0; i < 2; ++i) {

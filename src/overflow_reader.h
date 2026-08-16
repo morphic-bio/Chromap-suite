@@ -22,6 +22,10 @@ public:
     uint16_t AtacSpillSchemaFromFileHeader() const {
         return atac_spill_schema_from_file_header_;
     }
+    bool FileHasAtacKwayHeader() const { return file_has_atac_kway_header_; }
+    uint32_t AtacKwayReferenceIdFromFileHeader() const {
+        return atac_kway_reference_id_from_file_header_;
+    }
 
     // Check if reader is valid (file opened successfully)
     bool IsValid() const { return file_ != nullptr; }
@@ -36,7 +40,11 @@ private:
     FILE* file_;
     bool prefix_checked_ = false;
     bool file_has_atac_spill_header_ = false;
+    bool file_has_atac_kway_header_ = false;
     uint16_t atac_spill_schema_from_file_header_ = 0;
+    uint32_t atac_kway_reference_id_from_file_header_ = 0;
+    uint32_t atac_kway_block_records_remaining_ = 0;
+    uint32_t atac_kway_block_bytes_remaining_ = 0;
 };
 
 #endif  // OVERFLOW_READER_H_
