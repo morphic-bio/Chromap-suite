@@ -19,12 +19,14 @@ buffer holding large dual records before spill.
 
 ## Chromap-Side Status
 
-The Chromap-side runtime spill schema is implemented in `src/atac_spill_record.h`
-and consumed by the low-memory overflow writer/reader. Overflow files carry a
-file-level schema header; the reader rejects unsupported `format_version` and
-`record_codec_version` values before decoding payloads. Dual BAM plus fragments
-uses the same spill record as fragment/sidecar output, with the BAM pair section
-selected by the per-run schema mask.
+The in-memory record remains `AtacSpillRecord`. Worker-local k-way runs use the
+normalized `ATKWS1` codec in `src/atac_kway_spill.{h,cc}`. Each file carries a
+file-level schema and reference id, and contains bounded binary blocks. The
+reader rejects unsupported format, codec, schema, and endian values before
+decoding payloads. Dual BAM plus fragments uses the same decision row and merge
+path as fragment output, with one compact pair payload selected by the per-run
+schema mask. This worker-local codec is separate from the durable `ATACMS3`
+cross-process envelope.
 
 The AEV1 sidecar remains an output adapter, not a replacement for BAM. It is
 written only when `--atac-fragment-binary-output <path>` is supplied together
@@ -73,7 +75,7 @@ the final drain. The harness must explicitly test both:
 - forced mid-run overflow spills, and
 - final-drain-only runs.
 
-## Proposed Record Model
+## Record Model
 
 Introduce one ATAC spill record with a fixed mandatory prefix and optional
 sections selected by a per-run schema mask.
@@ -135,8 +137,12 @@ mate2:
   same fields
 ```
 
-The section is variable-size because names, qualities, CIGAR, and MD tags are
-variable-size. The spill record should therefore expose:
+The section is variable-size because names, CIGAR, sequence, and edit events
+are variable-size. The normalized codec removes read-id/barcode/duplicate
+copies from the mates, stores one query name when shared, keeps CIGAR binary,
+packs sequence as 4-bit IUPAC, stores numeric Phred qualities, encodes MD as
+events, and normally stores one pair-level unsigned TLEN magnitude plus its
+sign selector.
 
 ```text
 encoded_size()
@@ -146,29 +152,34 @@ read(FILE*, schema_mask)
 
 ## Spill File Contract
 
-Each overflow file should start with a run-level header:
+Each `ATKWS1` overflow file starts with a run-level header:
 
 ```text
 magic
 version
 schema_mask
 record_codec_version
+reference_id
+endian_marker
 ```
 
-Current readers must accept only the supported v1/v1 file and record codec
-pair. Treating unknown versions as fatal is intentional; otherwise a future
-payload layout could be silently decoded as the current schema.
+Readers accept only the supported file/record codec pair. Treating unknown
+versions as fatal is intentional; otherwise a future payload layout could be
+silently decoded as the current schema.
 
-Each record should be length-prefixed:
+The file body is a sequence of blocks:
 
 ```text
-uint32_t rid
-uint32_t byte_len
-payload bytes
+block_magic
+record_count
+payload_bytes
+repeated { uint32_t record_bytes; record_payload }
 ```
 
-The `rid` wrapper keeps compatibility with the existing k-way merge shape. The
-payload reader uses the file header's `schema_mask` to decode optional sections.
+Because one file contains one reference bucket, `rid` is not repeated per
+record. Gather groups files directly from their headers instead of reading and
+discarding the entire payload in a discovery pass. Block and record bounds are
+validated, but the hot path intentionally does not checksum payloads.
 
 Prefer a per-run schema mask over arbitrary per-record TLV. It is simpler,
 faster, and still supports variable-size fields inside the optional BAM section.
