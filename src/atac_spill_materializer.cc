@@ -1,6 +1,10 @@
 #include "atac_spill_materializer.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <queue>
@@ -9,12 +13,16 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
+#include "atac_materialized_binary.h"
+#include "atac_hot_spill.h"
 #include "atac_mergeable_spill.h"
 #include "barcode_correction.h"
 #include "mapping_processor.h"
 #include "mapping_writer.h"
 #include "sequence_batch.h"
+#include "utils.h"
 
 namespace chromap {
 namespace {
@@ -70,6 +78,417 @@ bool SameMaterializationContract(const AtacMergeableSpillMetadata &a,
                        const AtacBarcodeAbundanceEntry &y) {
                       return x.barcode_key == y.barcode_key;
                     });
+}
+
+struct HotPartitionOutcome {
+  std::string path;
+  std::string error;
+  uint64_t corrected = 0;
+  uint64_t rejected = 0;
+  uint64_t output = 0;
+};
+
+bool MaterializeHotPartitions(
+    const std::vector<std::unique_ptr<AtacHotSpillReader>> &hot_readers,
+    const std::vector<std::unique_ptr<AtacMergeableSpillReader>> &parents,
+    const std::vector<uint64_t> &global_read_prefixes,
+    const AtacMergeableSpillMetadata &contract,
+    const MappingParameters &parameters,
+    const std::unordered_map<uint64_t, uint64_t> &global_barcode_abundance,
+    uint64_t global_num_sample_barcodes,
+    const std::string &partition_base,
+    AtacMaterializedBinaryWriter *binary_writer,
+    uint64_t *corrected_barcode_record_count,
+    uint64_t *rejected_barcode_record_count,
+    uint64_t *output_fragment_count, std::string *error) {
+  if (hot_readers.size() != parents.size() || hot_readers.empty() ||
+      binary_writer == nullptr || corrected_barcode_record_count == nullptr ||
+      rejected_barcode_record_count == nullptr ||
+      output_fragment_count == nullptr || contract.references.size() >
+          static_cast<uint64_t>(std::numeric_limits<uint16_t>::max()) + 1u) {
+    if (error != nullptr) {
+      *error = "invalid parallel ATAC hot partition request";
+    }
+    return false;
+  }
+  const bool is_bulk =
+      (contract.schema_mask & kAtacSpillSchemaIsBulk) != 0;
+  const bool output_unresolved_barcodes =
+      (contract.flags & kAtacMergeableOutputMappingsNotInWhitelist) != 0;
+  const bool bulk_level_cell_dedup =
+      parameters.remove_pcr_duplicates && !is_bulk &&
+      parameters.remove_pcr_duplicates_at_bulk_level;
+  const int hot_threads = std::max(1, parameters.num_threads);
+  std::vector<HotPartitionOutcome> outcomes(contract.references.size());
+  std::atomic<bool> failed(false);
+
+#pragma omp parallel for schedule(dynamic, 1) num_threads(hot_threads)
+  for (int64_t rid_index = 0;
+       rid_index < static_cast<int64_t>(contract.references.size());
+       ++rid_index) {
+    if (failed.load(std::memory_order_relaxed)) {
+      continue;
+    }
+    const uint32_t rid = static_cast<uint32_t>(rid_index);
+    HotPartitionOutcome &outcome = outcomes[rid];
+    uint64_t partition_input_records = 0;
+    for (const auto &reader : hot_readers) {
+      const uint64_t count = reader->PartitionRecordCount(rid);
+      if (count > std::numeric_limits<uint64_t>::max() -
+                      partition_input_records) {
+        outcome.error = "ATAC hot partition record count overflows";
+        failed.store(true, std::memory_order_relaxed);
+        break;
+      }
+      partition_input_records += count;
+    }
+    if (failed.load(std::memory_order_relaxed)) {
+      continue;
+    }
+    if (partition_input_records == 0) {
+      continue;
+    }
+    outcome.path = partition_base + ".hotpart." +
+                   std::to_string(static_cast<uint64_t>(getpid())) + "." +
+                   std::to_string(rid);
+    FILE *partition = fopen(outcome.path.c_str(), "wb");
+    if (partition == nullptr) {
+      outcome.error = "cannot create ATAC hot materializer partition " +
+                      outcome.path + ": " + std::strerror(errno);
+      failed.store(true, std::memory_order_relaxed);
+      continue;
+    }
+    (void)setvbuf(partition, nullptr, _IOFBF, 8u * 1024u * 1024u);
+
+    struct HeapRecord {
+      AtacHotSpillDecodedRecord mapping;
+      uint32_t shard_ordinal = 0;
+
+      bool operator<(const HeapRecord &other) const {
+        const bool a_less_b = mapping < other.mapping;
+        const bool b_less_a = other.mapping < mapping;
+        if (!a_less_b && !b_less_a) {
+          return shard_ordinal > other.shard_ordinal;
+        }
+        return !a_less_b;
+      }
+    };
+
+    std::vector<std::unique_ptr<AtacHotSpillPartitionCursor>> cursors(
+        hot_readers.size());
+    std::priority_queue<HeapRecord> heap;
+    bool partition_ok = true;
+    auto read_next = [&](uint32_t ordinal, HeapRecord *next, bool *eof) {
+      AtacHotSpillDecodedRecord mapping;
+      if (!cursors[ordinal]->ReadNext(&mapping, eof, &outcome.error)) {
+        return false;
+      }
+      if (*eof) {
+        return true;
+      }
+      const uint64_t local_record_count =
+          parents[ordinal]->metadata().input_record_count;
+      if (mapping.read_id_ >= local_record_count ||
+          mapping.read_id_ > std::numeric_limits<uint64_t>::max() -
+                                 global_read_prefixes[ordinal]) {
+        outcome.error = "ATAC hot spill local read id is invalid";
+        return false;
+      }
+      mapping.read_id_ += global_read_prefixes[ordinal];
+      next->mapping = std::move(mapping);
+      next->shard_ordinal = ordinal;
+      return true;
+    };
+    for (uint32_t ordinal = 0; ordinal < hot_readers.size(); ++ordinal) {
+      cursors[ordinal].reset(new AtacHotSpillPartitionCursor());
+      if (!hot_readers[ordinal]->OpenPartition(
+              rid, cursors[ordinal].get(), &outcome.error)) {
+        partition_ok = false;
+        break;
+      }
+      HeapRecord first;
+      bool eof = false;
+      if (!read_next(ordinal, &first, &eof)) {
+        partition_ok = false;
+        break;
+      }
+      if (!eof) {
+        heap.push(std::move(first));
+      }
+    }
+
+    const auto barcode_abundance_lookup = [&](uint64_t key, bool *found) {
+      const auto it = global_barcode_abundance.find(key);
+      *found = it != global_barcode_abundance.end();
+      return *found ? it->second : uint64_t{0};
+    };
+    auto correct_barcode = [&](AtacHotSpillDecodedRecord *mapping,
+                               bool *keep) {
+      *keep = true;
+      if (is_bulk) {
+        return true;
+      }
+      if (!mapping->has_raw_barcode_evidence ||
+          mapping->raw_barcode_qual.size() != contract.barcode_length) {
+        outcome.error =
+            "ATAC hot spill record lacks complete barcode evidence";
+        return false;
+      }
+      uint64_t corrected_key = mapping->cell_barcode_;
+      const BarcodeCorrectionStatus status = CorrectPackedBarcode(
+          mapping->cell_barcode_, contract.barcode_length,
+          mapping->raw_barcode_n_mask, mapping->raw_barcode_qual,
+          contract.barcode_correction_error_threshold,
+          contract.barcode_correction_probability_threshold,
+          global_num_sample_barcodes, barcode_abundance_lookup,
+          &corrected_key);
+      if (status == BarcodeCorrectionStatus::kRejected) {
+        ++outcome.rejected;
+        *keep = output_unresolved_barcodes;
+        return true;
+      }
+      if (status == BarcodeCorrectionStatus::kCorrected) {
+        ++outcome.corrected;
+      }
+      mapping->cell_barcode_ = corrected_key;
+      return true;
+    };
+
+    bool have_last = false;
+    AtacHotSpillDecodedRecord last_mapping;
+    uint64_t duplicate_count = 0;
+    std::vector<HeapRecord> group;
+    std::vector<AtacHotSpillDecodedRecord> barcode_representatives;
+    auto emit_last = [&]() {
+      if (!have_last) {
+        return true;
+      }
+      last_mapping.num_dups_ = static_cast<uint8_t>(std::min<uint64_t>(
+          std::numeric_limits<uint8_t>::max(), duplicate_count));
+      if (parameters.Tn5_shift) {
+        last_mapping.Tn5Shift(parameters.Tn5_forward_shift,
+                              parameters.Tn5_reverse_shift);
+      }
+      if (last_mapping.mapq_ < parameters.mapq_threshold) {
+        return true;
+      }
+      if ((!is_bulk &&
+           last_mapping.cell_barcode_ >
+               std::numeric_limits<uint32_t>::max()) ||
+          !IsAtacSpillFragmentLengthRepresentable(
+              last_mapping.fragment_length_)) {
+        outcome.error = "ATAC hot partition output exceeds compact encoding";
+        return false;
+      }
+      AtacMaterializedBinaryRecordV1 encoded = {};
+      encoded.start = last_mapping.fragment_start_position_;
+      encoded.barcode_value =
+          is_bulk ? 0u : static_cast<uint32_t>(last_mapping.cell_barcode_);
+      encoded.rid = static_cast<uint16_t>(rid);
+      encoded.fragment_length = last_mapping.fragment_length_;
+      encoded.duplicate_count = static_cast<uint8_t>(std::min<uint64_t>(
+          std::numeric_limits<uint8_t>::max(), duplicate_count));
+      encoded.mapq = last_mapping.mapq_;
+      encoded.flags = last_mapping.IsPositiveStrand()
+                          ? kAtacMaterializedBinaryPositiveStrand
+                          : uint8_t{0};
+      if (fwrite(&encoded, sizeof(encoded), 1, partition) != 1) {
+        outcome.error = "cannot write ATAC hot materializer partition " +
+                        outcome.path;
+        return false;
+      }
+      ++outcome.output;
+      return true;
+    };
+
+    while (partition_ok && !heap.empty()) {
+      const uint32_t group_start =
+          heap.top().mapping.fragment_start_position_;
+      const uint16_t group_length = heap.top().mapping.fragment_length_;
+      group.clear();
+      while (!heap.empty() &&
+             heap.top().mapping.fragment_start_position_ == group_start &&
+             heap.top().mapping.fragment_length_ == group_length) {
+        HeapRecord current =
+            std::move(const_cast<HeapRecord &>(heap.top()));
+        heap.pop();
+        const uint32_t source_ordinal = current.shard_ordinal;
+        bool keep = true;
+        if (!correct_barcode(&current.mapping, &keep)) {
+          partition_ok = false;
+          break;
+        }
+        if (keep) {
+          group.push_back(std::move(current));
+        }
+        HeapRecord next;
+        bool eof = false;
+        if (!read_next(source_ordinal, &next, &eof)) {
+          partition_ok = false;
+          break;
+        }
+        if (!eof) {
+          heap.push(std::move(next));
+        }
+      }
+      if (!partition_ok) {
+        break;
+      }
+      std::sort(group.begin(), group.end(),
+                [](const HeapRecord &a, const HeapRecord &b) {
+                  const bool a_less_b = a.mapping < b.mapping;
+                  const bool b_less_a = b.mapping < a.mapping;
+                  if (!a_less_b && !b_less_a) {
+                    return a.shard_ordinal < b.shard_ordinal;
+                  }
+                  return a_less_b;
+                });
+      if (bulk_level_cell_dedup && !group.empty()) {
+        barcode_representatives.clear();
+        uint64_t total_coordinate_duplicates = 0;
+        size_t begin = 0;
+        while (begin < group.size()) {
+          size_t end = begin + 1;
+          while (end < group.size() &&
+                 group[end].mapping == group[end - 1].mapping) {
+            ++end;
+          }
+          AtacHotSpillDecodedRecord representative =
+              std::move(group[end - 1].mapping);
+          representative.num_dups_ = static_cast<uint8_t>(
+              std::min<size_t>(std::numeric_limits<uint8_t>::max(),
+                               end - begin));
+          barcode_representatives.push_back(std::move(representative));
+          total_coordinate_duplicates += end - begin;
+          begin = end;
+        }
+        size_t best = 0;
+        uint64_t best_abundance = 0;
+        for (size_t i = 0; i < barcode_representatives.size(); ++i) {
+          const auto abundance_it = global_barcode_abundance.find(
+              barcode_representatives[i].GetBarcode());
+          const uint64_t abundance =
+              abundance_it == global_barcode_abundance.end()
+                  ? uint64_t{0}
+                  : abundance_it->second;
+          if (i == 0 ||
+              barcode_representatives[i].num_dups_ >
+                  barcode_representatives[best].num_dups_ ||
+              (barcode_representatives[i].num_dups_ ==
+                   barcode_representatives[best].num_dups_ &&
+               abundance > best_abundance)) {
+            best = i;
+            best_abundance = abundance;
+          }
+        }
+        if (!emit_last()) {
+          partition_ok = false;
+          break;
+        }
+        have_last = true;
+        last_mapping = std::move(barcode_representatives[best]);
+        duplicate_count = total_coordinate_duplicates;
+        continue;
+      }
+      for (HeapRecord &current : group) {
+        const bool duplicate =
+            have_last &&
+            (current.mapping == last_mapping ||
+             (!is_bulk && parameters.remove_pcr_duplicates_at_bulk_level &&
+              current.mapping.IsSamePosition(last_mapping)));
+        if (parameters.remove_pcr_duplicates && duplicate) {
+          ++duplicate_count;
+          last_mapping = std::move(current.mapping);
+        } else {
+          if (!emit_last()) {
+            partition_ok = false;
+            break;
+          }
+          have_last = true;
+          last_mapping = std::move(current.mapping);
+          duplicate_count = 1;
+        }
+      }
+    }
+    if (partition_ok && !emit_last()) {
+      partition_ok = false;
+    }
+    if (fclose(partition) != 0 && partition_ok) {
+      outcome.error = "cannot close ATAC hot materializer partition " +
+                      outcome.path;
+      partition_ok = false;
+    }
+    if (!partition_ok) {
+      failed.store(true, std::memory_order_relaxed);
+    }
+  }
+
+  auto cleanup = [&]() {
+    for (const auto &outcome : outcomes) {
+      if (!outcome.path.empty()) {
+        unlink(outcome.path.c_str());
+      }
+    }
+  };
+  if (failed.load(std::memory_order_relaxed)) {
+    if (error != nullptr) {
+      *error = "parallel ATAC hot partition merge failed";
+      for (const auto &outcome : outcomes) {
+        if (!outcome.error.empty()) {
+          *error = outcome.error;
+          break;
+        }
+      }
+    }
+    cleanup();
+    return false;
+  }
+
+  std::vector<AtacMaterializedBinaryRecordV1> encoded(
+      kAtacMaterializedBinaryTargetRecordsPerBlock);
+  for (const auto &outcome : outcomes) {
+    if (outcome.path.empty()) {
+      continue;
+    }
+    FILE *partition = fopen(outcome.path.c_str(), "rb");
+    if (partition == nullptr) {
+      if (error != nullptr) {
+        *error = "cannot reopen ATAC hot materializer partition " +
+                 outcome.path;
+      }
+      cleanup();
+      return false;
+    }
+    while (true) {
+      const size_t count = fread(encoded.data(), sizeof(encoded[0]),
+                                 encoded.size(), partition);
+      if (count != 0 &&
+          !binary_writer->AppendEncodedRecordsWithRawBarcodes(
+              encoded.data(), count, error)) {
+        fclose(partition);
+        cleanup();
+        return false;
+      }
+      if (count != encoded.size()) {
+        if (ferror(partition) != 0) {
+          if (error != nullptr) {
+            *error = "cannot read ATAC hot materializer partition " +
+                     outcome.path;
+          }
+          fclose(partition);
+          cleanup();
+          return false;
+        }
+        break;
+      }
+    }
+    fclose(partition);
+    *corrected_barcode_record_count += outcome.corrected;
+    *rejected_barcode_record_count += outcome.rejected;
+    *output_fragment_count += outcome.output;
+  }
+  cleanup();
+  return true;
 }
 
 }  // namespace
@@ -188,6 +607,21 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
   }
   const bool is_bulk =
       (contract.schema_mask & kAtacSpillSchemaIsBulk) != 0;
+  const bool has_hot_sidecar =
+      (contract.flags & kAtacMergeableHasHotSidecar) != 0;
+  std::vector<std::unique_ptr<AtacHotSpillReader>> hot_readers;
+  if (has_hot_sidecar &&
+      output_parameters.mapping_output_format == MAPPINGFORMAT_BED) {
+    hot_readers.resize(readers.size());
+    for (uint32_t ordinal = 0; ordinal < readers.size(); ++ordinal) {
+      hot_readers[ordinal].reset(new AtacHotSpillReader());
+      if (!hot_readers[ordinal]->Open(
+              paths_by_ordinal[ordinal], readers[ordinal]->metadata(),
+              readers[ordinal]->expected_record_count(), &error)) {
+        return Failure(error);
+      }
+    }
+  }
   const bool has_raw_barcode_evidence =
       (contract.schema_mask & kAtacSpillSchemaHasRawBarcodeEvidence) != 0;
   if (!is_bulk && !has_raw_barcode_evidence) {
@@ -428,8 +862,44 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
   };
 
   uint64_t output_fragment_count = 0;
+  bool used_parallel_hot_spill = false;
+  double merge_output_seconds = 0.0;
+  double terminal_bed_export_seconds = 0.0;
   {
-    MappingWriter<AtacSpillRecord> writer(parameters, contract.barcode_length,
+    const double merge_output_start = GetRealTime();
+    const bool binary_bed_output =
+        parameters.mapping_output_format == MAPPINGFORMAT_BED;
+    const bool preserve_materialized_binary =
+        !parameters.atac_materialized_binary_output_file_path.empty();
+    const std::string materialized_binary_path =
+        preserve_materialized_binary
+            ? parameters.atac_materialized_binary_output_file_path
+            : parameters.mapping_output_file_path + ".materialized." +
+                  std::to_string(static_cast<uint64_t>(getpid())) + ".atmb1";
+    AtacMaterializedBinaryWriter binary_writer;
+    if (binary_bed_output) {
+      AtacMaterializedBinaryMetadata binary_metadata;
+      binary_metadata.is_bulk = is_bulk;
+      binary_metadata.use_barcode_dictionary =
+          !parameters.barcode_translate_table_file_path.empty();
+      binary_metadata.barcode_length = contract.barcode_length;
+      binary_metadata.shard_count = contract.shard_count;
+      binary_metadata.sample_id = contract.sample_id;
+      binary_metadata.input_id = contract.input_id;
+      binary_metadata.references = contract.references;
+      if (!binary_writer.Open(materialized_binary_path, binary_metadata,
+                              &error)) {
+        return Failure(error);
+      }
+    }
+    MappingParameters writer_parameters = parameters;
+    if (binary_bed_output) {
+      // Summary synthesis still uses the canonical MappingWriter counters,
+      // but the BED merge hot path must never construct text rows.
+      writer_parameters.mapping_output_file_path = "/dev/null";
+    }
+    MappingWriter<AtacSpillRecord> writer(writer_parameters,
+                                          contract.barcode_length,
                                           std::vector<int>());
     if (parameters.emit_noY_stream || parameters.emit_Y_stream) {
       writer.OpenYFilterStreams();
@@ -478,6 +948,21 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
       }
     }
 
+    const bool use_parallel_hot_spill =
+        binary_bed_output && has_hot_sidecar && !allocate_multi_mappings &&
+        !synthesize_summary && contract.barcode_length <= 16;
+    if (use_parallel_hot_spill) {
+      used_parallel_hot_spill = true;
+      if (!MaterializeHotPartitions(
+              hot_readers, readers, global_read_prefixes, contract, parameters,
+              global_barcode_abundance, global_num_sample_barcodes,
+              materialized_binary_path, &binary_writer,
+              &corrected_barcode_record_count,
+              &rejected_barcode_record_count, &output_fragment_count,
+              &error)) {
+        return Failure(error);
+      }
+    } else {
     std::priority_queue<HeapRecord> heap;
     for (uint32_t ordinal = 0; ordinal < readers.size(); ++ordinal) {
       HeapRecord record;
@@ -501,7 +986,7 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
 
     auto emit_last = [&]() {
       if (!have_last) {
-        return;
+        return true;
       }
       last_mapping.num_dups_ = static_cast<uint8_t>(std::min<uint64_t>(
           std::numeric_limits<uint8_t>::max(), duplicate_count));
@@ -525,9 +1010,17 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
       if (allocate_multi_mappings) {
         buffered_mappings[last_rid].push_back(std::move(last_mapping));
       } else if (last_mapping.mapq_ >= parameters.mapq_threshold) {
-        writer.AppendMaterializedMapping(last_rid, reference, last_mapping);
+        if (binary_bed_output) {
+          if (!binary_writer.Append(last_rid, last_mapping, duplicate_count,
+                                    &error)) {
+            return false;
+          }
+        } else {
+          writer.AppendMaterializedMapping(last_rid, reference, last_mapping);
+        }
         ++output_fragment_count;
       }
+      return true;
     };
 
     while (!heap.empty()) {
@@ -610,7 +1103,9 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
             best_abundance = abundance;
           }
         }
-        emit_last();
+        if (!emit_last()) {
+          return Failure(error);
+        }
         have_last = true;
         last_rid = group_rid;
         last_mapping = std::move(barcode_representatives[best]);
@@ -629,7 +1124,9 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
           // the retained representative (highest MAPQ/read id tie-break).
           last_mapping = std::move(current.mapping);
         } else {
-          emit_last();
+          if (!emit_last()) {
+            return Failure(error);
+          }
           have_last = true;
           last_rid = current.rid;
           last_mapping = std::move(current.mapping);
@@ -637,7 +1134,9 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
         }
       }
     }
-    emit_last();
+    if (!emit_last()) {
+      return Failure(error);
+    }
     if (allocate_multi_mappings) {
       uint64_t num_multi_mappings = 0;
       for (const auto &mappings : buffered_mappings) {
@@ -657,16 +1156,24 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
       processor.SortOutputMappings(
           static_cast<uint32_t>(contract.references.size()),
           buffered_mappings);
-      for (const auto &mappings : buffered_mappings) {
-        for (const auto &mapping : mappings) {
+      for (uint32_t rid = 0; rid < buffered_mappings.size(); ++rid) {
+        for (const auto &mapping : buffered_mappings[rid]) {
           if (mapping.mapq_ >= parameters.mapq_threshold) {
+            if (binary_bed_output &&
+                !binary_writer.Append(rid, mapping, mapping.num_dups_,
+                                      &error)) {
+              return Failure(error);
+            }
             ++output_fragment_count;
           }
         }
       }
-      writer.OutputMappings(
-          static_cast<uint32_t>(contract.references.size()), reference,
-          buffered_mappings);
+      if (!binary_bed_output) {
+        writer.OutputMappings(
+            static_cast<uint32_t>(contract.references.size()), reference,
+            buffered_mappings);
+      }
+    }
     }
     if (synthesize_summary) {
       writer.OutputSummaryMetadata(
@@ -675,6 +1182,24 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
     }
     writer.FinalizeSortedOutput();
     writer.CloseYFilterStreams();
+    if (binary_bed_output) {
+      if (!binary_writer.Finalize(&error)) {
+        return Failure(error);
+      }
+      merge_output_seconds = GetRealTime() - merge_output_start;
+      const double terminal_bed_start = GetRealTime();
+      if (!ExportAtacMaterializedBinaryToBed(
+              materialized_binary_path, parameters.mapping_output_file_path,
+              parameters, &error)) {
+        return Failure(error);
+      }
+      terminal_bed_export_seconds = GetRealTime() - terminal_bed_start;
+      if (!preserve_materialized_binary) {
+        unlink(materialized_binary_path.c_str());
+      }
+    } else {
+      merge_output_seconds = GetRealTime() - merge_output_start;
+    }
   }
 
   uint64_t total_input_records = 0;
@@ -696,6 +1221,9 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
   result.corrected_barcode_record_count = corrected_barcode_record_count;
   result.rejected_barcode_record_count = rejected_barcode_record_count;
   result.output_fragment_count = output_fragment_count;
+  result.used_parallel_hot_spill = used_parallel_hot_spill;
+  result.merge_output_seconds = merge_output_seconds;
+  result.terminal_bed_export_seconds = terminal_bed_export_seconds;
   return result;
 }
 

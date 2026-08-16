@@ -102,6 +102,46 @@ coordinate-sorted by default; `--no-sort-bam` selects the canonical
 fragment-merge order. Use `--output-cram atac.cram --reference ref.fa` for
 CRAM.
 
+BED is a terminal representation, not materializer working state. The global
+merge, barcode correction, and deduplication first write versioned `ATMBLK1`
+binary blocks. Only after that binary is complete does the terminal exporter
+format BED rows. `--threads` parallelizes this final block export while
+preserving byte order with disjoint positioned writes. The binary is normally
+temporary; add `--materialized-binary fragments.atmb1` to preserve it for a
+later BED export or diagnostics.
+
+Every new worker spill also publishes an `ATACHOT1` companion at
+`<spill>.hot`. It is produced during the worker's existing sorted overflow
+merge, so records are not sorted a second time. The companion is partitioned
+by reference and contains only the fixed-width evidence needed for BED
+correction and deduplication: the local 64-bit read id, raw packed barcode and
+N mask, coordinates, alignment lengths, MAPQ/direction/uniqueness, Y state,
+and fixed-width raw barcode qualities. A bulk record is 32 bytes; a 16-base
+scATAC record is 48 bytes. It never carries BAM strings or CIGAR payloads.
+
+For the common BED path, when gathered multimapping allocation, summary output,
+and 17--32-base barcode output are not requested, the materializer opens
+independent positioned-read cursors for each reference and performs the shard
+k-way merge, global barcode correction, and deduplication in parallel.
+Each reference task emits a binary 16-byte post-dedup partition; the final
+assembly follows reference order and the terminal exporter alone constructs
+BED text. Empty reference partitions do not create temporary files. The
+in-memory decoder mirrors the compact hot record and does not construct the
+two `SAMMapping` objects owned by the full spill record.
+
+Barcode translation remains on this parallel path. Reference tasks retain the
+raw packed barcode. During ordered binary assembly, `ATMBLK1` assigns dense
+dictionary ids to the raw keys; the terminal exporter translates each distinct
+dictionary key once and reuses the resulting text for every fragment. No BED
+string or translated-barcode string is created in a worker partition.
+
+The complete `ATACMS3` parent remains authoritative for BAM/CRAM, summary
+synthesis, gathered multimapping allocation, and 17--32-base barcode output.
+Those modes use the established reader unchanged.
+The parent advertises the companion only after the companion has been flushed,
+`fsync`ed, and atomically renamed; an advertised missing or inconsistent hot
+file is a hard error rather than a silent fallback.
+
 ## Format and failure behavior
 
 The `ATACMS3` envelope versions the shard contract separately from the
@@ -118,6 +158,12 @@ Writers use a temporary file, flush and `fsync` it, then publish by rename.
 Readers reject unsupported versions, truncation, trailing bytes, unsorted
 records, schema mismatch, bad local read ids, incomplete summary evidence, and
 incomplete or inconsistent shard sets.
+
+`ATACHOT1` has its own magic, version, endian marker, parent identity fields,
+record width, and per-reference offset/count/start-bound directory. Readers
+validate the directory, exact file size, parent record count, shard identity,
+whitelist fingerprint, coordinate bounds, barcode bounds, local read ids, and
+per-partition sort order. It intentionally has no record checksum pass.
 
 Read ids are unsigned 64-bit ordinals throughout worker spill records,
 materialization, duplicate tie-breaking, and BAM sorting. The codec is uniform;
@@ -140,6 +186,22 @@ cutoff is not part of this contract. Because shard ranges are validated as
 complete and non-overlapping, summing their histograms reconstructs the same
 complete-input model as a single-process run.
 
+The post-dedup `ATMBLK1` hot record is 16 bytes: 16-bit reference id, 32-bit
+start, 16-bit fragment length, a 32-bit barcode value, and one byte each for
+duplicate count, MAPQ, flags, and reserve. The terminal end coordinate is
+reconstructed as `start + fragment_length`. The writer rejects zero/out-of-
+reference spans and reference dictionaries above 65,536 entries. The worker
+also rejects fragment lengths outside 1--65,535 before narrowing to the spill
+field, so an oversize insert cannot wrap. Chromap's
+packed barcode sequence remains 64-bit so barcodes up to 32 bases are
+representable. Barcodes up to 16 bases are stored directly in the 32-bit value,
+avoiding a hash lookup in the merge. For 17--32-base barcodes (or translated
+barcode output), each distinct materialized key is written once in the file
+dictionary and the record value is its dense id. The block directory stores
+offset/count and coordinate bounds. It intentionally has no per-block checksum
+pass: file structure and bounds are validated, while transfer integrity remains
+the responsibility of the workflow's normal artifact digest.
+
 Run the hermetic gate with:
 
 ```sh
@@ -151,4 +213,5 @@ late-bound and explicit read ranges, global barcode correction, summary
 synthesis, cell- and bulk-level
 deduplication, gathered multimapping allocation, unsigned-64-bit ordinals above
 `UINT32_MAX`, summary counts above `UINT32_MAX`, BED, sorted BAM, AEV1, CRAM,
-and Y/no-Y BAM routing.
+Y/no-Y BAM routing, compact binary header/dictionary round-trip, and serial
+versus parallel multi-block BED byte parity.

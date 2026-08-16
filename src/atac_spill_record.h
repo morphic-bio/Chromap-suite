@@ -47,6 +47,12 @@ static constexpr uint32_t kAtacSpillRecordCodecVersion = 2u;
 // header schema_mask instead so decoding follows the run-level contract.
 static constexpr uint16_t kAtacSpillPayloadMaskAuthoritative = 0xFFFFu;
 
+inline bool IsAtacSpillFragmentLengthRepresentable(int64_t length) {
+  return length > 0 &&
+         static_cast<uint64_t>(length) <=
+             static_cast<uint64_t>(UINT16_MAX);
+}
+
 // Barcode qualities in the ATAC spill contract are bounded by the packed
 // barcode width (32 bases). Keeping them inline avoids one heap allocation for
 // every decoded mapping record during gather. This changes only the in-memory
