@@ -15,13 +15,14 @@ void Usage() {
          "TSV[.gz] | --output-bed BED) [options]\n"
       << "Options:\n"
       << "  --evidence FILE             Final AEV1 fragment sidecar (BAM mode)\n"
+      << "  --materialized-binary FILE  Preserve canonical binary fragment blocks\n"
       << "  --summary FILE              Gathered Chromap alignment summary\n"
       << "  --reference FASTA           Reference FASTA (required for CRAM)\n"
       << "  --output-noY FILE           Secondary BAM/CRAM without Y-hit reads\n"
       << "  --output-Y FILE             Secondary BAM/CRAM with Y-hit reads\n"
       << "  --barcode-translate FILE    Barcode translation table\n"
       << "  --barcode-translate-from-first\n"
-      << "  --threads N                 Compression/output threads [1]\n"
+      << "  --threads N                 Output/terminal-export threads [1]\n"
       << "  --temp-dir DIR              BAM sort spill directory\n"
       << "  --sort-bam | --no-sort-bam  Coordinate-sort BAM [sort]\n"
       << "  --write-index               Write BAM index (requires sort)\n"
@@ -64,6 +65,9 @@ int main(int argc, char **argv) {
             RequireValue(argc, argv, &i);
       } else if (option == "--evidence") {
         parameters.atac_fragment_binary_output_file_path =
+            RequireValue(argc, argv, &i);
+      } else if (option == "--materialized-binary") {
+        parameters.atac_materialized_binary_output_file_path =
             RequireValue(argc, argv, &i);
       } else if (option == "--summary") {
         parameters.summary_metadata_file_path = RequireValue(argc, argv, &i);
@@ -144,7 +148,13 @@ int main(int argc, char **argv) {
               << result.corrected_barcode_record_count << "\n"
               << "rejected_barcode_records\t"
               << result.rejected_barcode_record_count << "\n"
-              << "output_fragments\t" << result.output_fragment_count << "\n";
+              << "output_fragments\t" << result.output_fragment_count << "\n"
+              << "parallel_hot_spill\t"
+              << (result.used_parallel_hot_spill ? "yes" : "no") << "\n"
+              << "merge_output_seconds\t" << result.merge_output_seconds
+              << "\n"
+              << "terminal_bed_export_seconds\t"
+              << result.terminal_bed_export_seconds << "\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "ATAC spill materialization failed: " << error.what() << "\n";
