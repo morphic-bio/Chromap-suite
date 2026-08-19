@@ -1309,6 +1309,23 @@ void Chromap::MapPairedEndReads() {
       permit_thread_state.assign(mapping_parameters_.num_threads,
                                  AtacPermitThreadState{});
     }
+    auto release_atac_permit = [&](int thread_id, bool pair_completed,
+                                   bool force) {
+      if (!permit_hooks_enabled) return;
+      auto &pstate = permit_thread_state[thread_id];
+      if (pstate.counter < 0) return;
+      if (pair_completed) ++pstate.counter;
+      if (!force && pstate.counter < kPermitBatchSize) return;
+
+      const double end_sec = GetRealTime();
+      const uint64_t work_ns = (end_sec > pstate.start_sec)
+          ? static_cast<uint64_t>((end_sec - pstate.start_sec) * 1e9)
+          : 0ULL;
+      permit_release_hook(permit_hook_ctx, pstate.wait_ns,
+                          static_cast<uint64_t>(pstate.counter),
+                          /*work_bytes=*/0ULL, work_ns);
+      pstate.counter = -1;
+    };
 
 #pragma omp parallel shared(num_reads_, num_reference_sequences, reference, index, read_batch1, read_batch2, barcode_batch, read_batch1_for_loading, read_batch2_for_loading, barcode_batch_for_loading, minimizer_generator, candidate_processor, mapping_processor, draft_mapping_generator, mapping_generator, mapping_writer, std::cerr, num_loaded_pairs_for_loading, num_loaded_pairs, mappings_on_diff_ref_seqs_for_diff_threads, mappings_on_diff_ref_seqs_for_diff_threads_for_saving, mappings_on_diff_ref_seqs, num_mappings_in_mem, max_num_mappings_in_mem, current_mapping_buffer_bytes, max_mapping_buffer_bytes, temp_mapping_file_handles, mm_to_candidates_cache, mm_history1, mm_history2, read_map_summary, mergeable_cache_slot1, mergeable_cache_slot2, y_contig_rids, thread_y_hit_read_ids, permit_thread_state) num_threads(mapping_parameters_.num_threads) reduction(+:num_candidates_, num_mappings_, num_mapped_reads_, num_uniquely_mapped_reads_, num_barcode_in_whitelist_, num_corrected_barcode_)
     {
@@ -1426,6 +1443,11 @@ void Chromap::MapPairedEndReads() {
                   (uint32_t)mapping_parameters_.min_read_length ||
                   read_batch2.GetSequenceLengthAt(pair_index) <
                   (uint32_t)mapping_parameters_.min_read_length) {
+                release_atac_permit(thread_id, /*pair_completed=*/true,
+                                    /*force=*/
+                                        (pair_index + 1) %
+                                                static_cast<uint32_t>(grain_size) ==
+                                            0);
                 continue;  // reads are too short, just drop.
               }
 
@@ -1663,23 +1685,28 @@ void Chromap::MapPairedEndReads() {
                 read_map_summary[pair_index] = 0 ;
             }
 
-            // ATAC permit release: every kPermitBatchSize pairs each worker
-            // returns its permit with telemetry so STAR can retune.
-            if (permit_hooks_enabled) {
-              auto& pstate = permit_thread_state[thread_id];
-              ++pstate.counter;
-              if (pstate.counter >= kPermitBatchSize) {
-                const double end_sec = GetRealTime();
-                const uint64_t work_ns = (end_sec > pstate.start_sec)
-                    ? static_cast<uint64_t>((end_sec - pstate.start_sec) * 1e9)
-                    : 0ULL;
-                permit_release_hook(permit_hook_ctx, pstate.wait_ns,
-                                    static_cast<uint64_t>(pstate.counter),
-                                    /*work_bytes=*/0ULL, work_ns);
-                pstate.counter = -1;
-              }
-            }
+            // ATAC permit release: refresh every kPermitBatchSize pairs and
+            // also close the lease at each logical task grain. The latter is
+            // essential: a worker that finishes its task early may wait for
+            // the taskgroup while another task runs, and must not reserve an
+            // ATAC slot during that wait.
+            release_atac_permit(thread_id, /*pair_completed=*/true,
+                                /*force=*/
+                                    (pair_index + 1) %
+                                            static_cast<uint32_t>(grain_size) ==
+                                        0);
           }  // end of for pair_index
+
+          // taskloop has an implicit taskgroup: no worker can still be
+          // modifying its state here. Return every partial permit before the
+          // cache/update/output/load phases, which are not mapping work and
+          // must not reserve capacity from STAR's GEX domain.
+          if (permit_hooks_enabled) {
+            for (int ti = 0; ti < mapping_parameters_.num_threads; ++ti) {
+              release_atac_permit(ti, /*pair_completed=*/false,
+                                  /*force=*/true);
+            }
+          }
 
           // if (num_reads_ / 2 > initial_num_sample_barcodes_) {
           //  if (!is_bulk_data_) {
@@ -1935,17 +1962,8 @@ void Chromap::MapPairedEndReads() {
     // partial mini-batch when the taskloop drained). Runs serially on the
     // master after all workers have joined.
     if (permit_hooks_enabled) {
-      for (auto &pstate : permit_thread_state) {
-        if (pstate.counter > 0) {
-          const double end_sec = GetRealTime();
-          const uint64_t work_ns = (end_sec > pstate.start_sec)
-              ? static_cast<uint64_t>((end_sec - pstate.start_sec) * 1e9)
-              : 0ULL;
-          permit_release_hook(permit_hook_ctx, pstate.wait_ns,
-                              static_cast<uint64_t>(pstate.counter),
-                              /*work_bytes=*/0ULL, work_ns);
-          pstate.counter = -1;
-        }
+      for (int ti = 0; ti < mapping_parameters_.num_threads; ++ti) {
+        release_atac_permit(ti, /*pair_completed=*/false, /*force=*/true);
       }
     }
 
