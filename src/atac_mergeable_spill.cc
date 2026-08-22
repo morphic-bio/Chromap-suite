@@ -57,6 +57,17 @@ class MemoryCursor {
     return true;
   }
 
+  bool ReadBytes(void *output, size_t size) {
+    if ((output == nullptr && size != 0) || Remaining() < size) {
+      return false;
+    }
+    if (size != 0) {
+      memcpy(output, cursor_, size);
+      cursor_ += size;
+    }
+    return true;
+  }
+
   const char *current() const { return cursor_; }
   size_t Remaining() const { return static_cast<size_t>(end_ - cursor_); }
 
@@ -106,6 +117,134 @@ bool SkipSerializedSamMapping(MemoryCursor *cursor, uint64_t expected_read_id) {
       !cursor->Skip(static_cast<size_t>(sequence_bytes) * 2u)) {
     return false;
   }
+  return true;
+}
+
+bool DecodeSerializedSamMapping(MemoryCursor *cursor, SAMMapping *mapping) {
+  static_assert(sizeof(int) == sizeof(uint32_t),
+                "ATAC spill SAM codec requires 32-bit int");
+  uint16_t read_name_bytes = 0;
+  if (!cursor->Read(&mapping->read_id_) ||
+      !cursor->Read(&read_name_bytes) ||
+      cursor->Remaining() < read_name_bytes) {
+    return false;
+  }
+  mapping->read_name_.assign(cursor->current(), read_name_bytes);
+  if (!cursor->Skip(read_name_bytes) ||
+      !cursor->Read(&mapping->cell_barcode_) ||
+      !cursor->Read(&mapping->num_dups_) ||
+      !cursor->Read(&mapping->pos_) || !cursor->Read(&mapping->rid_) ||
+      !cursor->Read(&mapping->mpos_) || !cursor->Read(&mapping->mrid_) ||
+      !cursor->Read(&mapping->tlen_) || !cursor->Read(&mapping->flag_)) {
+    return false;
+  }
+
+  uint32_t packed_fields = 0;
+  int num_cigar = 0;
+  if (!cursor->Read(&packed_fields) || !cursor->Read(&num_cigar) ||
+      num_cigar < 0 ||
+      static_cast<uint64_t>(num_cigar) >
+          std::numeric_limits<size_t>::max() / sizeof(uint32_t) ||
+      cursor->Remaining() <
+          static_cast<size_t>(num_cigar) * sizeof(uint32_t)) {
+    return false;
+  }
+  mapping->is_rev_ = packed_fields >> 31;
+  mapping->is_alt_ = (packed_fields >> 30) & 1u;
+  mapping->is_unique_ = (packed_fields >> 29) & 1u;
+  mapping->mapq_ = (packed_fields << 3) >> 25;
+  mapping->NM_ = (packed_fields << 10) >> 10;
+  mapping->n_cigar_ = num_cigar;
+  mapping->cigar_.resize(static_cast<size_t>(num_cigar));
+  if (!cursor->ReadBytes(mapping->cigar_.data(),
+                         mapping->cigar_.size() * sizeof(uint32_t))) {
+    return false;
+  }
+
+  uint16_t md_bytes = 0;
+  if (!cursor->Read(&md_bytes) || cursor->Remaining() < md_bytes) {
+    return false;
+  }
+  mapping->MD_.assign(cursor->current(), md_bytes);
+  if (!cursor->Skip(md_bytes)) {
+    return false;
+  }
+  uint16_t sequence_bytes = 0;
+  if (!cursor->Read(&sequence_bytes) ||
+      static_cast<size_t>(sequence_bytes) >
+          std::numeric_limits<size_t>::max() / 2u ||
+      cursor->Remaining() < static_cast<size_t>(sequence_bytes) * 2u) {
+    return false;
+  }
+  mapping->sequence_.assign(cursor->current(), sequence_bytes);
+  if (!cursor->Skip(sequence_bytes)) {
+    return false;
+  }
+  mapping->sequence_qual_.assign(cursor->current(), sequence_bytes);
+  return cursor->Skip(sequence_bytes);
+}
+
+bool DecodeFullPayload(const char *payload, size_t payload_bytes,
+                       uint16_t file_schema, uint32_t barcode_length,
+                       AtacSpillRecord *record) {
+  MemoryCursor cursor(payload, payload_bytes);
+  uint32_t magic = 0;
+  uint16_t version = 0;
+  uint16_t payload_mask = 0;
+  if (!cursor.Read(&magic) || !cursor.Read(&version) ||
+      !cursor.Read(&payload_mask) || magic != kAtacSpillPayloadMagic ||
+      version != kAtacSpillRecordCodecVersion) {
+    return false;
+  }
+  const uint16_t optional_mask = static_cast<uint16_t>(
+      kAtacSpillSchemaHasBamPair | kAtacSpillSchemaHasRawBarcodeEvidence);
+  if ((payload_mask & optional_mask) != (file_schema & optional_mask) ||
+      (file_schema & kAtacSpillSchemaHasBamPair) == 0) {
+    return false;
+  }
+
+  uint8_t mapq = 0;
+  uint8_t direction = 0;
+  uint8_t is_unique = 0;
+  if (!cursor.Read(&record->read_id_) ||
+      !cursor.Read(&record->cell_barcode_) ||
+      !cursor.Read(&record->fragment_start_position_) ||
+      !cursor.Read(&record->fragment_length_) || !cursor.Read(&mapq) ||
+      !cursor.Read(&direction) || !cursor.Read(&is_unique) ||
+      !cursor.Read(&record->num_dups_) ||
+      !cursor.Read(&record->positive_alignment_length_) ||
+      !cursor.Read(&record->negative_alignment_length_) ||
+      !DecodeSerializedSamMapping(&cursor, &record->sam1) ||
+      !DecodeSerializedSamMapping(&cursor, &record->sam2)) {
+    return false;
+  }
+  record->mapq_ = mapq;
+  record->direction_ = direction;
+  record->is_unique_ = is_unique;
+
+  record->raw_barcode_n_mask_ = 0;
+  record->raw_barcode_qual_.clear();
+  if ((file_schema & kAtacSpillSchemaHasRawBarcodeEvidence) != 0) {
+    uint32_t quality_bytes = 0;
+    if (!cursor.Read(&record->raw_barcode_n_mask_) ||
+        !cursor.Read(&quality_bytes) || quality_bytes != barcode_length ||
+        quality_bytes > AtacBarcodeQuality::kCapacity ||
+        cursor.Remaining() < quality_bytes) {
+      return false;
+    }
+    record->raw_barcode_qual_.assign(cursor.current(), quality_bytes);
+    if (!cursor.Skip(quality_bytes)) {
+      return false;
+    }
+  }
+  if (cursor.Remaining() != 0) {
+    return false;
+  }
+  record->prefix_flags_ = static_cast<uint16_t>(
+      (payload_mask & kAtacSpillSchemaHasYHit) |
+      (file_schema &
+       (kAtacSpillSchemaHasBamPair | kAtacSpillSchemaIsBulk |
+        kAtacSpillSchemaHasRawBarcodeEvidence)));
   return true;
 }
 
@@ -889,20 +1028,16 @@ bool AtacMergeableSpillReader::ReadNext(uint32_t *rid,
                     path_,
                 error);
   }
-  std::vector<char> payload(payload_bytes);
-  if (!ReadBytes(file_, payload.data(), payload.size())) {
+  full_stream_payload_.resize(payload_bytes);
+  if (!ReadBytes(file_, full_stream_payload_.data(),
+                 full_stream_payload_.size())) {
     return Fail("truncated ATAC mergeable spill record payload in " + path_,
                 error);
   }
-  FILE *memory = fmemopen(payload.data(), payload.size(), "rb");
-  if (memory == nullptr) {
-    return Fail("cannot open ATAC mergeable spill record buffer", error);
-  }
-  record->LoadFromFile(memory, metadata_.schema_mask);
-  const long consumed = ftell(memory);
-  fclose(memory);
-  if (consumed < 0 || static_cast<size_t>(consumed) != payload.size() ||
-      record->SerializedSize() != payload.size() ||
+  if (!DecodeFullPayload(full_stream_payload_.data(),
+                         full_stream_payload_.size(), metadata_.schema_mask,
+                         metadata_.barcode_length, record) ||
+      record->SerializedSize() != full_stream_payload_.size() ||
       !record->HasBamPairSection()) {
     return Fail("ATAC mergeable spill record codec length mismatch in " + path_,
                 error);

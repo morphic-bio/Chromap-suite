@@ -283,9 +283,10 @@ void MappingWriter<PairedEndMappingWithoutBarcode>::AppendMapping(
       rec.chrom_id = static_cast<int32_t>(rid);
       rec.start = static_cast<int32_t>(mapping.GetStartPosition());
       rec.end = static_cast<int32_t>(mapping_end_position);
-      // Bulk inline FRAG peaks: count each dedup survivor once (see 2026-05-05 runbook).
-      rec.count = 1u;
-      if (rec.end > rec.start) {
+      // Match the emitted 7-column bulk FRAG row: column 7 is the collapsed
+      // duplicate count consumed by standalone MACS3 and RapidMACS file input.
+      rec.count = static_cast<uint32_t>(mapping.num_dups_);
+      if (rec.end > rec.start && rec.count > 0) {
         auto& buckets = *mapping_parameters_.macs3_frag_buffer;
         if (rid >= buckets.size()) {
           buckets.resize(rid + 1);
@@ -2281,8 +2282,10 @@ void MappingWriter<AtacSpillRecord>::AppendMapping(
   const PairedEndMappingWithBarcode &frag = mapping;
   uint32_t mapping_end_position = frag.GetEndPosition();
   const bool bulk_no_barcode = !mapping_parameters_.HasBarcodeInput();
-  const uint32_t peak_count =
-      bulk_no_barcode ? 1u : static_cast<uint32_t>(frag.num_dups_);
+  // Both the barcoded 5-column and bulk 7-column fragment schemas expose the
+  // collapsed duplicate count. In-memory peak calling must consume the same
+  // weight as a file-source or standalone MACS3 run on the emitted fragments.
+  const uint32_t peak_count = static_cast<uint32_t>(frag.num_dups_);
   if (atac_evidence_fp_) {
     AppendAtacEvidenceBinaryRecord(rid, frag.GetStartPosition(),
                                    mapping_end_position,

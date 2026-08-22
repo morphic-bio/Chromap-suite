@@ -100,7 +100,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 
 -include $(deps)
 
-.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke \
+.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-macs3-fragment-buckets test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
 	 test-encode-cbq-cross-assay-smoke \
@@ -173,7 +173,7 @@ test-lowmem-bed-100k: chromap
 # Cheap smoke bundle: unit + frag_compact_store + the two integration
 # matrices that cover the chromap+MACS3 integration surface end-to-end.
 # ~3 min total; suitable for pre-commit CI.
-test-smoke: test-unit test-materialized-reference test-frag-compact-store test-macs3-frag-qvalue-cli \
+test-smoke: test-unit test-materialized-reference test-frag-compact-store test-macs3-fragment-buckets test-macs3-frag-qvalue-cli \
             test-atac-spill-record-roundtrip \
             test-atac-mergeable-spill-materializer \
             test-lowmem-bed-100k \
@@ -213,6 +213,14 @@ test-frag-compact-store: dir $(RAPIDMACS_LIB)
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_frag_compact_store.cc \
 		$(RAPIDMACS_LIB) -o tests/test_frag_compact_store $(LDFLAGS)
 	./tests/test_frag_compact_store
+
+# Empty reference buckets must not enter the in-memory peak caller as
+# chromosome workspaces; this is visible on sparse bulk inputs at p=0.01.
+test-macs3-fragment-buckets: dir
+	@mkdir -p tests
+	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_macs3_fragment_buckets.cc \
+		-o tests/test_macs3_fragment_buckets $(LDFLAGS)
+	./tests/test_macs3_fragment_buckets
 
 # Hermetic input-format smoke. Verifies plain/gzip FASTQ parity and, when
 # bqtools is available, CBQ default/uncompressed decode-to-FASTQ compatibility.

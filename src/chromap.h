@@ -376,6 +376,11 @@ void Chromap::MapSingleEndReads() {
   
   mm_cache mm_to_candidates_cache(2000003);
   mm_to_candidates_cache.SetKmerLength(kmer_size);
+  std::cerr << "Mapping policy: "
+            << (mapping_parameters_.deterministic_mapping
+                    ? "deterministic read-local (candidate cache disabled)"
+                    : "historical candidate cache")
+            << std::endl;
   struct _mm_history *mm_history = new struct _mm_history[read_batch_size_];
   // Use bit encoding to represent mapping results
   // bit 0: is barcode in whitelist
@@ -482,10 +487,10 @@ void Chromap::MapSingleEndReads() {
                 mapping_parameters_.num_threads >= 12 ? true : false);
           }  // end of openmp loading task
           uint32_t history_update_threshold =
-          mm_to_candidates_cache.GetUpdateThreshold(num_loaded_reads,
-                                                    num_reads_, 
-                                                    false,
-                                                    0.01);
+              !mapping_parameters_.deterministic_mapping
+                  ? mm_to_candidates_cache.GetUpdateThreshold(
+                        num_loaded_reads, num_reads_, false, 0.01)
+                  : 0;
           // int grain_size = 10000;
 //#pragma omp taskloop grainsize(grain_size) //num_tasks(num_threads_* 50)
 #pragma omp taskloop num_tasks( \
@@ -528,7 +533,8 @@ void Chromap::MapSingleEndReads() {
                 RerankCandidatesRid(mapping_metadata.negative_candidates_);
               }
 
-              if (mm_to_candidates_cache.Query(
+              if (mapping_parameters_.deterministic_mapping ||
+                  mm_to_candidates_cache.Query(
                       mapping_metadata,
                       read_batch.GetSequenceLengthAt(read_index)) == -1) {
                 candidate_processor.GenerateCandidates(
@@ -891,6 +897,11 @@ void Chromap::MapPairedEndReads() {
   // Check cache-related parameters
   std::cerr << "Cache Size: " << mapping_parameters_.cache_size << std::endl;
   std::cerr << "Cache Update Param: " << mapping_parameters_.cache_update_param << std::endl;
+  std::cerr << "Mapping policy: "
+            << (mapping_parameters_.deterministic_mapping
+                    ? "deterministic read-local (candidate cache disabled)"
+                    : "historical candidate cache")
+            << std::endl;
   
   std::vector<uint64_t> seeds_for_batch(500000, 0);
 
@@ -1392,11 +1403,11 @@ void Chromap::MapPairedEndReads() {
 
           int grain_size = 5000;
           uint32_t history_update_threshold =
-          mm_to_candidates_cache.GetUpdateThreshold(num_loaded_pairs,
-                                                    num_reads_, 
-                                                    true,
-                                                    mapping_parameters_.cache_update_param
-                                                    );
+              !mapping_parameters_.deterministic_mapping
+                  ? mm_to_candidates_cache.GetUpdateThreshold(
+                        num_loaded_pairs, num_reads_, true,
+                        mapping_parameters_.cache_update_param)
+                  : 0;
           std::fill(cache_hits_per_thread.begin(), cache_hits_per_thread.end(), 0);
           if (mapping_parameters_.CreatesMergeableAtacSpill()) {
             std::fill(mergeable_cache_slot1.begin(),
@@ -1479,8 +1490,13 @@ void Chromap::MapPairedEndReads() {
                 int cache_query_result2 = 0;
                 int cache_miss = 0;
 
-                cache_query_result1 = mm_to_candidates_cache.Query(paired_end_mapping_metadata.mapping_metadata1_,
-                                                                  read_batch1.GetSequenceLengthAt(pair_index));
+                if (!mapping_parameters_.deterministic_mapping) {
+                  cache_query_result1 = mm_to_candidates_cache.Query(
+                      paired_end_mapping_metadata.mapping_metadata1_,
+                      read_batch1.GetSequenceLengthAt(pair_index));
+                } else {
+                  cache_query_result1 = -1;
+                }
                 if (cache_query_result1 == -1) 
                 {
                   candidate_processor.GenerateCandidates(
@@ -1493,8 +1509,13 @@ void Chromap::MapPairedEndReads() {
                 size_t current_num_candidates1 = paired_end_mapping_metadata.mapping_metadata1_.GetNumCandidates();
 
 
-                cache_query_result2 = mm_to_candidates_cache.Query(paired_end_mapping_metadata.mapping_metadata2_,
-                                                                  read_batch2.GetSequenceLengthAt(pair_index));
+                if (!mapping_parameters_.deterministic_mapping) {
+                  cache_query_result2 = mm_to_candidates_cache.Query(
+                      paired_end_mapping_metadata.mapping_metadata2_,
+                      read_batch2.GetSequenceLengthAt(pair_index));
+                } else {
+                  cache_query_result2 = -1;
+                }
                 if (cache_query_result2 == -1) 
                 {
                   candidate_processor.GenerateCandidates(

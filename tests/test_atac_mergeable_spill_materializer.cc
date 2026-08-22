@@ -82,6 +82,27 @@ chromap::AtacSpillRecord MakeBulkRecord(uint64_t local_read_id,
   return record;
 }
 
+chromap::AtacSpillRecord MakeWideBarcodeRecord(
+    uint64_t local_read_id, uint32_t start, uint8_t mapq, uint64_t barcode,
+    uint32_t barcode_length) {
+  chromap::AtacSpillRecord record =
+      MakeRecord(local_read_id, start, mapq, barcode);
+  record.SetRawBarcodeEvidence(/*n_mask=*/0,
+                               std::string(barcode_length, 'I'));
+  return record;
+}
+
+std::string PackedBarcodeSequence(uint64_t key, uint32_t length) {
+  static const char bases[] = {'A', 'C', 'G', 'T'};
+  std::string sequence;
+  sequence.reserve(length);
+  for (uint32_t i = 0; i < length; ++i) {
+    sequence.push_back(
+        bases[(key >> (2u * (length - i - 1u))) & uint64_t{3}]);
+  }
+  return sequence;
+}
+
 chromap::AtacMergeableSpillMetadata Metadata(uint32_t ordinal,
                                              uint64_t first) {
   chromap::AtacMergeableSpillMetadata metadata;
@@ -137,7 +158,8 @@ void WriteShard(const std::string &path,
     evidence.raw_barcode_key =
         !is_bulk && i < records.size() ? records[i].cell_barcode_
                                        : uint64_t{0};
-    evidence.raw_barcode_qual = is_bulk ? std::string() : "IIII";
+    evidence.raw_barcode_qual =
+        is_bulk ? std::string() : std::string(metadata.barcode_length, 'I');
     Check(writer.AppendSummaryEvidence(evidence, &error), error);
   }
   for (const auto &record : records) {
@@ -176,6 +198,13 @@ std::string ReadFile(const std::string &path) {
                      std::istreambuf_iterator<char>());
 }
 
+void WriteFile(const std::string &path, const std::string &contents) {
+  std::ofstream output(path.c_str(), std::ios::binary | std::ios::trunc);
+  Check(output.is_open(), "cannot write " + path);
+  output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+  Check(static_cast<bool>(output), "cannot finish writing " + path);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -197,6 +226,8 @@ int main(int argc, char **argv) {
   const std::string shard1 = root + "/shard1.atacms";
   const std::string duplicate0 = root + "/duplicate0.atacms";
   const std::string mismatched_model = root + "/mismatched_model.atacms";
+  const std::string corrupt_payload = root + "/corrupt_payload.atacms";
+  const std::string corrupt_bam = root + "/corrupt_payload.bam";
   const std::string output = root + "/materialized.bed";
   const std::string materialized_binary = root + "/materialized.atmb1";
   const std::string hot_shard0 = root + "/hot_shard0.atacms";
@@ -552,6 +583,178 @@ int main(int argc, char **argv) {
           "cannot restore hot sidecar after failure test");
   }
   {
+    const auto run_wide_barcode_gate =
+        [&](uint32_t barcode_length, bool test_translation) {
+          const std::string label = std::to_string(barcode_length);
+          const uint64_t barcode_mask =
+              barcode_length == 32
+                  ? std::numeric_limits<uint64_t>::max()
+                  : (uint64_t{1} << (2u * barcode_length)) - 1u;
+          const uint64_t barcode_a = 0xAAAAAAAAAAAAAAAAULL & barcode_mask;
+          const uint64_t barcode_b = 0x5555555555555555ULL & barcode_mask;
+          const uint64_t unresolved = barcode_mask;
+          Check(barcode_a > std::numeric_limits<uint32_t>::max() &&
+                    barcode_b > std::numeric_limits<uint32_t>::max() &&
+                    unresolved > std::numeric_limits<uint32_t>::max(),
+                "wide-barcode fixture does not exercise 64-bit keys");
+
+          auto make_metadata = [&](uint32_t ordinal, bool hot) {
+            auto metadata = Metadata(ordinal, 2u * ordinal);
+            metadata.flags = static_cast<uint16_t>(
+                metadata.flags |
+                chromap::kAtacMergeableOutputMappingsNotInWhitelist |
+                (hot ? chromap::kAtacMergeableHasHotSidecar : 0));
+            metadata.barcode_length = barcode_length;
+            metadata.barcode_whitelist_fingerprint =
+                0x5000000000000000ULL + barcode_length;
+            metadata.barcode_abundance_entries.clear();
+            const uint64_t first_key = std::min(barcode_a, barcode_b);
+            const uint64_t second_key = std::max(barcode_a, barcode_b);
+            metadata.barcode_abundance_entries.push_back(
+                chromap::AtacBarcodeAbundanceEntry{
+                    first_key, ordinal == 0 ? 10u : 20u});
+            metadata.barcode_abundance_entries.push_back(
+                chromap::AtacBarcodeAbundanceEntry{
+                    second_key, ordinal == 0 ? 30u : 40u});
+            metadata.local_num_sample_barcodes =
+                ordinal == 0 ? 40u : 60u;
+            metadata.sample_id = "wide-barcode-" + label;
+            metadata.input_id = "wide-barcode-pairs-" + label;
+            return metadata;
+          };
+
+          const std::vector<chromap::AtacSpillRecord> records0 = {
+              MakeWideBarcodeRecord(0, 100, 20, barcode_a, barcode_length),
+              MakeWideBarcodeRecord(1, 200, 50, unresolved,
+                                    barcode_length)};
+          const std::vector<chromap::AtacSpillRecord> records1 = {
+              MakeWideBarcodeRecord(0, 100, 60, barcode_a, barcode_length),
+              MakeWideBarcodeRecord(1, 300, 50, barcode_b, barcode_length)};
+          const std::string full0 =
+              root + "/wide" + label + ".full0.atacms";
+          const std::string full1 =
+              root + "/wide" + label + ".full1.atacms";
+          const std::string hot0 =
+              root + "/wide" + label + ".hot0.atacms";
+          const std::string hot1 =
+              root + "/wide" + label + ".hot1.atacms";
+          WriteShard(full0, make_metadata(0, false), records0);
+          WriteShard(full1, make_metadata(1, false), records1);
+          WriteShard(hot0, make_metadata(0, true), records0);
+          WriteShard(hot1, make_metadata(1, true), records1);
+
+          const std::string full_bed =
+              root + "/wide" + label + ".full.bed";
+          const std::string hot_bed =
+              root + "/wide" + label + ".hot.bed";
+          const std::string full_binary =
+              root + "/wide" + label + ".full.atmb1";
+          const std::string hot_binary =
+              root + "/wide" + label + ".hot.atmb1";
+          chromap::MappingParameters full_parameters;
+          full_parameters.mapping_output_format = chromap::MAPPINGFORMAT_BED;
+          full_parameters.mapping_output_file_path = full_bed;
+          full_parameters.atac_materialized_binary_output_file_path =
+              full_binary;
+          full_parameters.num_threads = 4;
+          chromap::MappingParameters hot_parameters = full_parameters;
+          hot_parameters.mapping_output_file_path = hot_bed;
+          hot_parameters.atac_materialized_binary_output_file_path =
+              hot_binary;
+          const auto full_result = chromap::MaterializeAtacSpillRecords(
+              {full1, full0}, full_parameters);
+          const auto hot_result = chromap::MaterializeAtacSpillRecords(
+              {hot1, hot0}, hot_parameters);
+          Check(full_result.ok && !full_result.used_parallel_hot_spill &&
+                    hot_result.ok && hot_result.used_parallel_hot_spill &&
+                    full_result.output_fragment_count == 3 &&
+                    hot_result.output_fragment_count == 3 &&
+                    full_result.corrected_barcode_record_count ==
+                        hot_result.corrected_barcode_record_count &&
+                    full_result.rejected_barcode_record_count == 1 &&
+                    hot_result.rejected_barcode_record_count == 1,
+                hot_result.ok ? full_result.message : hot_result.message);
+          Check(ReadFile(full_bed) == ReadFile(hot_bed) &&
+                    ReadFile(full_binary) == ReadFile(hot_binary),
+                label +
+                    "-base parallel hot output differs from full gather");
+          const auto rows = ReadBed(hot_bed);
+          Check(rows.size() == 3 && rows[0][3].size() == barcode_length &&
+                    rows[1][3] ==
+                        PackedBarcodeSequence(unresolved, barcode_length) &&
+                    rows[2][3].size() == barcode_length,
+                label + "-base raw/unresolved barcode output is incorrect");
+          {
+            std::ifstream binary_stream(hot_binary.c_str(), std::ios::binary);
+            chromap::AtacMaterializedBinaryHeaderV1 header = {};
+            Check(binary_stream.is_open() &&
+                      static_cast<bool>(binary_stream.read(
+                          reinterpret_cast<char *>(&header),
+                          sizeof(header))) &&
+                      header.record_bytes == 16 && header.record_count == 3 &&
+                      header.barcode_dictionary_count == 3 &&
+                      (header.flags &
+                       chromap::kAtacMaterializedBinaryHasBarcodeDictionary) !=
+                          0,
+                  label + "-base ATMBLK1 dictionary is incorrect");
+          }
+
+          if (test_translation) {
+            const std::string translation =
+                root + "/wide" + label + ".translate.tsv";
+            {
+              std::ofstream table(translation.c_str());
+              Check(table.is_open(),
+                    "cannot create wide-barcode translation table");
+              table << PackedBarcodeSequence(barcode_a, barcode_length)
+                    << "\ttranslated-A\n"
+                    << PackedBarcodeSequence(unresolved, barcode_length)
+                    << "\ttranslated-unresolved\n"
+                    << PackedBarcodeSequence(barcode_b, barcode_length)
+                    << "\ttranslated-B\n";
+            }
+            const std::string translated_full =
+                root + "/wide" + label + ".translated.full.bed";
+            const std::string translated_hot =
+                root + "/wide" + label + ".translated.hot.bed";
+            chromap::MappingParameters translated_full_parameters =
+                full_parameters;
+            translated_full_parameters.mapping_output_file_path =
+                translated_full;
+            translated_full_parameters.atac_materialized_binary_output_file_path
+                .clear();
+            translated_full_parameters.barcode_translate_table_file_path =
+                translation;
+            translated_full_parameters.barcode_translate_from_first_column =
+                true;
+            chromap::MappingParameters translated_hot_parameters =
+                translated_full_parameters;
+            translated_hot_parameters.mapping_output_file_path =
+                translated_hot;
+            const auto translated_full_result =
+                chromap::MaterializeAtacSpillRecords(
+                    {full0, full1}, translated_full_parameters);
+            const auto translated_hot_result =
+                chromap::MaterializeAtacSpillRecords(
+                    {hot0, hot1}, translated_hot_parameters);
+            Check(translated_full_result.ok &&
+                      !translated_full_result.used_parallel_hot_spill &&
+                      translated_hot_result.ok &&
+                      translated_hot_result.used_parallel_hot_spill &&
+                      ReadFile(translated_full) == ReadFile(translated_hot),
+                  "translated wide-barcode hot/full parity failed");
+            const auto translated_rows = ReadBed(translated_hot);
+            Check(translated_rows.size() == 3 &&
+                      translated_rows[0][3] == "translated-A" &&
+                      translated_rows[1][3] == "translated-unresolved" &&
+                      translated_rows[2][3] == "translated-B",
+                  "translated wide-barcode output is incorrect");
+          }
+        };
+    run_wide_barcode_gate(/*barcode_length=*/17, /*translation=*/true);
+    run_wide_barcode_gate(/*barcode_length=*/32, /*translation=*/false);
+  }
+  {
     chromap::AtacMaterializedBinaryMetadata metadata;
     metadata.barcode_length = 4;
     metadata.shard_count = 2;
@@ -841,6 +1044,26 @@ int main(int argc, char **argv) {
   const auto mismatch = chromap::MaterializeAtacSpillRecords(
       {shard0, mismatched_model}, parameters);
   Check(!mismatch.ok, "mismatched barcode correction models were accepted");
+  {
+    std::string bytes = ReadFile(shard1);
+    const uint32_t payload_magic = chromap::kAtacSpillPayloadMagic;
+    const std::string magic_bytes(
+        reinterpret_cast<const char *>(&payload_magic), sizeof(payload_magic));
+    const size_t payload_offset = bytes.find(magic_bytes);
+    Check(payload_offset != std::string::npos,
+          "cannot locate ATAC spill payload for corruption test");
+    bytes[payload_offset] ^= 1;
+    WriteFile(corrupt_payload, bytes);
+    chromap::MappingParameters corrupt_parameters;
+    corrupt_parameters.mapping_output_format = chromap::MAPPINGFORMAT_BAM;
+    corrupt_parameters.mapping_output_file_path = corrupt_bam;
+    corrupt_parameters.temp_directory_path = root;
+    corrupt_parameters.sort_bam = false;
+    const auto corrupt = chromap::MaterializeAtacSpillRecords(
+        {shard0, corrupt_payload}, corrupt_parameters);
+    Check(!corrupt.ok,
+          "corrupt full BAM payload was accepted by the direct decoder");
+  }
   const auto empty = chromap::MaterializeAtacSpillRecords({}, parameters);
   Check(!empty.ok, "empty spill input set was accepted");
 

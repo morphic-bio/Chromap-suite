@@ -15,6 +15,7 @@
 
 #include "chromap.h"
 #include "cxxopts.hpp"
+#include "macs3_fragment_buckets.h"
 #include "rapidmacs/fragment_input.h"
 #include "rapidmacs/frag_compact_store.h"
 #include "rapidmacs/fragments.h"
@@ -95,7 +96,11 @@ void AddMappingOptions(cxxopts::Options &options) {
                  "Min probability to correct a barcode [0.9]",
                  cxxopts::value<double>(),
                  "FLT")("t,num-threads", "# threads for mapping [1]",
-                        cxxopts::value<int>(), "INT")
+                        cxxopts::value<int>(), "INT")(
+          "deterministic-mapping",
+          "Use read-local mapping decisions (disable the history-dependent "
+          "candidate cache and seed multimapping selection from the read "
+          "name); automatically enabled for mergeable ATAC spills")
       ("frip-est-params", "coefficients used for frip est calculation, separated by semi-colons",
       cxxopts::value<std::string>(), "STR")
       ("turn-off-num-uniq-cache-slots", "turn off the output of number of cache slots in summary file")
@@ -674,6 +679,9 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         chromap::ExitWithMessage("cache size is not in appropriate range\n");
     }
   }
+  if (result.count("deterministic-mapping")) {
+    mapping_parameters.deterministic_mapping = true;
+  }
   if (result.count("debug-cache")) {
     mapping_parameters.debug_cache = true;
   }
@@ -733,6 +741,11 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
           "Invalid mergeable ATAC spill identity or shard ordinal/count");
     }
     mapping_parameters.low_memory_mode = true;
+    // Independent workers cannot share the mutable candidate history. A
+    // mergeable spill therefore uses the deterministic read-local mapping
+    // path. Use --deterministic-mapping on an ordinary one-process control
+    // when checking exact scatter/gather parity.
+    mapping_parameters.deterministic_mapping = true;
   } else if (result.count("mergeable-spill-sample-id") ||
              result.count("mergeable-spill-input-id") ||
              result.count("mergeable-spill-shard-ordinal") ||
@@ -1735,6 +1748,11 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       if (mapping_parameters.macs3_frag_peaks_source == Macs3FragPeaksSource::kMemory) {
         auto& buckets = *mapping_parameters.macs3_frag_buffer;
         auto& chrom_names = *mapping_parameters.macs3_frag_chrom_names;
+        if (!chromap::peaks::CompactNonEmptyMacs3FragmentBuckets(
+                &buckets, &chrom_names, &err)) {
+          chromap::ExitWithMessage(
+              "MACS3 FRAG peaks (memory source): " + err);
+        }
         if (mapping_parameters.macs3_frag_low_mem) {
           // Sweep workspace: lower RSS, slightly slower wall. Flatten the
           // per-chrom buckets into a single sorted FragmentRecord stream
