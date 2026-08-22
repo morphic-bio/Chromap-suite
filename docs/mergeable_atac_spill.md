@@ -64,7 +64,12 @@ chromap --preset atac \
 
 `--read-format` and all mapping/correction policy options must match the
 single-process baseline. Spill creation automatically enables low-memory mode.
-The ordinary `-o` output is suppressed.
+The ordinary `-o` output is suppressed. Spill creation also forces read-local
+deterministic mapping: the mutable cross-read candidate cache is disabled and
+paired-end multimapping reservoir selection is seeded from the stable read
+name. An ordinary one-process run used as an exact parity control must add
+`--deterministic-mapping`. Historical ordinary runs retain the candidate cache
+unless that flag is supplied.
 
 The materializer's ordinal prefix is not used to order fragments. It rebases
 the shard-local read ids embedded in the fragment and both BAM mates, making
@@ -119,15 +124,23 @@ N mask, coordinates, alignment lengths, MAPQ/direction/uniqueness, Y state,
 and fixed-width raw barcode qualities. A bulk record is 32 bytes; a 16-base
 scATAC record is 48 bytes. It never carries BAM strings or CIGAR payloads.
 
-For the common BED path, when gathered multimapping allocation, summary output,
-and 17--32-base barcode output are not requested, the materializer opens
-independent positioned-read cursors for each reference and performs the shard
-k-way merge, global barcode correction, and deduplication in parallel.
-Each reference task emits a binary 16-byte post-dedup partition; the final
+For the common BED path, when gathered multimapping allocation and summary
+output are not requested, the materializer opens independent positioned-read
+cursors for each reference and performs the shard k-way merge, global barcode
+correction, and deduplication in parallel.
+Each reference task emits a compact binary post-dedup partition; the final
 assembly follows reference order and the terminal exporter alone constructs
-BED text. Empty reference partitions do not create temporary files. The
-in-memory decoder mirrors the compact hot record and does not construct the
+BED text. For barcodes up to 16 bases, those temporary rows are the same 16-byte
+shape as `ATMBLK1`. Empty reference partitions do not create temporary files.
+The in-memory decoder mirrors the compact hot record and does not construct the
 two `SAMMapping` objects owned by the full spill record.
+
+For 17--32-base barcodes, only the ephemeral per-reference partition widens to
+20 bytes so it can retain the corrected 64-bit packed barcode. Ordered assembly
+then assigns deterministic 32-bit dictionary ids and writes the same 16-byte
+`ATMBLK1` records and 64-bit dictionary footer used by the established long-
+barcode path. Neither durable format changes, and the extra four bytes exist
+only until the reference partitions are assembled.
 
 Barcode translation remains on this parallel path. Reference tasks retain the
 raw packed barcode. During ordered binary assembly, `ATMBLK1` assigns dense
@@ -136,8 +149,12 @@ dictionary key once and reuses the resulting text for every fragment. No BED
 string or translated-barcode string is created in a worker partition.
 
 The complete `ATACMS3` parent remains authoritative for BAM/CRAM, summary
-synthesis, gathered multimapping allocation, and 17--32-base barcode output.
-Those modes use the established reader unchanged.
+synthesis, and gathered multimapping allocation.
+Those modes use a bounds-checked in-memory decoder for the existing payload
+codec. The reader reuses its payload buffer and decodes fields directly,
+without constructing a synthetic `FILE` or calling `fmemopen`/`fclose` for
+every mapped record. This changes neither the `ATACMS3` envelope nor its record
+layout.
 The parent advertises the companion only after the companion has been flushed,
 `fsync`ed, and atomically renamed; an advertised missing or inconsistent hot
 file is a hard error rather than a silent fallback.
@@ -174,11 +191,12 @@ buffers the gathered, deduplicated candidates because allocation weights
 depend on unique mappings across every shard. The normal non-allocation path
 remains a bounded k-way streaming merge.
 
-Cache-hit and cache-cardinality fields describe the actual worker caches. They
-are merged exactly from shard evidence, but a sharded execution can legitimately
-have different cache warm-up behavior than a single-process execution. Mapping,
-duplicate, low-MAPQ, total, barcode, fragment, and BAM correctness do not depend
-on that diagnostic cache topology.
+Mergeable workers disable the mutable candidate cache so mapping decisions are
+independent of worker boundaries and scheduling. Their cache-hit/cardinality
+diagnostics therefore describe the disabled-cache policy and match an ordinary
+`--deterministic-mapping` control. Exact scatter/gather parity must not compare
+against a historical-cache run, whose cross-read history is inherently
+partition-dependent.
 
 Barcode correction uses the complete input histogram in both ordinary and
 mergeable-spill runs. The historical 20-million exact-whitelist-observation
@@ -214,4 +232,7 @@ synthesis, cell- and bulk-level
 deduplication, gathered multimapping allocation, unsigned-64-bit ordinals above
 `UINT32_MAX`, summary counts above `UINT32_MAX`, BED, sorted BAM, AEV1, CRAM,
 Y/no-Y BAM routing, compact binary header/dictionary round-trip, and serial
-versus parallel multi-block BED byte parity.
+versus parallel multi-block BED byte parity. The hot/full parity gate includes
+17- and 32-base raw dictionary barcodes, retained unresolved evidence, and
+translated 17-base barcodes. It also rejects a corrupted full BAM payload
+through the direct bounded decoder.
