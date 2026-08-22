@@ -474,35 +474,8 @@ bool AtacMaterializedBinaryWriter::Append(uint32_t rid,
   record.flags = mapping.IsPositiveStrand()
                      ? kAtacMaterializedBinaryPositiveStrand
                      : uint8_t{0};
-  if (!metadata_.is_bulk && metadata_.use_barcode_dictionary) {
-    const uint64_t barcode_key = mapping.GetBarcode();
-    const auto found = barcode_ids_.find(barcode_key);
-    if (found == barcode_ids_.end()) {
-      if (barcode_dictionary_.size() >
-          std::numeric_limits<uint32_t>::max()) {
-        return Fail("ATAC materialized binary has more than 2^32 barcodes",
-                    error);
-      }
-      record.barcode_value =
-          static_cast<uint32_t>(barcode_dictionary_.size());
-      barcode_ids_.emplace(barcode_key, record.barcode_value);
-      barcode_dictionary_.push_back(barcode_key);
-    } else {
-      record.barcode_value = found->second;
-    }
-  } else if (!metadata_.is_bulk) {
-    const uint64_t barcode_key = mapping.GetBarcode();
-    const uint32_t direct_barcode_max =
-        metadata_.barcode_length == 16
-            ? std::numeric_limits<uint32_t>::max()
-            : (uint32_t{1} << (2u * metadata_.barcode_length)) - 1u;
-    if (barcode_key > direct_barcode_max) {
-      return Fail("ATAC materialized barcode exceeds direct 32-bit encoding",
-                  error);
-    }
-    record.barcode_value = static_cast<uint32_t>(barcode_key);
-  }
-  return AppendEncodedRecord(record, /*allow_dictionary=*/true, error);
+  return AppendEncodedRecordWithRawBarcodeKey(
+      record, metadata_.is_bulk ? uint64_t{0} : mapping.GetBarcode(), error);
 }
 
 bool AtacMaterializedBinaryWriter::AppendEncodedRecords(
@@ -529,41 +502,67 @@ bool AtacMaterializedBinaryWriter::AppendEncodedRecordsWithRawBarcodes(
     return Fail("raw-barcode record batch exceeds direct 32-bit encoding",
                 error);
   }
-  const uint32_t direct_barcode_max =
-      metadata_.barcode_length >= 16
-          ? std::numeric_limits<uint32_t>::max()
-          : (metadata_.barcode_length == 0
-                 ? uint32_t{0}
-                 : (uint32_t{1} << (2u * metadata_.barcode_length)) - 1u);
   for (size_t i = 0; i < count; ++i) {
-    AtacMaterializedBinaryRecordV1 record = records[i];
-    if ((!metadata_.is_bulk && record.barcode_value > direct_barcode_max) ||
-        (metadata_.is_bulk && record.barcode_value != 0)) {
-      return Fail("invalid ATAC materialized raw barcode", error);
-    }
-    if (!metadata_.is_bulk && metadata_.use_barcode_dictionary) {
-      const uint64_t barcode_key = record.barcode_value;
-      const auto found = barcode_ids_.find(barcode_key);
-      if (found == barcode_ids_.end()) {
-        if (barcode_dictionary_.size() >
-            std::numeric_limits<uint32_t>::max()) {
-          return Fail("ATAC materialized binary has more than 2^32 barcodes",
-                      error);
-        }
-        record.barcode_value =
-            static_cast<uint32_t>(barcode_dictionary_.size());
-        barcode_ids_.emplace(barcode_key, record.barcode_value);
-        barcode_dictionary_.push_back(barcode_key);
-      } else {
-        record.barcode_value = found->second;
-      }
-    }
-    if (!AppendEncodedRecord(record, metadata_.use_barcode_dictionary,
-                             error)) {
+    if (!AppendEncodedRecordWithRawBarcodeKey(
+            records[i], static_cast<uint64_t>(records[i].barcode_value),
+            error)) {
       return false;
     }
   }
   return true;
+}
+
+bool AtacMaterializedBinaryWriter::AppendEncodedRecordsWithRawBarcodeKeys(
+    const AtacMaterializedBinaryRecordV1 *records,
+    const uint64_t *barcode_keys, size_t count, std::string *error) {
+  if (count != 0 && (records == nullptr || barcode_keys == nullptr)) {
+    return Fail("null ATAC materialized wide-barcode record batch", error);
+  }
+  for (size_t i = 0; i < count; ++i) {
+    if (!AppendEncodedRecordWithRawBarcodeKey(records[i], barcode_keys[i],
+                                               error)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool AtacMaterializedBinaryWriter::AppendEncodedRecordWithRawBarcodeKey(
+    AtacMaterializedBinaryRecordV1 record, uint64_t barcode_key,
+    std::string *error) {
+  const uint64_t packed_barcode_max =
+      metadata_.is_bulk || metadata_.barcode_length == 0
+          ? uint64_t{0}
+          : (metadata_.barcode_length == 32
+                 ? std::numeric_limits<uint64_t>::max()
+                 : (uint64_t{1} << (2u * metadata_.barcode_length)) - 1u);
+  if ((metadata_.is_bulk && barcode_key != 0) ||
+      (!metadata_.is_bulk && barcode_key > packed_barcode_max)) {
+    return Fail("invalid ATAC materialized raw barcode", error);
+  }
+  if (!metadata_.is_bulk && metadata_.use_barcode_dictionary) {
+    const auto found = barcode_ids_.find(barcode_key);
+    if (found == barcode_ids_.end()) {
+      if (barcode_dictionary_.size() >
+          std::numeric_limits<uint32_t>::max()) {
+        return Fail("ATAC materialized binary has more than 2^32 barcodes",
+                    error);
+      }
+      record.barcode_value =
+          static_cast<uint32_t>(barcode_dictionary_.size());
+      barcode_ids_.emplace(barcode_key, record.barcode_value);
+      barcode_dictionary_.push_back(barcode_key);
+    } else {
+      record.barcode_value = found->second;
+    }
+  } else {
+    if (barcode_key > std::numeric_limits<uint32_t>::max()) {
+      return Fail("ATAC materialized barcode exceeds direct 32-bit encoding",
+                  error);
+    }
+    record.barcode_value = static_cast<uint32_t>(barcode_key);
+  }
+  return AppendEncodedRecord(record, metadata_.use_barcode_dictionary, error);
 }
 
 bool AtacMaterializedBinaryWriter::AppendEncodedRecord(
