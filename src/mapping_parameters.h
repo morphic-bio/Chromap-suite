@@ -41,6 +41,10 @@ struct MappingParameters {
 
   double cache_update_param = 0.01;
   int cache_size = 4000003;
+  // Read-local mapping decisions: no mutable cross-read candidate cache and
+  // stable read-name-seeded reservoir selection. Mergeable ATAC workers force
+  // this on so their output is independent of shard boundaries and scheduling.
+  bool deterministic_mapping = false;
   bool debug_cache = false;
   std::string frip_est_params = "-1.0996;4.2391;3.0164e-05;-2.1087e-04;-5.5825e-05";
   bool output_num_uniq_cache_slots = true;

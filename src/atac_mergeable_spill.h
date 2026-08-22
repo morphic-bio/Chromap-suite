@@ -197,6 +197,9 @@ class AtacMergeableSpillReader {
   std::vector<char> bed_stream_buffer_;
   size_t bed_stream_begin_ = 0;
   size_t bed_stream_end_ = 0;
+  // Reused by the full BAM/CRAM decoder. Avoid one allocation and one
+  // fmemopen/fclose pair for every mapping record.
+  std::vector<char> full_stream_payload_;
   bool full_decoder_started_ = false;
   bool bed_decoder_started_ = false;
 };

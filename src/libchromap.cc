@@ -10,6 +10,7 @@
 
 #include "atac_dual_mapping.h"
 #include "chromap.h"
+#include "macs3_fragment_buckets.h"
 #include "rapidmacs/fragment_input.h"
 #include "rapidmacs/fragments.h"
 #include "rapidmacs/macs3_frag_peak_pipeline.h"
@@ -214,6 +215,11 @@ ChromapRunResult RunMacs3FragPeaksFromMappingParameters(
     }
     auto &buckets = *mapping_parameters.macs3_frag_buffer;
     auto &chrom_names = *mapping_parameters.macs3_frag_chrom_names;
+    if (!peaks::CompactNonEmptyMacs3FragmentBuckets(
+            &buckets, &chrom_names, &err)) {
+      return MakeFailure(mapping_parameters,
+                         "MACS3 FRAG peaks (memory source): " + err);
+    }
     if (mapping_parameters.macs3_frag_low_mem) {
       std::vector<macs3::FragmentRecord> flat;
       size_t total = 0;

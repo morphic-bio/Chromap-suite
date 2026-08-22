@@ -88,6 +88,25 @@ struct HotPartitionOutcome {
   uint64_t output = 0;
 };
 
+// Ephemeral per-reference materializer row for barcodes that do not fit in
+// ATMBLK1's direct 32-bit barcode_value. The ordered assembler replaces the
+// raw key with a deterministic dictionary id before writing durable ATMBLK1.
+#pragma pack(push, 1)
+struct HotPartitionWideBarcodeRecord {
+  uint64_t barcode_key;
+  uint32_t start;
+  uint16_t rid;
+  uint16_t fragment_length;
+  uint8_t duplicate_count;
+  uint8_t mapq;
+  uint8_t flags;
+  uint8_t reserved;
+};
+#pragma pack(pop)
+
+static_assert(sizeof(HotPartitionWideBarcodeRecord) == 20,
+              "wide hot partition row must be 20 bytes");
+
 bool MaterializeHotPartitions(
     const std::vector<std::unique_ptr<AtacHotSpillReader>> &hot_readers,
     const std::vector<std::unique_ptr<AtacMergeableSpillReader>> &parents,
@@ -113,6 +132,8 @@ bool MaterializeHotPartitions(
   }
   const bool is_bulk =
       (contract.schema_mask & kAtacSpillSchemaIsBulk) != 0;
+  const bool use_wide_barcode_partition =
+      !is_bulk && contract.barcode_length > 16;
   const bool output_unresolved_barcodes =
       (contract.flags & kAtacMergeableOutputMappingsNotInWhitelist) != 0;
   const bool bulk_level_cell_dedup =
@@ -272,7 +293,7 @@ bool MaterializeHotPartitions(
       if (last_mapping.mapq_ < parameters.mapq_threshold) {
         return true;
       }
-      if ((!is_bulk &&
+      if ((!is_bulk && !use_wide_barcode_partition &&
            last_mapping.cell_barcode_ >
                std::numeric_limits<uint32_t>::max()) ||
           !IsAtacSpillFragmentLengthRepresentable(
@@ -292,7 +313,21 @@ bool MaterializeHotPartitions(
       encoded.flags = last_mapping.IsPositiveStrand()
                           ? kAtacMaterializedBinaryPositiveStrand
                           : uint8_t{0};
-      if (fwrite(&encoded, sizeof(encoded), 1, partition) != 1) {
+      bool wrote = false;
+      if (use_wide_barcode_partition) {
+        HotPartitionWideBarcodeRecord wide = {};
+        wide.start = encoded.start;
+        wide.barcode_key = last_mapping.cell_barcode_;
+        wide.rid = encoded.rid;
+        wide.fragment_length = encoded.fragment_length;
+        wide.duplicate_count = encoded.duplicate_count;
+        wide.mapq = encoded.mapq;
+        wide.flags = encoded.flags;
+        wrote = fwrite(&wide, sizeof(wide), 1, partition) == 1;
+      } else {
+        wrote = fwrite(&encoded, sizeof(encoded), 1, partition) == 1;
+      }
+      if (!wrote) {
         outcome.error = "cannot write ATAC hot materializer partition " +
                         outcome.path;
         return false;
@@ -446,6 +481,12 @@ bool MaterializeHotPartitions(
 
   std::vector<AtacMaterializedBinaryRecordV1> encoded(
       kAtacMaterializedBinaryTargetRecordsPerBlock);
+  std::vector<HotPartitionWideBarcodeRecord> wide_encoded;
+  std::vector<uint64_t> wide_barcode_keys;
+  if (use_wide_barcode_partition) {
+    wide_encoded.resize(kAtacMaterializedBinaryTargetRecordsPerBlock);
+    wide_barcode_keys.resize(kAtacMaterializedBinaryTargetRecordsPerBlock);
+  }
   for (const auto &outcome : outcomes) {
     if (outcome.path.empty()) {
       continue;
@@ -460,16 +501,41 @@ bool MaterializeHotPartitions(
       return false;
     }
     while (true) {
-      const size_t count = fread(encoded.data(), sizeof(encoded[0]),
-                                 encoded.size(), partition);
-      if (count != 0 &&
-          !binary_writer->AppendEncodedRecordsWithRawBarcodes(
-              encoded.data(), count, error)) {
+      const size_t count =
+          use_wide_barcode_partition
+              ? fread(wide_encoded.data(), sizeof(wide_encoded[0]),
+                      wide_encoded.size(), partition)
+              : fread(encoded.data(), sizeof(encoded[0]), encoded.size(),
+                      partition);
+      if (count != 0 && use_wide_barcode_partition) {
+        for (size_t i = 0; i < count; ++i) {
+          encoded[i].start = wide_encoded[i].start;
+          encoded[i].barcode_value = 0;
+          encoded[i].rid = wide_encoded[i].rid;
+          encoded[i].fragment_length = wide_encoded[i].fragment_length;
+          encoded[i].duplicate_count = wide_encoded[i].duplicate_count;
+          encoded[i].mapq = wide_encoded[i].mapq;
+          encoded[i].flags = wide_encoded[i].flags;
+          encoded[i].reserved = wide_encoded[i].reserved;
+          wide_barcode_keys[i] = wide_encoded[i].barcode_key;
+        }
+      }
+      const bool appended =
+          count == 0 ||
+          (use_wide_barcode_partition
+               ? binary_writer->AppendEncodedRecordsWithRawBarcodeKeys(
+                     encoded.data(), wide_barcode_keys.data(), count, error)
+               : binary_writer->AppendEncodedRecordsWithRawBarcodes(
+                     encoded.data(), count, error));
+      if (!appended) {
         fclose(partition);
         cleanup();
         return false;
       }
-      if (count != encoded.size()) {
+      const size_t capacity = use_wide_barcode_partition
+                                  ? wide_encoded.size()
+                                  : encoded.size();
+      if (count != capacity) {
         if (ferror(partition) != 0) {
           if (error != nullptr) {
             *error = "cannot read ATAC hot materializer partition " +
@@ -881,7 +947,8 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
       AtacMaterializedBinaryMetadata binary_metadata;
       binary_metadata.is_bulk = is_bulk;
       binary_metadata.use_barcode_dictionary =
-          !parameters.barcode_translate_table_file_path.empty();
+          !parameters.barcode_translate_table_file_path.empty() ||
+          (!is_bulk && contract.barcode_length > 16);
       binary_metadata.barcode_length = contract.barcode_length;
       binary_metadata.shard_count = contract.shard_count;
       binary_metadata.sample_id = contract.sample_id;
@@ -950,7 +1017,7 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
 
     const bool use_parallel_hot_spill =
         binary_bed_output && has_hot_sidecar && !allocate_multi_mappings &&
-        !synthesize_summary && contract.barcode_length <= 16;
+        !synthesize_summary;
     if (use_parallel_hot_spill) {
       used_parallel_hot_spill = true;
       if (!MaterializeHotPartitions(
