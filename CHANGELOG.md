@@ -8,6 +8,39 @@ are in [`docs/RELEASE_NOTES_vX.Y.Z.md`](docs/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-23
+
+Chromap Suite patch release embedding RapidMACS v1.0.1 and preserving exact
+MACS3 v3.0.3 narrow-peak behavior at score-boundary and fold-enrichment edge
+cases. See
+[`docs/RELEASE_NOTES_v1.0.1.md`](docs/RELEASE_NOTES_v1.0.1.md).
+
+### Fixed
+
+- Embedded peak calling now uses MACS3 `callpeak`'s strict `score > cutoff`
+  predicate in p-value and q-value modes, so a score exactly equal to the
+  requested cutoff is excluded from the peak boundary.
+- Embedded peak calling now applies MACS3's default fold-enrichment cutoff of
+  1.0 after peak construction, excluding statistically significant depletion
+  regions from narrowPeak output.
+- Direct and materialized ATAC paths now preserve deterministic fragment
+  reduction and exact peak-caller input equivalence.
+
+### Changed
+
+- Replaced the former `libMACS3` dependency naming with the public RapidMACS /
+  `librapidmacs` project and pinned `third_party/rapidmacs` to RapidMACS
+  v1.0.1 (`c22ff439cc66337e1b7fc9b87b547478eb5c0d3b`).
+- ATAC mapping releases shared concurrency permits at task boundaries, avoiding
+  retained-capacity stalls without changing output.
+
+### Added
+
+- Opt-in mergeable ATAC spill records, deterministic materialization, and
+  fixed-width materialized blocks for bounded-memory downstream processing.
+- Materialized-reference sidecars and direct index-loading support.
+- A ChIP TagAlign workflow schema in the MCP/Launchpad registry.
+
 ## [1.0.0] - 2026-06-18
 
 First production Chromap Suite release. `chromap --version` now reports the suite
