@@ -217,15 +217,15 @@ void MappingGenerator<MappingRecord>::GenerateBestMappingsForPairedEndRead(
   std::iota(best_mapping_indices.begin(), best_mapping_indices.end(), 0);
   if (paired_end_mapping_metadata.GetNumBestMappings() >
       mapping_parameters_.max_num_best_mappings) {
-    // A durable mergeable spill must not depend on which OpenMP thread or
-    // shard happened to map a read. The historical per-thread generator makes
+    // Deterministic mapping must not depend on which OpenMP thread or shard
+    // happened to map a read. The historical per-thread generator makes
     // reservoir selection depend on scheduling because each thread advances
     // its own RNG stream. Seed a read-local generator from the stable FASTQ
-    // name for spill production; ordinary Chromap runs retain their existing
-    // generator stream.
+    // name for mergeable workers and deterministic one-process controls.
     std::mt19937 spill_generator;
     std::mt19937 *selection_generator = &generator;
-    if (mapping_parameters_.CreatesMergeableAtacSpill()) {
+    if (mapping_parameters_.deterministic_mapping ||
+        mapping_parameters_.CreatesMergeableAtacSpill()) {
       uint64_t name_hash = 1469598103934665603ULL;
       const char *name = read_batch1.GetSequenceNameAt(pair_index);
       const uint32_t name_length =

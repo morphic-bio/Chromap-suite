@@ -29,6 +29,7 @@ objs/
 tests/test_y_filter
 tests/test_atac_spill_record_roundtrip
 tests/test_atac_mergeable_spill_materializer
+tests/test_macs3_fragment_buckets
 tests/index_load_probe
 tests/materialized_reference_load_probe
 tests/cbq_range_reader_harness

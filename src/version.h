@@ -10,6 +10,6 @@
 // The chromap engine / upstream lineage version is CHROMAP_VERSION (defined in
 // chromap.h); it is reported by `chromap --upstream-version` and written to the
 // BAM/SAM @PG VN tag for provenance.
-#define CHROMAP_SUITE_VERSION "1.0.0"
+#define CHROMAP_SUITE_VERSION "1.0.1"
 
 #endif  // CHROMAP_VERSION_H_

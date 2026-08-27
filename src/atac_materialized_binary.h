@@ -113,12 +113,21 @@ class AtacMaterializedBinaryWriter {
   bool AppendEncodedRecordsWithRawBarcodes(
       const AtacMaterializedBinaryRecordV1 *records, size_t count,
       std::string *error);
+  // Appends compact rows plus their full 64-bit packed barcode keys. This is
+  // used when parallel hot partitions carry 17-32-base barcodes that cannot
+  // be narrowed before the ordered dictionary is assembled.
+  bool AppendEncodedRecordsWithRawBarcodeKeys(
+      const AtacMaterializedBinaryRecordV1 *records,
+      const uint64_t *barcode_keys, size_t count, std::string *error);
   bool Finalize(std::string *error);
   uint64_t record_count() const { return record_count_; }
 
  private:
   bool Fail(const std::string &message, std::string *error);
   bool FlushBlock(std::string *error);
+  bool AppendEncodedRecordWithRawBarcodeKey(
+      AtacMaterializedBinaryRecordV1 record, uint64_t barcode_key,
+      std::string *error);
   bool AppendEncodedRecord(const AtacMaterializedBinaryRecordV1 &record,
                            bool allow_dictionary, std::string *error);
 

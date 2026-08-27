@@ -1,0 +1,10 @@
+#ifndef CHROMAP_SUITE_SIMDE_EMMINTRIN_H
+#define CHROMAP_SUITE_SIMDE_EMMINTRIN_H
+
+#ifndef SIMDE_ENABLE_NATIVE_ALIASES
+#define SIMDE_ENABLE_NATIVE_ALIASES
+#endif
+
+#include <simde/x86/sse2.h>
+
+#endif
