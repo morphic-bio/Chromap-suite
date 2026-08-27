@@ -3,8 +3,12 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 artifact_root=${CHROMAP_ARTIFACT_ROOT:-${repo_root}/plans/artifacts/atac_mergeable_spill_materializer}
-run_root=${artifact_root}/unit_v3
+run_root=${CHROMAP_ATAC_SPILL_RUN_ROOT:-${artifact_root}/$(date -u +%Y%m%dT%H%M%SZ)-$$}
 
+[[ ! -e ${run_root} ]] || {
+  echo "FATAL: CHROMAP_ATAC_SPILL_RUN_ROOT must be fresh: ${run_root}" >&2
+  exit 2
+}
 mkdir -p "${run_root}"
 "${repo_root}/tests/test_atac_mergeable_spill_materializer" "${run_root}"
 samtools quickcheck "${run_root}/materialized.bam" \

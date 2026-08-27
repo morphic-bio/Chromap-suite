@@ -69,9 +69,27 @@ struct AtacMergeableSpillHeaderV3 {
 static_assert(sizeof(AtacMergeableSpillHeaderV3) == 172,
               "ATAC mergeable spill header must be 172 bytes");
 
+// ATACMS4 keeps the complete V3 prefix byte-for-byte and appends one field.
+// Worker spills remain span 1. Raw compaction outputs use shard_span > 1 to
+// describe a contiguous range of original shard ordinals without discarding
+// pre-correction or pre-deduplication evidence.
+#pragma pack(push, 1)
+struct AtacMergeableSpillHeaderExtensionV4 {
+  uint32_t shard_span;
+};
+#pragma pack(pop)
+
+static_assert(sizeof(AtacMergeableSpillHeaderExtensionV4) == 4,
+              "ATAC mergeable spill v4 extension must be 4 bytes");
+
 static constexpr char kAtacMergeableSpillMagicV3[8] = {
     'A', 'T', 'A', 'C', 'M', 'S', '3', '\0'};
-static constexpr uint16_t kAtacMergeableSpillFormatVersion = 3;
+static constexpr char kAtacMergeableSpillMagicV4[8] = {
+    'A', 'T', 'A', 'C', 'M', 'S', '4', '\0'};
+static constexpr uint16_t kAtacMergeableSpillFormatVersionV3 = 3;
+static constexpr uint16_t kAtacMergeableSpillFormatVersionV4 = 4;
+static constexpr uint16_t kAtacMergeableSpillFormatVersion =
+    kAtacMergeableSpillFormatVersionV3;
 
 struct AtacMergeableSpillReference {
   std::string name;
@@ -100,6 +118,10 @@ struct AtacMergeableSpillMetadata {
   uint16_t flags = 0;
   uint32_t shard_ordinal = 0;
   uint32_t shard_count = 0;
+  // Number of contiguous original shard ordinals represented by this file.
+  // ATACMS3 worker spills decode as span 1; ATACMS4 compaction runs may be
+  // wider. `shard_ordinal` is always the first covered ordinal.
+  uint32_t shard_span = 1;
   uint64_t first_global_read_ordinal = 0;
   uint64_t input_record_count = 0;
   uint32_t barcode_length = 0;

@@ -13,6 +13,7 @@
 #include "atac_materialized_binary.h"
 #include "atac_hot_spill.h"
 #include "atac_mergeable_spill.h"
+#include "atac_spill_compactor.h"
 #include "atac_spill_materializer.h"
 #include "summary_metadata.h"
 
@@ -235,6 +236,10 @@ int main(int argc, char **argv) {
   const std::string hot_output = root + "/materialized.hot.bed";
   const std::string hot_materialized_binary =
       root + "/materialized.hot.atmb1";
+  const std::string compact_hot_run = root + "/compact.hot.atacms";
+  const std::string compact_hot_output = root + "/materialized.compact.hot.bed";
+  const std::string compact_hot_binary = root + "/materialized.compact.hot.atmb1";
+  const std::string invalid_compact_run = root + "/compact.invalid.atacms";
   const std::string translation_table = root + "/barcode-translate.tsv";
   const std::string translated_legacy_output =
       root + "/materialized.translated.legacy.bed";
@@ -509,6 +514,61 @@ int main(int argc, char **argv) {
               ReadFile(hot_materialized_binary) ==
                   ReadFile(materialized_binary),
           "parallel hot-spill materialization differs from legacy gather");
+
+    const auto compact_result = chromap::CompactAtacSpillRecords(
+        {hot_shard1, hot_shard0}, compact_hot_run);
+    Check(compact_result.ok && compact_result.first_shard_ordinal == 0 &&
+              compact_result.shard_span == 2 &&
+              compact_result.shard_count == 2 &&
+              compact_result.input_record_count == 4 &&
+              compact_result.spill_record_count == 4 &&
+              compact_result.wrote_hot_sidecar,
+          compact_result.message);
+    chromap::AtacMergeableSpillReader compact_reader;
+    error.clear();
+    Check(compact_reader.Open(compact_hot_run, &error) &&
+              compact_reader.metadata().shard_ordinal == 0 &&
+              compact_reader.metadata().shard_span == 2 &&
+              compact_reader.metadata().shard_count == 2 &&
+              compact_reader.metadata().input_record_count == 4 &&
+              compact_reader.metadata().local_num_sample_barcodes == 111 &&
+              compact_reader.metadata().barcode_abundance_entries.size() == 2 &&
+              compact_reader.metadata().barcode_abundance_entries[0].count == 101 &&
+              compact_reader.metadata().barcode_abundance_entries[1].count == 10,
+          error.empty() ? "compacted ATACMS4 metadata is incorrect" : error);
+    chromap::AtacHotSpillReader compact_hot_reader;
+    Check(compact_hot_reader.Open(
+              compact_hot_run, compact_reader.metadata(),
+              compact_reader.expected_record_count(), &error),
+          error);
+
+    chromap::MappingParameters compact_hot_parameters = hot_parameters;
+    compact_hot_parameters.mapping_output_file_path = compact_hot_output;
+    compact_hot_parameters.atac_materialized_binary_output_file_path =
+        compact_hot_binary;
+    const auto compact_hot_result = chromap::MaterializeAtacSpillRecords(
+        {compact_hot_run}, compact_hot_parameters);
+    Check(compact_hot_result.ok &&
+              compact_hot_result.used_parallel_hot_spill &&
+              compact_hot_result.shard_count == 2 &&
+              compact_hot_result.input_record_count == 4 &&
+              compact_hot_result.spill_record_count == 4 &&
+              compact_hot_result.corrected_barcode_record_count ==
+                  hot_result.corrected_barcode_record_count &&
+              compact_hot_result.rejected_barcode_record_count ==
+                  hot_result.rejected_barcode_record_count &&
+              compact_hot_result.output_fragment_count ==
+                  hot_result.output_fragment_count,
+          compact_hot_result.message);
+    Check(ReadFile(compact_hot_output) == ReadFile(hot_output) &&
+              ReadFile(compact_hot_binary) ==
+                  ReadFile(hot_materialized_binary),
+          "ATACMS4 compacted-run materialization differs from one-shot gather");
+
+    const auto invalid_compact = chromap::CompactAtacSpillRecords(
+        {hot_shard0, hot_shard0}, invalid_compact_run);
+    Check(!invalid_compact.ok,
+          "overlapping ATAC raw compaction inputs were accepted");
 
     chromap::MappingParameters translated_legacy_parameters;
     translated_legacy_parameters.mapping_output_format =

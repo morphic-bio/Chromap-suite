@@ -590,67 +590,78 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
     return Failure("ATAC spill materializer supports BED, BAM, or CRAM output");
   }
 
-  std::vector<std::unique_ptr<AtacMergeableSpillReader>> readers;
-  std::vector<std::string> paths_by_ordinal;
+  struct OpenedInput {
+    std::string path;
+    std::unique_ptr<AtacMergeableSpillReader> reader;
+  };
+  std::vector<OpenedInput> opened_inputs;
   AtacMergeableSpillMetadata contract;
   bool have_contract = false;
   uint64_t total_spill_records = 0;
   std::string error;
 
   for (const std::string &path : spill_paths) {
-    std::unique_ptr<AtacMergeableSpillReader> reader(
-        new AtacMergeableSpillReader());
-    if (!reader->Open(path, &error)) {
+    OpenedInput input;
+    input.path = path;
+    input.reader.reset(new AtacMergeableSpillReader());
+    if (!input.reader->Open(path, &error)) {
       return Failure(error);
     }
-    const AtacMergeableSpillMetadata &metadata = reader->metadata();
+    const AtacMergeableSpillMetadata &metadata = input.reader->metadata();
     if (!have_contract) {
       contract = metadata;
-      readers.resize(contract.shard_count);
-      paths_by_ordinal.resize(contract.shard_count);
       have_contract = true;
     } else if (!SameMaterializationContract(contract, metadata)) {
       return Failure("ATAC spill materializer input contracts disagree: " +
                      path);
     }
-    if (metadata.shard_count != spill_paths.size()) {
-      return Failure(
-          "ATAC spill materializer input count does not match shard_count");
+    if (input.reader->expected_record_count() >
+        std::numeric_limits<uint64_t>::max() - total_spill_records) {
+      return Failure("ATAC spill materializer record count overflows");
     }
-    if (readers[metadata.shard_ordinal]) {
-      return Failure("ATAC spill materializer has duplicate shard ordinal " +
-                     std::to_string(metadata.shard_ordinal));
-    }
-    total_spill_records += reader->expected_record_count();
-    paths_by_ordinal[metadata.shard_ordinal] = path;
-    readers[metadata.shard_ordinal] = std::move(reader);
+    total_spill_records += input.reader->expected_record_count();
+    opened_inputs.push_back(std::move(input));
   }
+  std::sort(opened_inputs.begin(), opened_inputs.end(),
+            [](const OpenedInput &a, const OpenedInput &b) {
+              return a.reader->metadata().shard_ordinal <
+                     b.reader->metadata().shard_ordinal;
+            });
+  std::vector<std::unique_ptr<AtacMergeableSpillReader>> readers;
+  std::vector<std::string> paths_by_input;
+  readers.reserve(opened_inputs.size());
+  paths_by_input.reserve(opened_inputs.size());
+  for (OpenedInput &input : opened_inputs) {
+    paths_by_input.push_back(std::move(input.path));
+    readers.push_back(std::move(input.reader));
+  }
+
   const bool read_ranges_late_bound =
       (contract.flags & kAtacMergeableReadRangeLateBound) != 0;
   std::vector<uint64_t> global_read_prefixes(readers.size(), 0);
   uint64_t next_global_read = 0;
-  for (uint32_t ordinal = 0; ordinal < readers.size(); ++ordinal) {
-    if (!readers[ordinal]) {
-      return Failure("ATAC spill materializer is missing shard ordinal " +
-                     std::to_string(ordinal));
-    }
-    if (readers[ordinal]->metadata().shard_ordinal != ordinal) {
-      return Failure("ATAC spill materializer ordinal ordering failed");
+  uint32_t next_shard_ordinal = 0;
+  for (size_t input_index = 0; input_index < readers.size(); ++input_index) {
+    const auto &metadata = readers[input_index]->metadata();
+    if (metadata.shard_ordinal != next_shard_ordinal) {
+      return Failure("ATAC spill materializer ordinal coverage is incomplete "
+                     "or overlapping at ordinal " +
+                     std::to_string(next_shard_ordinal));
     }
     if (read_ranges_late_bound) {
-      if (readers[ordinal]->metadata().first_global_read_ordinal != 0) {
+      if (metadata.first_global_read_ordinal != 0) {
         return Failure(
             "late-bound ATAC spill set contains a precomputed read prefix");
       }
-      global_read_prefixes[ordinal] = next_global_read;
-      if (readers[ordinal]->metadata().input_record_count >
+      global_read_prefixes[input_index] = next_global_read;
+      if (metadata.input_record_count >
           std::numeric_limits<uint64_t>::max() - next_global_read) {
         return Failure("ATAC spill materializer read range overflows uint64");
       }
-      next_global_read += readers[ordinal]->metadata().input_record_count;
-    } else if (ordinal > 0) {
-      const auto &previous = readers[ordinal - 1]->metadata();
-      const auto &current = readers[ordinal]->metadata();
+      next_global_read += metadata.input_record_count;
+    } else if (input_index > 0) {
+      const auto &previous = readers[input_index - 1]->metadata();
+      const auto &current = metadata;
       if (previous.first_global_read_ordinal >
               std::numeric_limits<uint64_t>::max() -
                   previous.input_record_count ||
@@ -661,15 +672,19 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
             "ATAC spill materializer shard read ranges are not contiguous");
       }
     }
-    const auto &metadata = readers[ordinal]->metadata();
     if (!read_ranges_late_bound) {
-      global_read_prefixes[ordinal] = metadata.first_global_read_ordinal;
+      global_read_prefixes[input_index] = metadata.first_global_read_ordinal;
     }
     if (metadata.input_record_count >
         std::numeric_limits<uint64_t>::max() -
             metadata.first_global_read_ordinal) {
       return Failure("ATAC spill materializer read range overflows uint64");
     }
+    next_shard_ordinal += metadata.shard_span;
+  }
+  if (next_shard_ordinal != contract.shard_count) {
+    return Failure("ATAC spill materializer input coverage does not match "
+                   "shard_count");
   }
   const bool is_bulk =
       (contract.schema_mask & kAtacSpillSchemaIsBulk) != 0;
@@ -682,7 +697,7 @@ AtacSpillMaterializationResult MaterializeAtacSpillRecords(
     for (uint32_t ordinal = 0; ordinal < readers.size(); ++ordinal) {
       hot_readers[ordinal].reset(new AtacHotSpillReader());
       if (!hot_readers[ordinal]->Open(
-              paths_by_ordinal[ordinal], readers[ordinal]->metadata(),
+              paths_by_input[ordinal], readers[ordinal]->metadata(),
               readers[ordinal]->expected_record_count(), &error)) {
         return Failure(error);
       }

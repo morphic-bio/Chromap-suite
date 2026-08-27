@@ -19,7 +19,7 @@ CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(RAPIDMACS_DI
 DEPFLAGS=-MMD -MP
 LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -ldl -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
-core_cpp_source=sequence_batch.cc materialized_reference.cc cbq_reader.cc cbq_batch_producer.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc atac_kway_spill.cc atac_mergeable_spill.cc atac_hot_spill.cc atac_materialized_binary.cc atac_spill_materializer.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
+core_cpp_source=sequence_batch.cc materialized_reference.cc cbq_reader.cc cbq_batch_producer.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc atac_kway_spill.cc atac_mergeable_spill.cc atac_hot_spill.cc atac_materialized_binary.cc atac_spill_compactor.cc atac_spill_materializer.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
 driver_cpp_source=chromap_driver.cc
 libchromap_cpp_source=libchromap.cc
 runner_cpp_source=chromap_lib_runner.cc

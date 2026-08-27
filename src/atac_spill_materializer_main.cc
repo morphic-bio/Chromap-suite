@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "atac_spill_compactor.h"
 #include "atac_spill_materializer.h"
 
 namespace {
@@ -13,7 +14,10 @@ void Usage() {
       << "Usage: chromap_atac_spill_materializer --spill SHARD [--spill "
          "SHARD ...] ((--output-bam BAM | --output-cram CRAM) --fragments "
          "TSV[.gz] | --output-bed BED) [options]\n"
+      << "       chromap_atac_spill_materializer --spill RUN [--spill RUN ...] "
+         "--compact-spill-output RUN.atacms\n"
       << "Options:\n"
+      << "  --compact-spill-output FILE Merge adjacent raw ordinal ranges only\n"
       << "  --evidence FILE             Final AEV1 fragment sidecar (BAM mode)\n"
       << "  --materialized-binary FILE  Preserve canonical binary fragment blocks\n"
       << "  --summary FILE              Gathered Chromap alignment summary\n"
@@ -42,6 +46,7 @@ std::string RequireValue(int argc, char **argv, int *index) {
 int main(int argc, char **argv) {
   try {
     std::vector<std::string> spills;
+    std::string compact_spill_output;
     chromap::MappingParameters parameters;
     parameters.mapping_output_format = chromap::MAPPINGFORMAT_UNKNOWN;
     parameters.sort_bam = true;
@@ -51,6 +56,8 @@ int main(int argc, char **argv) {
       const std::string option = argv[i];
       if (option == "--spill") {
         spills.push_back(RequireValue(argc, argv, &i));
+      } else if (option == "--compact-spill-output") {
+        compact_spill_output = RequireValue(argc, argv, &i);
       } else if (option == "--output-bam") {
         parameters.mapping_output_format = chromap::MAPPINGFORMAT_BAM;
         parameters.mapping_output_file_path = RequireValue(argc, argv, &i);
@@ -106,6 +113,39 @@ int main(int argc, char **argv) {
       } else {
         throw std::runtime_error("unknown option: " + option);
       }
+    }
+
+    if (!compact_spill_output.empty()) {
+      if (spills.empty() ||
+          parameters.mapping_output_format !=
+              chromap::MAPPINGFORMAT_UNKNOWN ||
+          !parameters.atac_fragment_output_file_path.empty() ||
+          !parameters.atac_fragment_binary_output_file_path.empty() ||
+          !parameters.atac_materialized_binary_output_file_path.empty() ||
+          !parameters.summary_metadata_file_path.empty() ||
+          parameters.emit_noY_stream || parameters.emit_Y_stream) {
+        throw std::runtime_error(
+            "--compact-spill-output is exclusive with terminal outputs");
+      }
+      const chromap::AtacSpillCompactionResult result =
+          chromap::CompactAtacSpillRecords(spills, compact_spill_output);
+      if (!result.ok) {
+        std::cerr << "ATAC raw spill compaction failed: " << result.message
+                  << "\n";
+        return 1;
+      }
+      std::cout << "ATAC raw spill compaction complete\n"
+                << "sample_id\t" << result.sample_id << "\n"
+                << "input_id\t" << result.input_id << "\n"
+                << "first_shard_ordinal\t"
+                << result.first_shard_ordinal << "\n"
+                << "shard_span\t" << result.shard_span << "\n"
+                << "shard_count\t" << result.shard_count << "\n"
+                << "input_records\t" << result.input_record_count << "\n"
+                << "spill_records\t" << result.spill_record_count << "\n"
+                << "hot_sidecar\t"
+                << (result.wrote_hot_sidecar ? "yes" : "no") << "\n";
+      return 0;
     }
 
     if (spills.empty() ||

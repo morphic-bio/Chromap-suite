@@ -77,8 +77,8 @@ them globally unique and restoring the identifiers from the unsharded run.
 
 ## Materialization
 
-Inputs may be listed in any order. The materializer validates that ordinals
-`0..shard_count-1` occur exactly once, derives late-bound read prefixes (or
+Inputs may be listed in any order. The materializer validates that input
+ordinal ranges cover `0..shard_count-1` exactly once, derives late-bound read prefixes (or
 validates explicitly declared ranges as contiguous), and requires all policy,
 reference, schema, sample/input identity, whitelist, and correction fields to
 agree. It sums the shard histograms, applies barcode
@@ -106,6 +106,36 @@ Use `--output-bed fragments.bed` when BAM/AEV1 output is not required. BAM is
 coordinate-sorted by default; `--no-sort-bam` selects the canonical
 fragment-merge order. Use `--output-cram atac.cram --reference ref.fa` for
 CRAM.
+
+### Incremental raw compaction
+
+`ATACMS4` is the raw, pre-correction merge-run envelope used to overlap merge
+I/O with asynchronous shard arrival. It retains the complete `ATACMS3` metadata
+and payload contract and adds a contiguous `shard_span`. The first covered
+ordinal remains `shard_ordinal`. Read ids are rebased only within the aggregate
+run; raw barcode and summary evidence remain unchanged. No correction,
+filtering, Tn5 shift, multimapping allocation, or duplicate collapse occurs.
+
+Compact adjacent ranges with the same materializer executable:
+
+```sh
+chromap_atac_spill_materializer \
+  --spill shard0.atacms --spill shard1.atacms \
+  --compact-spill-output level1.ordinal0.atacms
+```
+
+The output and, when advertised, its regenerated `ATACHOT1` companion are
+immutable and atomically published. Inputs may be supplied in either order but
+their ordinal ranges must be adjacent and nonoverlapping. A workflow should use
+balanced compaction: two span-1 runs become one span-2 run, two adjacent span-2
+runs become one span-4 run, and so on. This bounds raw-record rewrites to
+`ceil(log2(shard_count))` instead of repeatedly rewriting the entire prefix.
+
+The terminal materializer accepts any mixture of `ATACMS3` worker spills and
+`ATACMS4` runs whose ranges exactly cover the original shard set. Global
+barcode correction and cross-run deduplication still happen exactly once at
+that terminal boundary. `ATMBLK1` is post-correction state and is never accepted
+as a raw compaction input.
 
 BED is a terminal representation, not materializer working state. The global
 merge, barcode correction, and deduplication first write versioned `ATMBLK1`
@@ -161,7 +191,7 @@ file is a hard error rather than a silent fallback.
 
 ## Format and failure behavior
 
-The `ATACMS3` envelope versions the shard contract separately from the
+The `ATACMS3` envelope versions a span-1 worker contract separately from the
 `AtacSpillRecord` payload codec. It contains shard identity/range metadata,
 reference dictionary, mapping and correction policy, schema mask, record
 count, whitelist fingerprint, sorted whitelist keys, and the shard-local
@@ -175,6 +205,10 @@ Writers use a temporary file, flush and `fsync` it, then publish by rename.
 Readers reject unsupported versions, truncation, trailing bytes, unsorted
 records, schema mismatch, bad local read ids, incomplete summary evidence, and
 incomplete or inconsistent shard sets.
+
+`ATACMS4` preserves the complete V3 fixed-header prefix and appends only the
+contiguous shard span. This keeps worker files stable while making aggregate
+runs self-describing and independently verifiable.
 
 `ATACHOT1` has its own magic, version, endian marker, parent identity fields,
 record width, and per-reference offset/count/start-bound directory. Readers
@@ -226,7 +260,8 @@ Run the hermetic gate with:
 make test-atac-mergeable-spill-materializer
 ```
 
-The gate covers the v3 header and evidence stream, shuffled ordinal input,
+The gate covers the v3 worker header, v4 compacted-run header, raw compaction
+parity, evidence stream, shuffled ordinal input,
 late-bound and explicit read ranges, global barcode correction, summary
 synthesis, cell- and bulk-level
 deduplication, gathered multimapping allocation, unsigned-64-bit ordinals above

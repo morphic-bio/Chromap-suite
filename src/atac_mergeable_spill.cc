@@ -352,9 +352,11 @@ bool AtacMergeableSpillWriter::Open(
     return Fail("ATAC mergeable spill sample and input ids must be non-empty",
                 error);
   }
-  if (metadata.shard_count == 0 ||
-      metadata.shard_ordinal >= metadata.shard_count) {
-    return Fail("ATAC mergeable spill shard ordinal/count is invalid", error);
+  if (metadata.shard_count == 0 || metadata.shard_span == 0 ||
+      metadata.shard_ordinal >= metadata.shard_count ||
+      metadata.shard_span > metadata.shard_count - metadata.shard_ordinal) {
+    return Fail("ATAC mergeable spill shard ordinal/span/count is invalid",
+                error);
   }
   if ((metadata.schema_mask & kAtacSpillSchemaHasBamPair) == 0) {
     return Fail("ATAC mergeable spill v3 requires BAM-pair payloads", error);
@@ -460,10 +462,18 @@ bool AtacMergeableSpillWriter::Open(
                 error);
   }
 
+  const bool write_v4 = metadata.shard_span != 1;
   AtacMergeableSpillHeaderV3 header = {};
-  memcpy(header.magic, kAtacMergeableSpillMagicV3, sizeof(header.magic));
-  header.format_version = kAtacMergeableSpillFormatVersion;
-  header.fixed_header_bytes = sizeof(header);
+  memcpy(header.magic,
+         write_v4 ? kAtacMergeableSpillMagicV4
+                  : kAtacMergeableSpillMagicV3,
+         sizeof(header.magic));
+  header.format_version =
+      write_v4 ? kAtacMergeableSpillFormatVersionV4
+               : kAtacMergeableSpillFormatVersionV3;
+  header.fixed_header_bytes = static_cast<uint16_t>(
+      sizeof(header) +
+      (write_v4 ? sizeof(AtacMergeableSpillHeaderExtensionV4) : 0u));
   header.metadata_bytes = static_cast<uint32_t>(metadata_bytes);
   header.record_codec_version = kAtacSpillRecordCodecVersion;
   header.schema_mask = metadata.schema_mask;
@@ -504,7 +514,10 @@ bool AtacMergeableSpillWriter::Open(
            sizeof(header.frip_est_coefficient_bits[i]));
   }
 
+  AtacMergeableSpillHeaderExtensionV4 extension = {};
+  extension.shard_span = metadata.shard_span;
   if (!WriteBytes(file_, &header, sizeof(header)) ||
+      (write_v4 && !WriteBytes(file_, &extension, sizeof(extension))) ||
       !WriteBytes(file_, metadata.sample_id.data(), metadata.sample_id.size()) ||
       !WriteBytes(file_, metadata.input_id.data(), metadata.input_id.size())) {
     return Fail("cannot write ATAC mergeable spill header", error);
@@ -709,17 +722,36 @@ bool AtacMergeableSpillReader::Open(const std::string &path,
   (void)setvbuf(file_, nullptr, _IOFBF, 4u * 1024u * 1024u);
   path_ = path;
   AtacMergeableSpillHeaderV3 header = {};
-  if (!ReadBytes(file_, &header, sizeof(header)) ||
+  if (!ReadBytes(file_, &header, sizeof(header))) {
+    return Fail("invalid or unsupported ATAC mergeable spill header in " + path,
+                error);
+  }
+  const bool is_v3 =
       memcmp(header.magic, kAtacMergeableSpillMagicV3,
-             sizeof(header.magic)) != 0 ||
-      header.format_version != kAtacMergeableSpillFormatVersion ||
-      header.fixed_header_bytes != sizeof(header) ||
+             sizeof(header.magic)) == 0 &&
+      header.format_version == kAtacMergeableSpillFormatVersionV3 &&
+      header.fixed_header_bytes == sizeof(header);
+  const bool is_v4 =
+      memcmp(header.magic, kAtacMergeableSpillMagicV4,
+             sizeof(header.magic)) == 0 &&
+      header.format_version == kAtacMergeableSpillFormatVersionV4 &&
+      header.fixed_header_bytes ==
+          sizeof(header) + sizeof(AtacMergeableSpillHeaderExtensionV4);
+  if ((!is_v3 && !is_v4) ||
       header.record_codec_version != kAtacSpillRecordCodecVersion) {
     return Fail("invalid or unsupported ATAC mergeable spill header in " + path,
                 error);
   }
+  AtacMergeableSpillHeaderExtensionV4 extension = {};
+  extension.shard_span = 1;
+  if (is_v4 && !ReadBytes(file_, &extension, sizeof(extension))) {
+    return Fail("truncated ATAC mergeable spill v4 extension in " + path,
+                error);
+  }
   if (header.metadata_bytes > kMaximumMetadataBytes ||
-      header.shard_count == 0 || header.shard_ordinal >= header.shard_count ||
+      header.shard_count == 0 || extension.shard_span == 0 ||
+      header.shard_ordinal >= header.shard_count ||
+      extension.shard_span > header.shard_count - header.shard_ordinal ||
       header.sample_id_bytes == 0 || header.input_id_bytes == 0 ||
       header.num_reference_sequences == 0 ||
       (header.schema_mask & kAtacSpillSchemaHasBamPair) == 0) {
@@ -813,6 +845,7 @@ bool AtacMergeableSpillReader::Open(const std::string &path,
   metadata_.flags = header.flags;
   metadata_.shard_ordinal = header.shard_ordinal;
   metadata_.shard_count = header.shard_count;
+  metadata_.shard_span = extension.shard_span;
   metadata_.first_global_read_ordinal = header.first_global_read_ordinal;
   metadata_.input_record_count = header.input_record_count;
   metadata_.barcode_length = header.barcode_length;
