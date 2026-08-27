@@ -417,6 +417,7 @@ Initial public recipes: `chromap_index`, `chromap_atac_bed`, `chromap_atac_bam_f
 - Launchpad design: [docs/chromap_launchpad.md](docs/chromap_launchpad.md)
 - RapidMACS repository: https://github.com/morphic-bio/rapidmacs
 - STAR Suite (multiomic integration entry point): https://github.com/morphic-bio/STAR-suite
+- nf-core container build, architecture and composition evidence: [docs/NFCORE_CONTAINER.md](docs/NFCORE_CONTAINER.md)
 - Chromap Suite preprint: https://github.com/morphic-bio/chromap_suite_paper
 
 ## Citing
@@ -438,5 +439,5 @@ Chromap Suite extensions copyright Ling-Hong Hung. Preprint co-authors: Ling-Hon
 ## Licence
 
 - `libchromap` and the `chromap` CLI: MIT (see [LICENSE](LICENSE)).
-- `librapidmacs`: BSD-3 — a single source-inspected adaptation for summit edge cases necessitates BSD-3 distribution; see [the RapidMACS repo](https://github.com/morphic-bio/rapidmacs) for the methodology.
+- `librapidmacs`: MIT — RapidMACS is an independent clean-room implementation validated against MACS3; see [the RapidMACS repo](https://github.com/morphic-bio/rapidmacs) for the methodology and third-party notices.
 - MCP server + Launchpad (`mcp_server/`): MIT.

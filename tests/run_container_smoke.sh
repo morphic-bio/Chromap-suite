@@ -6,6 +6,8 @@ image="${1:-local/chromap-suite:v1.0.1}"
 artifact_root="${CHROMAP_ARTIFACT_ROOT:-${repo_root}/plans/artifacts}"
 run_id="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 out="${OUT:-${artifact_root}/container_smoke/${run_id}}"
+architecture="$(docker image inspect --format '{{ .Architecture }}' "${image}")"
+platform="linux/${architecture}"
 
 mkdir -p "${out}"
 
@@ -15,16 +17,17 @@ fail() {
 }
 
 run_container() {
-  docker run --rm \
+  docker run --rm --platform "${platform}" \
     --user "$(id -u):$(id -g)" \
     --mount "type=bind,src=${out},dst=/work" \
     --workdir /work \
     "${image}" "$@"
 }
 
-docker image inspect "${image}" >/dev/null
+[[ "${architecture}" == "amd64" || "${architecture}" == "arm64" ]] || \
+  fail "unsupported image architecture: ${architecture}"
 
-version="$(docker run --rm "${image}" chromap --version 2>&1)"
+version="$(docker run --rm --platform "${platform}" "${image}" chromap --version 2>&1)"
 [[ "${version}" == "1.0.1" ]] || fail "chromap --version=${version}"
 
 revision="$(docker image inspect \
@@ -33,7 +36,7 @@ revision="$(docker image inspect \
 [[ "${revision}" == "98a4da086f81b7cb159d8fe44efff2fb168e0785" ]] || \
   fail "unexpected source revision label: ${revision}"
 
-docker run --rm "${image}" sh -ceu '
+docker run --rm --platform "${platform}" "${image}" sh -ceu '
   for binary in chromap rapidmacs chromap_callpeaks chromap_lib_runner chromap_atac_spill_materializer; do
     command -v "${binary}" >/dev/null
     if ldd "$(command -v "${binary}")" | grep -q "not found"; then
@@ -94,6 +97,7 @@ cmp "${out}/cli.sorted.bed" "${out}/lib.sorted.bed" || \
 
 {
   printf 'image\t%s\n' "${image}"
+  printf 'architecture\t%s\n' "${architecture}"
   printf 'source_revision\t%s\n' "${revision}"
   printf 'chromap_suite_version\t%s\n' "${version}"
   printf 'alignment_rows\t%s\n' "$(wc -l < "${out}/cli.bed")"

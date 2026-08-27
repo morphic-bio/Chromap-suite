@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1.7
 
-# Ubuntu 22.04, linux/amd64 manifest (glibc 2.35), resolved 2026-08-27.
-# Keep the manifest digest immutable; update it deliberately with the release.
-ARG UBUNTU_IMAGE="ubuntu:22.04@sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d"
+# Ubuntu 22.04 multi-architecture index (glibc 2.35), resolved 2026-08-27.
+ARG UBUNTU_IMAGE="ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc"
 ARG CHROMAP_SUITE_VERSION="1.0.1"
 ARG CHROMAP_SUITE_REVISION="98a4da086f81b7cb159d8fe44efff2fb168e0785"
 
 FROM ${UBUNTU_IMAGE} AS builder
 
 ARG CHROMAP_SUITE_VERSION
+ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
@@ -20,6 +20,7 @@ RUN apt-get update \
         libdeflate-dev \
         libhts-dev \
         liblzma-dev \
+        libsimde-dev \
         libssl-dev \
         pkg-config \
         zlib1g-dev \
@@ -29,9 +30,23 @@ WORKDIR /build/chromap-suite
 COPY . .
 
 # Build every runtime entrypoint needed by standalone ATAC/ChIP/Hi-C modules
-# and by the STAR Suite libchromap composition boundary.
-RUN make clean \
-    && make -j"$(nproc)" all chromap_lib_runner \
+# and by the STAR Suite libchromap composition boundary. Native SSE4.1 is used
+# on amd64. The arm64 build resolves the same x86 intrinsic API through SIMDe,
+# which lowers supported operations to NEON while keeping the source unchanged.
+RUN case "${TARGETARCH}" in \
+      amd64) \
+        arch_cxxflags="-msse4.1" \
+        ;; \
+      arm64) \
+        arch_cxxflags="-Ipackaging/simde-compat" \
+        ;; \
+      *) \
+        echo "Unsupported target architecture: ${TARGETARCH}" >&2; exit 1 \
+        ;; \
+    esac \
+    && chromap_cxxflags="-std=c++11 -Wall -O3 -fopenmp ${arch_cxxflags} -Ithird_party/htslib -Ithird_party/rapidmacs/include" \
+    && make clean \
+    && make -j"$(nproc)" CXXFLAGS="${chromap_cxxflags}" all chromap_lib_runner \
     && test "$(./chromap --version 2>&1)" = "${CHROMAP_SUITE_VERSION}" \
     && test "$(./chromap --upstream-version 2>&1)" = "0.3.3-r519" \
     && for binary in \
@@ -92,7 +107,7 @@ LABEL org.opencontainers.image.title="Chromap Suite" \
       org.opencontainers.image.url="https://github.com/morphic-bio/Chromap-suite/releases/tag/v${CHROMAP_SUITE_VERSION}" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.base.name="ubuntu:22.04" \
-      org.opencontainers.image.base.digest="sha256:79676deb51ebb02885b0b9d33788e78a37cf1045ad79d1bb04c6a222c3556b3d"
+      org.opencontainers.image.base.digest="sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
