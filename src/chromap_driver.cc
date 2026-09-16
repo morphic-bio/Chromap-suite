@@ -95,7 +95,13 @@ void AddMappingOptions(cxxopts::Options &options) {
           "INT")("bc-probability-threshold",
                  "Min probability to correct a barcode [0.9]",
                  cxxopts::value<double>(),
-                 "FLT")("t,num-threads", "# threads for mapping [1]",
+                 "FLT")("barcode-sample-limit",
+                        "Exact whitelist observations for ordinary barcode "
+                        "learning [20000000]; finish the current batch; "
+                        "0 scans all inputs. Mergeable workers always collect "
+                        "complete local histograms.",
+                        cxxopts::value<uint64_t>(), "INT")
+                 ("t,num-threads", "# threads for mapping [1]",
                         cxxopts::value<int>(), "INT")(
           "deterministic-mapping",
           "Use read-local mapping decisions (disable the history-dependent "
@@ -681,6 +687,10 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
   }
   if (result.count("deterministic-mapping")) {
     mapping_parameters.deterministic_mapping = true;
+  }
+  if (result.count("barcode-sample-limit")) {
+    mapping_parameters.barcode_sample_limit =
+        result["barcode-sample-limit"].as<uint64_t>();
   }
   if (result.count("debug-cache")) {
     mapping_parameters.debug_cache = true;

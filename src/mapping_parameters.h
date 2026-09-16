@@ -59,6 +59,10 @@ struct MappingParameters {
   int min_read_length = 30;
   int barcode_correction_error_threshold = 1;
   double barcode_correction_probability_threshold = 0.9;
+  // Ordinary runs learn priors until this many exact whitelist observations
+  // have been seen, finishing the current batch. 0 scans all barcode inputs.
+  // Mergeable workers collect their complete local histogram while mapping.
+  uint64_t barcode_sample_limit = 20000000;
   int multi_mapping_allocation_distance = 0;
   int multi_mapping_allocation_seed = 11;
   // Read with more than this number of mappings will be dropped.

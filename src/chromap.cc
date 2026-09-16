@@ -957,6 +957,14 @@ void Chromap::LoadBarcodeWhitelist() {
 }
 
 void Chromap::ComputeBarcodeAbundance(uint64_t max_num_sample_barcodes) {
+  std::cerr << "Barcode abundance sampling: ";
+  if (max_num_sample_barcodes == 0) {
+    std::cerr << "all barcode inputs.\n";
+    max_num_sample_barcodes = std::numeric_limits<uint64_t>::max();
+  } else {
+    std::cerr << "limit=" << max_num_sample_barcodes
+              << " exact whitelist observations (batch boundary).\n";
+  }
   double real_start_time = GetRealTime();
   SequenceBatch barcode_batch(read_batch_size_, barcode_effective_range_);
   const size_t num_sources = mapping_parameters_.NumInputLanes();

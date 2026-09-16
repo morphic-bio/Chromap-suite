@@ -321,7 +321,7 @@ void Chromap::MapSingleEndReads() {
         mapping_parameters_.barcode_whitelist_fingerprint =
             ComputeBarcodeWhitelistFingerprint();
       } else {
-        ComputeBarcodeAbundance(std::numeric_limits<uint64_t>::max());
+        ComputeBarcodeAbundance(mapping_parameters_.barcode_sample_limit);
       }
     }
   }
@@ -995,7 +995,7 @@ void Chromap::MapPairedEndReads() {
         mapping_parameters_.barcode_whitelist_fingerprint =
             ComputeBarcodeWhitelistFingerprint();
       } else {
-        ComputeBarcodeAbundance(std::numeric_limits<uint64_t>::max());
+        ComputeBarcodeAbundance(mapping_parameters_.barcode_sample_limit);
       }
     }
   }

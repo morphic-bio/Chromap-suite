@@ -173,13 +173,17 @@ test-lowmem-bed-100k: chromap
 # Cheap smoke bundle: unit + frag_compact_store + the two integration
 # matrices that cover the chromap+MACS3 integration surface end-to-end.
 # ~3 min total; suitable for pre-commit CI.
-test-smoke: test-unit test-materialized-reference test-frag-compact-store test-macs3-fragment-buckets test-macs3-frag-qvalue-cli \
+test-smoke: test-unit test-barcode-sampling test-materialized-reference test-frag-compact-store test-macs3-fragment-buckets test-macs3-frag-qvalue-cli \
             test-atac-spill-record-roundtrip \
             test-atac-mergeable-spill-materializer \
             test-lowmem-bed-100k \
             test-peak-integration-matrix-100k
 
 # ATAC runtime spill record serde (prefix-only + BAM-pair payload).
+.PHONY: test-barcode-sampling
+test-barcode-sampling: chromap
+	python3 tests/test_barcode_sampling.py --chromap $(abspath chromap) --out "$${CHROMAP_ARTIFACT_ROOT:-plans/artifacts}/barcode_sampling/$$(date -u +%Y%m%dT%H%M%SZ)-$$$$"
+
 test-atac-spill-record-roundtrip: dir $(libchromap)
 	@mkdir -p tests
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_atac_spill_record_roundtrip.cc \
