@@ -1,178 +1,263 @@
 name: Release
 
-# Cut a release when an annotated semver tag (vX.Y.Z) is pushed. Modeled on the
-# STAR Suite release workflow: build per-glibc-baseline compatibility tarballs,
-# (optionally) push a Docker image, and publish a GitHub release with the
-# tarballs + checksums and the matching docs/RELEASE_NOTES_<tag>.md as the body.
-#
-# Not yet ported from STAR Suite (future hardening): Debian/PPA source+binary
-# packaging, GPG signing, installer bundles, and multi-distro runtime-validation
-# containers.
-
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to validate (manual runs never publish)"
+        required: true
+        default: v1.1.0
 
 permissions:
-  contents: write
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.version || '' }}
+  cancel-in-progress: false
+env:
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
-  build-tarballs:
-    name: Build tarball (${{ matrix.os }})
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      suite-version: ${{ steps.version.outputs.suite-version }}
+      notes: ${{ steps.version.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: sudo apt-get update && sudo apt-get install -y python3-yaml
+      - name: Test failure gates and workflow dependencies
+        run: python3 -m unittest discover -s tests -p test_release_pipeline.py -v
+      - name: Validate version and release notes
+        id: version
+        run: |
+          python3 - <<'PY'
+          import importlib.util, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location("release", "scripts/release/release.py")
+          release = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(release)
+          _, version, _ = release.version_info(os.environ["RELEASE_VERSION"])
+          notes = Path(f"docs/RELEASE_NOTES_v{version}.md")
+          assert notes.is_file() and notes.stat().st_size
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"suite-version={version}\nnotes={notes}\n")
+          PY
+
+  build-packages:
+    needs: validate
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        # Two glibc baselines for portability (22.04 = glibc 2.35, 24.04 = 2.39).
-        os: [ubuntu-22.04, ubuntu-24.04]
+        include:
+          - os: ubuntu-22.04
+            baseline: ubuntu22.04
+          - os: ubuntu-24.04
+            baseline: ubuntu24.04
     steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Install build dependencies
+      - name: Install build and test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential g++ make pkg-config \
+            build-essential pkg-config python3 dpkg-dev debhelper fakeroot \
             zlib1g-dev libbz2-dev liblzma-dev libdeflate-dev \
-            libcurl4-gnutls-dev libssl-dev \
-            libhts-dev
-
-      - name: Build (chromap, callpeaks, lib_runner, libchromap.a)
+            libcurl4-gnutls-dev libssl-dev libhts-dev samtools tabix
+      - name: Build, test, check staged binaries and SDK, then package
         run: |
-          make -j"$(nproc)" chromap chromap_callpeaks chromap_lib_runner libchromap.a
-
-      - name: Smoke tests (hermetic subset)
-        # The full `make test-smoke` includes two integration matrices that read
-        # out-of-tree ATAC fixtures + a GRCh38 index (not present in CI), so gate
-        # on the genuinely hermetic unit / serialization / CLI tests here. The
-        # fixture-backed integration parity (lowmem-bed, peak matrix) runs locally.
-        run: make test-unit test-frag-compact-store test-macs3-frag-qvalue-cli test-atac-spill-record-roundtrip
-
-      - name: Verify reported version matches the tag
-        run: |
-          got="$(./chromap --version 2>&1)"   # chromap prints --version to stderr
-          want="${GITHUB_REF_NAME#v}"
-          echo "chromap --version=${got}  tag=${want}"
-          if [ "${got}" != "${want}" ]; then
-            echo "::error::version constant (${got}) does not match tag (${want}); update src/version.h" >&2
-            exit 1
-          fi
-
-      - name: Package release tarball
-        run: |
-          chmod +x scripts/release/*.sh
-          scripts/release/build_release_tarball.sh \
-            --version "${GITHUB_REF_NAME}" \
-            --out-dir "dist/release"
-
-      - name: Upload tarball artifact
+          bash scripts/release/build_release.sh --version "$RELEASE_VERSION" \
+            --jobs 4 --out-dir dist/release --test-dir plans/artifacts/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages-${{ matrix.baseline }}
+          path: dist/release/
+          if-no-files-found: error
+      - name: Preserve test logs even on failure
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ github.ref_name }}-${{ matrix.os }}
-          path: dist/release/**
-          if-no-files-found: error
+          name: release-tests-${{ matrix.baseline }}
+          path: |
+            plans/artifacts/release/*.log
+            plans/artifacts/release/tests.tsv
+          if-no-files-found: warn
 
-  docker-image:
-    name: Build & push Docker image
+  runtime-checks:
+    needs: [validate, build-packages]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - baseline: ubuntu22.04
+            runtime: "22.04"
+          - baseline: ubuntu22.04
+            runtime: "24.04"
+          - baseline: ubuntu24.04
+            runtime: "24.04"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages-${{ matrix.baseline }}
+          path: dist/release
+      - name: Verify tarball runtime and Debian install/runtime/purge
+        env:
+          EXPECTED_VERSION: ${{ needs.validate.outputs.suite-version }}
+          EXPECTED_REVISION: ${{ github.sha }}
+          RUNTIME_IMAGE: ubuntu:${{ matrix.runtime }}
+        run: |
+          (cd dist/release && sha256sum -c SHA256SUMS)
+          tarballs=(dist/release/Chromap-suite-*.tar.gz)
+          debs=(dist/release/chromap-suite_*.deb)
+          test "${#tarballs[@]}" -eq 1 && test "${#debs[@]}" -eq 1
+          bash scripts/release/check_artifacts_in_container.sh \
+            "${tarballs[0]}" "${debs[0]}" "$RUNTIME_IMAGE" \
+            "$EXPECTED_VERSION" "$EXPECTED_REVISION" plans/artifacts/runtime
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-runtime-${{ matrix.baseline }}-on-${{ matrix.runtime }}
+          path: plans/artifacts/runtime/
+          if-no-files-found: warn
+
+  source-package:
+    needs: [validate, build-packages]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    # Gated on Docker Hub credentials so the release still succeeds without them.
-    if: ${{ vars.RELEASE_PUSH_IMAGE == 'true' }}
-    permissions:
-      contents: read
     steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Resolve image tags
-        id: tags
+      - name: Install source-build dependencies
         run: |
-          repo="${DOCKER_IMAGE_REPO:-biodepot/chromap-suite}"
-          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          if echo "${GITHUB_REF_NAME}" | grep -qiE '^v0([.]|$)|[-](alpha|beta|rc|dev)'; then
-            echo "tags=${repo}:${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tags=${repo}:${GITHUB_REF_NAME},${repo}:latest" >> "$GITHUB_OUTPUT"
-          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config python3 dpkg-dev debhelper fakeroot \
+            zlib1g-dev libbz2-dev liblzma-dev libdeflate-dev \
+            libcurl4-gnutls-dev libssl-dev libhts-dev samtools tabix
+      - name: Build self-contained Debian source package
+        run: python3 scripts/release/release.py source --version "$RELEASE_VERSION" --out-dir dist/source
+      - name: Rebuild exported sources, including release tests
+        run: |
+          sources=(dist/source/*.dsc)
+          test "${#sources[@]}" -eq 1
+          dpkg-source -x "${sources[0]}" "$RUNNER_TEMP/source-check"
+          (cd "$RUNNER_TEMP/source-check" && dpkg-buildpackage -b -us -uc -j4)
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages-ubuntu24.04
+          path: dist/native
+      - name: Validate the source-rebuilt Debian package
         env:
-          DOCKER_IMAGE_REPO: ${{ vars.DOCKER_IMAGE_REPO }}
+          EXPECTED_VERSION: ${{ needs.validate.outputs.suite-version }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          tarballs=(dist/native/Chromap-suite-*.tar.gz)
+          debs=("$RUNNER_TEMP"/chromap-suite_*_amd64.deb)
+          test "${#tarballs[@]}" -eq 1 && test "${#debs[@]}" -eq 1
+          bash scripts/release/check_artifacts_in_container.sh \
+            "${tarballs[0]}" "${debs[0]}" ubuntu:24.04 \
+            "$EXPECTED_VERSION" "$EXPECTED_REVISION" plans/artifacts/source-runtime
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-source
+          path: dist/source/
+          if-no-files-found: error
+      - name: Preserve source rebuild and runtime results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-source-checks
+          path: |
+            ${{ runner.temp }}/source-check/plans/artifacts/debian-release/*.log
+            ${{ runner.temp }}/source-check/plans/artifacts/debian-release/tests.tsv
+            plans/artifacts/source-runtime/
+          if-no-files-found: warn
 
-      - name: Build and push image
+  docker-image:
+    needs: [validate, build-packages, runtime-checks, source-package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: docker/setup-buildx-action@v3
+      - name: Build candidate image without publishing
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile
           platforms: linux/amd64
-          push: true
-          tags: ${{ steps.tags.outputs.tags }}
+          load: true
+          push: false
+          tags: local/chromap-suite:release-check
           build-args: |
-            CHROMAP_SUITE_VERSION=${{ steps.tags.outputs.version }}
+            CHROMAP_SUITE_VERSION=${{ needs.validate.outputs.suite-version }}
             CHROMAP_SUITE_REVISION=${{ github.sha }}
+      - name: Test candidate image
+        env:
+          EXPECTED_VERSION: ${{ needs.validate.outputs.suite-version }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: bash tests/run_container_smoke.sh local/chromap-suite:release-check
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push' && vars.RELEASE_PUSH_IMAGE == 'true'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish the tested image without rebuilding it
+        if: github.event_name == 'push' && vars.RELEASE_PUSH_IMAGE == 'true'
+        env:
+          DOCKER_IMAGE_REPO: ${{ vars.DOCKER_IMAGE_REPO }}
+        run: |
+          repo="${DOCKER_IMAGE_REPO:-biodepot/chromap-suite}"
+          docker tag local/chromap-suite:release-check "$repo:$RELEASE_VERSION"
+          docker push "$repo:$RELEASE_VERSION"
+          if [[ "$RELEASE_VERSION" != v0.* && "$RELEASE_VERSION" != *-* ]]; then
+            docker tag local/chromap-suite:release-check "$repo:latest"
+            docker push "$repo:latest"
+          fi
 
   github-release:
-    name: Publish GitHub release
-    needs: [build-tarballs, docker-image]
-    if: ${{ always() && needs.build-tarballs.result == 'success' }}
+    needs: [validate, build-packages, runtime-checks, source-package, docker-image]
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
-      - name: Checkout (for release notes)
-        uses: actions/checkout@v4
-
-      - name: Download tarball artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          pattern: release-${{ github.ref_name }}-*
-          path: dist/incoming
-          merge-multiple: true
-
-      - name: Collect artifacts + checksums
-        run: |
-          mkdir -p dist/release
-          find dist/incoming -type f -name '*.tar.gz' -exec cp {} dist/release/ \;
-          chmod +x scripts/release/*.sh
-          scripts/release/create_checksums.sh dist/release
-
-      - name: Detect prerelease from tag
-        id: prerelease
-        run: |
-          if echo "${GITHUB_REF_NAME}" | grep -qiE '^v0([.]|$)|[-](alpha|beta|rc|dev)'; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Resolve release notes body
-        id: notes
-        run: |
-          f="docs/RELEASE_NOTES_${GITHUB_REF_NAME}.md"
-          if [ -f "$f" ]; then
-            echo "body_path=$f" >> "$GITHUB_OUTPUT"
-          else
-            echo "body_path=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+          pattern: release-packages-*
+          path: dist/packages
+      - uses: actions/download-artifact@v4
         with:
-          files: dist/release/*
-          body_path: ${{ steps.notes.outputs.body_path }}
-          generate_release_notes: ${{ steps.notes.outputs.body_path == '' }}
+          name: release-source
+          path: dist/source
+      - name: Assemble validated artifacts and checksums
+        run: |
+          mkdir -p dist/publish
+          for baseline in ubuntu22.04 ubuntu24.04; do
+            dir="dist/packages/release-packages-$baseline"
+            (cd "$dir" && sha256sum -c SHA256SUMS)
+            cp "$dir"/*.tar.gz "$dir"/*.deb dist/publish/
+            cp "$dir/build-manifest.json" "dist/publish/build-manifest-$baseline.json"
+          done
+          cp dist/source/Chromap-suite-*-debian-source.tar.gz dist/publish/
+          bash scripts/release/create_checksums.sh dist/publish
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/publish/*
+          body_path: ${{ needs.validate.outputs.notes }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ contains(github.ref_name, '-') || startsWith(github.ref_name, 'v0.') }}
           draft: false
-          prerelease: ${{ steps.prerelease.outputs.is_prerelease == 'true' }}
+          fail_on_unmatched_files: true

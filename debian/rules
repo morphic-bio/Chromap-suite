@@ -1,0 +1,26 @@
+#!/usr/bin/make -f
+NUM_JOBS ?= 4
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) -j$(NUM_JOBS) all chromap_lib_runner
+
+override_dh_auto_test:
+	bash scripts/release/run_release_tests.sh plans/artifacts/debian-release
+
+override_dh_auto_install:
+	python3 scripts/release/release.py stage --out-dir debian/chromap-suite/usr/lib/chromap-suite
+	mkdir -p debian/chromap-suite/usr/bin
+	for tool in chromap rapidmacs chromap_callpeaks chromap_lib_runner chromap_atac_spill_materializer; do ln -s ../lib/chromap-suite/bin/$$tool debian/chromap-suite/usr/bin/$$tool; done
+	bash tests/run_release_sdk_smoke.sh debian/chromap-suite/usr/lib/chromap-suite plans/artifacts/debian-release/sdk
+
+override_dh_auto_clean:
+	$(MAKE) clean
+	rm -rf plans/artifacts/debian-release
+
+# Preserve the binary hashes recorded after the release tests.
+override_dh_strip:
+
+override_dh_dwz:

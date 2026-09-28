@@ -135,18 +135,21 @@ To cut a release:
 4. Commit, then `git tag -a vX.Y.Z -m "Chromap Suite vX.Y.Z"` and
    `git push origin master --follow-tags`.
 
-Pushing the tag triggers `.github/workflows/release.yml`, which builds
-compatibility tarballs on two glibc baselines (Ubuntu 22.04 / 24.04), runs
-`make test-smoke`, and **blocks the release unless the smoke passes and
-`chromap --version` matches the tag**. On success it publishes a GitHub release
-with the tarballs, `SHA256SUMS`, and the release notes. A Docker image is pushed
-only when the `RELEASE_PUSH_IMAGE` repo variable is set (with
-`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`).
+Pushing the tag triggers `.github/workflows/release.yml`. The shared
+`scripts/release/build_release.sh` entry point builds, runs the 14 hermetic
+release test targets, checks staged binaries and the SDK, and only then creates
+tarballs and Debian packages for Ubuntu 22.04 / 24.04. Publication also requires
+clean-container tarball and Debian install/runtime/purge checks, a Debian source
+rebuild with the same tests, and a successful Docker image smoke test. Manual
+workflow runs validate everything without publishing. Docker publication is
+enabled only by `RELEASE_PUSH_IMAGE=true`; configured image publication failures
+also block the GitHub release.
 
-The release gate is the S0 smoke tier (`make test-smoke`); the heavier S1/S2
-tiers need out-of-tree fixtures and remain opt-in/local. The build requires the
-system `libhts-dev` package (provides `htslib/kfunc.h` + `libhts` for the
-librapidmacs build and the chromap link).
+See [the release procedure](docs/releasing.md) for commands, dependencies,
+artifacts, and the validation matrix. `make test-release` runs the shared test
+gate. `make test-smoke` additionally needs local 100K biological fixtures and is
+not the portable CI gate; retain those fixture-based checks for local release
+qualification. The build requires system `libhts-dev` for RapidMACS and linking.
 
 ## Git Authorship
 

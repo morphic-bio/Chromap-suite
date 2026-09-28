@@ -1,0 +1,20 @@
+Source: chromap-suite
+Section: science
+Priority: optional
+Maintainer: Ling-Hong Hung <lhhunghimself@gmail.com>
+Build-Depends: debhelper-compat (= 13), build-essential, pkg-config, python3,
+ zlib1g-dev, libbz2-dev, liblzma-dev, libdeflate-dev,
+ libcurl4-gnutls-dev | libcurl4-openssl-dev, libssl-dev, libhts-dev,
+ samtools, tabix
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://github.com/morphic-bio/Chromap-suite
+
+Package: chromap-suite
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Suggests: g++, libhts-dev, zlib1g-dev, libbz2-dev, liblzma-dev,
+ libdeflate-dev, libcurl4-gnutls-dev | libcurl4-openssl-dev, libssl-dev
+Description: Chromap mapping, RapidMACS peak calling and libchromap SDK
+ Chromap Suite provides ATAC, ChIP and Hi-C mapping, RapidMACS peak calling,
+ sidecar and spill tooling, and the static libchromap development interface.

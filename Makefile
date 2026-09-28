@@ -186,6 +186,10 @@ test-smoke: test-unit test-barcode-sampling test-materialized-reference test-fra
             test-lowmem-bed-100k \
             test-peak-integration-matrix-100k
 
+.PHONY: test-release
+test-release: all chromap_lib_runner tests/fastq_intake_harness
+	bash scripts/release/run_release_tests.sh "$${CHROMAP_ARTIFACT_ROOT:-plans/artifacts/release-tests}"
+
 # ATAC runtime spill record serde (prefix-only + BAM-pair payload).
 .PHONY: test-barcode-sampling
 test-barcode-sampling: chromap

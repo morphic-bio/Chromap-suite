@@ -41,6 +41,12 @@ tests/bamwriter/out/
 tests/out/
 out/
 plans/artifacts/
+dist/
+debian/.debhelper/
+debian/chromap-suite/
+debian/files
+debian/*.substvars
+debian/*.debhelper.log
 
 # Logs and temp files
 __pycache__/

@@ -433,6 +433,24 @@ cd tests/e2e
 ./test_lowmem_bam_y.sh
 ```
 
+## Release gate
+
+`make test-release` builds the suite and runs the 14 portable release targets
+serially. The target list and per-target logs are owned by
+`scripts/release/run_release_tests.sh`; set `CHROMAP_ARTIFACT_ROOT` to choose the
+results directory. These tests require Python 3, samtools and bgzip, and generate
+their own biological inputs. The existing `make test-smoke` also uses external
+100K fixtures and remains a local qualification step.
+
+Release packaging uses `scripts/release/build_release.sh`, which requires the
+test gate plus packaged-binary and SDK checks before creating artifacts.
+`tests/test_release_pipeline.py` tests failure propagation and publication
+dependencies (`python3 -m unittest discover -s tests -p test_release_pipeline.py -v`,
+requires PyYAML). Clean-runtime validation checks the extracted tarball and the
+installed Debian package, including FASTQ/gzip/BGZF mapping, library parity,
+sidecars, dynamic dependencies, provenance, hashes, licenses and purge.
+See [the release procedure](../docs/releasing.md) for the full matrix and commands.
+
 ## Test Results
 
 All tests should pass. If any test fails:

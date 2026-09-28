@@ -8,6 +8,7 @@
 * [Mergeable ATAC spill and materializer](mergeable_atac_spill.md): opt-in post-alignment shard contract, raw barcode evidence, merged correction histograms, ordinal validation, and standalone gather commands
 * [Materialized reference sidecar](materialized_reference_sidecar.md): optional index-time binary reference generation, parallel mapping-time load, binding validation, and FASTA fallback
 * [Direct minimizer-index loading](direct_index_loading.md): backward-compatible aligned direct I/O with automatic buffered fallback
+* [Release procedure](releasing.md): test-gated tarballs, Debian packages, source rebuilds and container publication
 * [Chromap Launchpad](chromap_launchpad.md): browser-based recipe builder served from the MCP server
 * [MCP server](https://github.com/morphic-bio/Chromap-suite/blob/master/mcp_server/README.md): recipe registry, Launchpad API, preflight, run manifests, test tiers
 * [GitHub Issues](https://github.com/morphic-bio/Chromap-suite/issues): report bugs, request features, ask questions
