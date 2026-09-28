@@ -148,7 +148,11 @@ jobs:
         run: python3 scripts/release/release.py source --version "$RELEASE_VERSION" --out-dir dist/source
       - name: Rebuild exported sources, including release tests
         run: |
-          sources=(dist/source/*.dsc)
+          bundles=(dist/source/Chromap-suite-*-debian-source.tar.gz)
+          test "${#bundles[@]}" -eq 1
+          mkdir -p "$RUNNER_TEMP/source-bundle"
+          tar -xzf "${bundles[0]}" -C "$RUNNER_TEMP/source-bundle"
+          sources=("$RUNNER_TEMP/source-bundle/debian-source"/*.dsc)
           test "${#sources[@]}" -eq 1
           dpkg-source -x "${sources[0]}" "$RUNNER_TEMP/source-check"
           (cd "$RUNNER_TEMP/source-check" && dpkg-buildpackage -b -us -uc -j4)
