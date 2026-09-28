@@ -259,7 +259,7 @@ def main():
     build_parser.add_argument("--out-dir", type=Path, required=True)
     build_parser.add_argument("--test-dir", type=Path, default=ROOT / "plans/artifacts/release")
     build_parser.add_argument("--jobs", type=int, default=4)
-    for command in ("stage", "source", "snapshot", "tarball"):
+    for command in ("stage", "source", "snapshot"):
         p = sub.add_parser(command)
         p.add_argument("--version", default=provenance().get("release", "v" + suite_version()))
         p.add_argument("--out-dir", type=Path, required=True)
@@ -275,13 +275,7 @@ def main():
         export_source(args.out_dir.resolve(), args.version)
     else:
         args.out_dir.mkdir(parents=True, exist_ok=True)
-        if args.command == "source":
-            build_source(args.out_dir.resolve(), args.version)
-        else:
-            with tempfile.TemporaryDirectory() as temp:
-                stage = Path(temp) / "stage"
-                stage_release(stage, args.version)
-                print(build_tarball(stage, args.out_dir.resolve()))
+        build_source(args.out_dir.resolve(), args.version)
 
 
 if __name__ == "__main__":

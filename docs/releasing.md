@@ -64,9 +64,9 @@ bash scripts/release/build_release.sh --version v1.1.0 --jobs 4 \
 This command tests the working tree. Use a clean committed checkout for release
 provenance. A compilation, test or SDK failure exits nonzero before packaging;
 CI never uploads packages from a failed build. Output directories must be empty
-to prevent old artifacts from being mistaken for new results. The low-level
-`build_release_tarball.sh` helper stages already-built files without running the
-gate; release automation must use `build_release.sh`.
+to prevent old artifacts from being mistaken for new results. The legacy
+`build_release_tarball.sh` entry point now forwards to this same tested pipeline
+and produces both formats; it cannot bypass the test gate.
 
 For each row of the runtime matrix, run:
 
