@@ -10,6 +10,7 @@ FROM ${UBUNTU_IMAGE} AS builder
 
 ARG CHROMAP_SUITE_VERSION
 ARG TARGETARCH
+ARG BUILD_JOBS=4
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
@@ -47,7 +48,7 @@ RUN case "${TARGETARCH}" in \
     esac \
     && chromap_cxxflags="-std=c++11 -Wall -O3 -fopenmp ${arch_cxxflags} -Ithird_party/htslib -Ithird_party/rapidmacs/include" \
     && make clean \
-    && make -j"$(nproc)" CXXFLAGS="${chromap_cxxflags}" all chromap_lib_runner \
+    && nice -n 10 make -j"${BUILD_JOBS}" CXXFLAGS="${chromap_cxxflags}" all chromap_lib_runner \
     && test "$(./chromap --version 2>&1)" = "${CHROMAP_SUITE_VERSION}" \
     && test "$(./chromap --upstream-version 2>&1)" = "0.3.3-r519" \
     && for binary in \
