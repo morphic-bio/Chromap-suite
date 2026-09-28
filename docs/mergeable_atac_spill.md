@@ -68,7 +68,7 @@ The ordinary `-o` output is suppressed. Spill creation also forces read-local
 deterministic mapping: the mutable cross-read candidate cache is disabled and
 paired-end multimapping reservoir selection is seeded from the stable read
 name. An ordinary one-process run used as an exact parity control must add
-`--deterministic-mapping`. Historical ordinary runs retain the candidate cache
+`--deterministic-mapping --barcode-sample-limit 0`. Historical ordinary runs retain the candidate cache
 unless that flag is supplied.
 
 The materializer's ordinal prefix is not used to order fragments. It rebases
@@ -232,11 +232,16 @@ diagnostics therefore describe the disabled-cache policy and match an ordinary
 against a historical-cache run, whose cross-read history is inherently
 partition-dependent.
 
-Barcode correction uses the complete input histogram in both ordinary and
-mergeable-spill runs. The historical 20-million exact-whitelist-observation
-cutoff is not part of this contract. Because shard ranges are validated as
-complete and non-overlapping, summing their histograms reconstructs the same
-complete-input model as a single-process run.
+Mergeable-spill runs use the complete input histogram. Ordinary runs default
+to learning from 20 million exact-whitelist observations, stopping at the end
+of the current input batch, as in historical Chromap. Use
+`--barcode-sample-limit 0` together with `--deterministic-mapping` on ordinary
+single-process controls that require exact scatter/gather parity. A positive
+`--barcode-sample-limit N` changes the ordinary learning budget; it never limits
+the reads mapped. Workers always collect complete local histograms during
+mapping, without an extra pass. Because shard ranges are validated as complete
+and non-overlapping, summing their histograms reconstructs the same model as
+an ordinary run with `--barcode-sample-limit 0`.
 
 The post-dedup `ATMBLK1` hot record is 16 bytes: 16-bit reference id, 32-bit
 start, 16-bit fragment length, a 32-bit barcode value, and one byte each for

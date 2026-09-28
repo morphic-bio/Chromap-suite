@@ -159,7 +159,8 @@ void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
   if (mapping_parameters.index_file_path.empty()) {
     chromap::ExitWithMessage("No index specified");
   }
-  if (mapping_parameters.mapping_output_file_path.empty()) {
+  if (mapping_parameters.mapping_output_file_path.empty() &&
+      !mapping_parameters.AtacSidecarOnly()) {
     chromap::ExitWithMessage("No output specified");
   }
   if (!mapping_parameters.UsesCbqInput() &&
@@ -222,11 +223,21 @@ void ValidateInputs(const chromap::MappingParameters &mapping_parameters) {
     chromap::ExitWithMessage(
         "--emit-Y-bam requires --Y-output when primary output is stdout");
   }
-  if (!mapping_parameters.atac_fragment_binary_output_file_path.empty()) {
+  if (mapping_parameters.AtacSidecarOnly()) {
+    if (mapping_parameters.atac_fragment_binary_output_file_path.empty()) {
+      chromap::ExitWithMessage(
+          "--atac-sidecar-only requires --atac-fragment-binary-output");
+    }
+    const std::string sidecar_error =
+        mapping_parameters.AtacSidecarOnlyConfigError();
+    if (!sidecar_error.empty()) {
+      chromap::ExitWithMessage("--atac-sidecar-only: " + sidecar_error);
+    }
+  } else if (!mapping_parameters.atac_fragment_binary_output_file_path.empty()) {
     if (!mapping_parameters.AtacDualFragmentAndBam()) {
       chromap::ExitWithMessage(
           "--atac-fragment-binary-output requires paired-end reads, "
-          "--BAM or --CRAM, and --atac-fragments");
+          "--BAM or --CRAM, and --atac-fragments (or --atac-sidecar-only)");
     }
     if (mapping_parameters.atac_fragment_binary_output_file_path ==
         mapping_parameters.mapping_output_file_path) {
@@ -252,8 +263,15 @@ void PrintRunSummary(const chromap::MappingParameters &mapping_parameters) {
               << mapping_parameters.reference_sidecar_path << "\n";
   }
   std::cerr << "Index file: " << mapping_parameters.index_file_path << "\n";
-  std::cerr << "Output file: " << mapping_parameters.mapping_output_file_path
-            << "\n";
+  if (mapping_parameters.AtacSidecarOnly()) {
+    std::cerr << "Output file: none (sidecar-only ATAC)\n"
+              << "ATAC AEV1 sidecar: "
+              << mapping_parameters.atac_fragment_binary_output_file_path
+              << "\n";
+  } else {
+    std::cerr << "Output file: " << mapping_parameters.mapping_output_file_path
+              << "\n";
+  }
   std::cerr << "Input format: "
             << (mapping_parameters.UsesCbqInput() ? "cbq" : "fastq")
             << "\n";
@@ -287,6 +305,13 @@ int main(int argc, char **argv) {
        cxxopts::value<std::string>(), "FILE")
       ("input-format", "Read input format: fastq or cbq [fastq]",
        cxxopts::value<std::string>(), "STR")
+      ("input-bgzf-mode",
+       "Paired-end FASTQ intake: auto, on (BGZF reader required) or off "
+       "(zlib) [auto]",
+       cxxopts::value<std::string>(), "STR")
+      ("input-bgzf-reader-threads",
+       "BGZF inflate threads per lane; 0 derives them from --num-threads [0]",
+       cxxopts::value<int>(), "INT")
       ("1,read1", "Read 1 FASTQ file(s), comma separated",
        cxxopts::value<std::vector<std::string>>(), "FILE[,FILE]")
       ("2,read2", "Read 2 FASTQ file(s), comma separated",
@@ -311,8 +336,12 @@ int main(int argc, char **argv) {
       ("atac-fragments", "Secondary ATAC fragments output path",
        cxxopts::value<std::string>(), "FILE")
       ("atac-fragment-binary-output",
-       "AEV1 binary sidecar path (requires --atac-fragments and --BAM/--CRAM)",
+       "AEV1 binary sidecar path (requires --atac-fragments and --BAM/--CRAM, "
+       "or --atac-sidecar-only)",
        cxxopts::value<std::string>(), "FILE")
+      ("atac-sidecar-only",
+       "Paired-end ATAC: write only the AEV1 sidecar named by "
+       "--atac-fragment-binary-output; no -o, BAM/CRAM or fragment text rows")
       ("summary", "Summary metadata output path",
        cxxopts::value<std::string>(), "FILE")
       ("temp-dir", "Temporary directory",
@@ -438,6 +467,19 @@ int main(int argc, char **argv) {
             "--input-format must be \"fastq\" or \"cbq\"");
       }
     }
+    if (result.count("input-bgzf-mode") &&
+        !chromap::ParseFastqBgzfMode(
+            result["input-bgzf-mode"].as<std::string>(),
+            &mapping_parameters.input_bgzf_mode)) {
+      chromap::ExitWithMessage("--input-bgzf-mode must be auto, on or off");
+    }
+    if (result.count("input-bgzf-reader-threads")) {
+      mapping_parameters.input_bgzf_reader_threads =
+          result["input-bgzf-reader-threads"].as<int>();
+      if (mapping_parameters.input_bgzf_reader_threads < 0) {
+        chromap::ExitWithMessage("--input-bgzf-reader-threads must be >= 0");
+      }
+    }
     if (mapping_parameters.UsesCbqInput()) {
       if (result.count("read1") || result.count("read2") ||
           result.count("barcode")) {
@@ -484,6 +526,8 @@ int main(int argc, char **argv) {
       mapping_parameters.mapping_output_file_path =
           result["output"].as<std::string>();
     }
+    mapping_parameters.atac_sidecar_only =
+        result.count("atac-sidecar-only") > 0;
     if (result.count("atac-fragments")) {
       mapping_parameters.atac_fragment_output_file_path =
           result["atac-fragments"].as<std::string>();
@@ -666,7 +710,9 @@ int main(int argc, char **argv) {
     } else if (mapping_parameters.emit_y_read_names) {
       mapping_parameters.y_read_names_output_path =
           DeriveYReadNamesOutputPath(
-              mapping_parameters.mapping_output_file_path);
+              mapping_parameters.AtacSidecarOnly()
+                  ? mapping_parameters.atac_fragment_binary_output_file_path
+                  : mapping_parameters.mapping_output_file_path);
     }
     if (result.count("emit-Y-noY-fastq")) {
       mapping_parameters.emit_y_noy_fastq = true;

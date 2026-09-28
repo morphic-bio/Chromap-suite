@@ -34,6 +34,7 @@ tests/index_load_probe
 tests/materialized_reference_load_probe
 tests/cbq_range_reader_harness
 tests/cbq_ordered_encoder
+tests/fastq_intake_harness
 
 # Test outputs
 tests/bamwriter/out/

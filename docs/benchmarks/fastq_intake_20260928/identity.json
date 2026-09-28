@@ -1,0 +1,219 @@
+{
+  "checked_utc": "2026-09-28T18:17:17.725559+00:00",
+  "validation_root": "/mnt/pikachu/fastq_mirror_validation_20260928",
+  "old_commit": "09b3164f87c30ceac537517f2250a46c923d9702",
+  "new_commit": "66d4537e697784f949014aa69260743901fdfda0",
+  "pairs": 50000000,
+  "threads": 32,
+  "reference": "pass1/chromap_old_gz",
+  "binary_sha256": {
+    "chromap_old_09b3164": "975c9225da6d53bd708ff520be34378d0574112c08fa3a83568f81606c8527ef",
+    "chromap_new_66d4537": "08499e2f2ba41da86d25b7d52fa4ab0bde44a5e2e08756e0692f392fc0a304ba",
+    "fastq_intake_harness_66d4537": "8022e338a1bc3b463d4957215dca0dd37a712fbf96cec3877ac3bf1cbd1b06de"
+  },
+  "clean_cases": [
+    "chromap_new_bgz",
+    "chromap_new_gz",
+    "chromap_old_bgz",
+    "chromap_old_gz",
+    "harness_bgzf_bgz",
+    "harness_kseq_serial_gz",
+    "harness_kseq_threads_gz"
+  ],
+  "completed_timing_runs": 14,
+  "completed_mapping_runs": 7,
+  "runs": [
+    {
+      "run": "pass1/chromap_new_bgz",
+      "timing_verdict": "clean",
+      "files": {
+        "atac_fragments.bin": {
+          "bytes": 879983552,
+          "sha256": "abfe8b6ac7e4e9f43f6fce58e2017c1ac123bd0bbc53fda009aeac0fad90639c",
+          "status": "identical"
+        },
+        "atac_fragments.bin.chroms.tsv": {
+          "bytes": 2663,
+          "sha256": "acb2e322da41756ff003a12a55bd295122e697c81008c6e0048c5e5a5ee30bd4",
+          "status": "identical"
+        }
+      },
+      "summary": {
+        "barcodes": 435909,
+        "rows_differ": 17489,
+        "columns_differ": [
+          "cachehit",
+          "estfrip",
+          "fric",
+          "numcacheslots"
+        ],
+        "only_cache_columns": true,
+        "same_rows_in_other_order": false
+      }
+    },
+    {
+      "run": "pass1/chromap_new_gz",
+      "timing_verdict": "contaminated",
+      "files": {
+        "atac_fragments.bin": {
+          "bytes": 879983552,
+          "sha256": "abfe8b6ac7e4e9f43f6fce58e2017c1ac123bd0bbc53fda009aeac0fad90639c",
+          "status": "identical"
+        },
+        "atac_fragments.bin.chroms.tsv": {
+          "bytes": 2663,
+          "sha256": "acb2e322da41756ff003a12a55bd295122e697c81008c6e0048c5e5a5ee30bd4",
+          "status": "identical"
+        }
+      },
+      "summary": {
+        "barcodes": 435909,
+        "rows_differ": 17334,
+        "columns_differ": [
+          "cachehit",
+          "estfrip",
+          "fric",
+          "numcacheslots"
+        ],
+        "only_cache_columns": true,
+        "same_rows_in_other_order": false
+      }
+    },
+    {
+      "run": "pass1/chromap_old_bgz",
+      "timing_verdict": "contaminated",
+      "files": {
+        "atac_fragments.bin": {
+          "bytes": 879983552,
+          "sha256": "abfe8b6ac7e4e9f43f6fce58e2017c1ac123bd0bbc53fda009aeac0fad90639c",
+          "status": "identical"
+        },
+        "atac_fragments.bin.chroms.tsv": {
+          "bytes": 2663,
+          "sha256": "acb2e322da41756ff003a12a55bd295122e697c81008c6e0048c5e5a5ee30bd4",
+          "status": "identical"
+        }
+      },
+      "summary": {
+        "barcodes": 435909,
+        "rows_differ": 16213,
+        "columns_differ": [
+          "cachehit",
+          "estfrip",
+          "fric",
+          "numcacheslots"
+        ],
+        "only_cache_columns": true,
+        "same_rows_in_other_order": false
+      }
+    },
+    {
+      "run": "pass1/chromap_old_gz",
+      "timing_verdict": "clean",
+      "files": {
+        "atac_fragments.bin": {
+          "bytes": 879983552,
+          "sha256": "abfe8b6ac7e4e9f43f6fce58e2017c1ac123bd0bbc53fda009aeac0fad90639c",
+          "status": "identical"
+        },
+        "atac_fragments.bin.chroms.tsv": {
+          "bytes": 2663,
+          "sha256": "acb2e322da41756ff003a12a55bd295122e697c81008c6e0048c5e5a5ee30bd4",
+          "status": "identical"
+        }
+      },
+      "summary": {
+        "barcodes": 435909,
+        "rows_differ": 0,
+        "columns_differ": [],
+        "only_cache_columns": true,
+        "same_rows_in_other_order": false
+      }
+    },
+    {
+      "run": "pass2/chromap_new_bgz",
+      "timing_verdict": "clean",
+      "files": {
+        "atac_fragments.bin": {
+          "bytes": 879983552,
+          "sha256": "abfe8b6ac7e4e9f43f6fce58e2017c1ac123bd0bbc53fda009aeac0fad90639c",
+          "status": "identical"
+        },
+        "atac_fragments.bin.chroms.tsv": {
+          "bytes": 2663,
+          "sha256": "acb2e322da41756ff003a12a55bd295122e697c81008c6e0048c5e5a5ee30bd4",
+          "status": "identical"
+        }
+      },
+      "summary": {
+        "barcodes": 435909,
+        "rows_differ": 17263,
+        "columns_differ": [
+          "cachehit",
+          "estfrip",
+          "fric",
+          "numcacheslots"
+        ],
+        "only_cache_columns": true,
+        "same_rows_in_other_order": false
+      }
+    },
+    {
+      "run": "pass2/chromap_new_gz",
+      "timing_verdict": "clean",
+      "files": {
+        "atac_fragments.bin": {
+          "bytes": 879983552,
+          "sha256": "abfe8b6ac7e4e9f43f6fce58e2017c1ac123bd0bbc53fda009aeac0fad90639c",
+          "status": "identical"
+        },
+        "atac_fragments.bin.chroms.tsv": {
+          "bytes": 2663,
+          "sha256": "acb2e322da41756ff003a12a55bd295122e697c81008c6e0048c5e5a5ee30bd4",
+          "status": "identical"
+        }
+      },
+      "summary": {
+        "barcodes": 435909,
+        "rows_differ": 17136,
+        "columns_differ": [
+          "cachehit",
+          "estfrip",
+          "fric",
+          "numcacheslots"
+        ],
+        "only_cache_columns": true,
+        "same_rows_in_other_order": false
+      }
+    },
+    {
+      "run": "pass2/chromap_old_bgz",
+      "timing_verdict": "clean",
+      "files": {
+        "atac_fragments.bin": {
+          "bytes": 879983552,
+          "sha256": "abfe8b6ac7e4e9f43f6fce58e2017c1ac123bd0bbc53fda009aeac0fad90639c",
+          "status": "identical"
+        },
+        "atac_fragments.bin.chroms.tsv": {
+          "bytes": 2663,
+          "sha256": "acb2e322da41756ff003a12a55bd295122e697c81008c6e0048c5e5a5ee30bd4",
+          "status": "identical"
+        }
+      },
+      "summary": {
+        "barcodes": 435909,
+        "rows_differ": 14810,
+        "columns_differ": [
+          "cachehit",
+          "estfrip",
+          "fric",
+          "numcacheslots"
+        ],
+        "only_cache_columns": true,
+        "same_rows_in_other_order": false
+      }
+    }
+  ],
+  "verdict": "PASS"
+}

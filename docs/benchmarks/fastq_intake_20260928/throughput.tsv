@@ -1,0 +1,15 @@
+pass	case	wall_s	max_rss_gib	cpu_percent	verdict	start_load1	other_star_seen	other_cpu_mean	other_io	input_gb	abundance_s	mapping_stage_s	mapping_stage_pairs_per_s	mapping_stage_MB_per_s	batches	batch_mean_s	reader	loader_s	loader_pairs_per_s	harness_s	harness_pairs_per_s	harness_MB_per_s
+pass1	chromap_new_bgz	122.8	22.4	1064%	clean	3.48	0	0.0226	0.0	4.742	6.12	58.6	853242	80.9	100	0.576	BGZF	34.33	1456452	NA	NA	NA
+pass1	chromap_new_gz	152.5	23.1	873%	contaminated	3.38	0	0.2271	0.0116	4.595	16.93	75.53	661989	60.8	100	0.738	zlib	55.19	905961	NA	NA	NA
+pass1	chromap_old_bgz	155.5	23.1	861%	contaminated	3.12	0	0.1711	0.0487	4.742	14.93	80.45	621504	58.9	100	0.792	NA	NA	NA	NA	NA	NA
+pass1	chromap_old_gz	145.2	22.9	863%	clean	2.93	0	0.0341	0.0035	4.595	13.99	71.93	695120	63.9	100	0.708	NA	NA	NA	NA	NA	NA
+pass1	harness_bgzf_bgz	11.8	1.0	806%	contaminated	3.78	0	0.1203	0.0136	4.742	NA	NA	NA	NA	NA	NA	bgzf	NA	NA	11.575	4319694	409.7
+pass1	harness_kseq_serial_gz	82.4	1.2	99%	contaminated	3.6	0	0.0323	0.0958	4.595	NA	NA	NA	NA	NA	NA	kseq-serial	NA	NA	82.135	608755	55.9
+pass1	harness_kseq_threads_gz	33.2	1.2	268%	contaminated	2.56	0	0.206	0.0332	4.595	NA	NA	NA	NA	NA	NA	kseq-threads	NA	NA	32.987	1515761	139.3
+pass2	chromap_new_bgz	122.3	22.1	1066%	clean	1.88	0	0.0218	0.0	4.742	6.13	57.54	868961	82.4	100	0.566	BGZF	34.38	1454334	NA	NA	NA
+pass2	chromap_new_gz	138.6	23.0	931%	clean	3.46	0	0.0199	0.0	4.595	13.72	65.98	757805	69.6	100	0.644	zlib	52.6	950570	NA	NA	NA
+pass2	chromap_old_bgz	141.7	23.1	871%	clean	2.29	0	0.0168	0.0	4.742	13.94	71.08	703433	66.7	100	0.699	NA	NA	NA	NA	NA	NA
+pass2	harness_bgzf_bgz	12.5	1.0	746%	clean	3.1	0	0.0196	0.0	4.742	NA	NA	NA	NA	NA	NA	bgzf	NA	NA	12.371	4041832	383.4
+pass2	harness_kseq_serial_gz	82.0	1.2	99%	clean	3.63	0	0.0143	0.0091	4.595	NA	NA	NA	NA	NA	NA	kseq-serial	NA	NA	81.727	611790	56.2
+pass2	harness_kseq_threads_gz	30.2	1.2	272%	contaminated	3.66	0	0.0589	0.1385	4.595	NA	NA	NA	NA	NA	NA	kseq-threads	NA	NA	29.975	1668062	153.3
+pass3	harness_kseq_threads_gz	30.3	1.2	272%	clean	3.19	0	0.0129	0.0034	4.595	NA	NA	NA	NA	NA	NA	kseq-threads	NA	NA	29.991	1667193	153.2

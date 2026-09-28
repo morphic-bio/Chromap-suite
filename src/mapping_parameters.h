@@ -27,6 +27,39 @@ enum MappingOutputFormat {
 
 enum class ReadInputFormat { kFastq, kCbq };
 
+// FASTQ intake for gzip-compressed inputs, with the semantics of STAR Suite's
+// --readFilesBgzfMode (auto|range|off). kAuto reads a paired-end lane with the
+// BGZF reader mirrored from STAR Suite (src/star_input/) when every file of the
+// lane is a regular BGZF FASTQ file, and with zlib (kseq) otherwise. kOn
+// requires the BGZF reader and fails when a file does not qualify. kOff always
+// uses zlib. The records Chromap maps are the same in every mode.
+enum class FastqBgzfMode { kAuto, kOn, kOff };
+
+inline bool ParseFastqBgzfMode(const std::string &value, FastqBgzfMode *mode) {
+  if (value == "auto") {
+    *mode = FastqBgzfMode::kAuto;
+  } else if (value == "on") {
+    *mode = FastqBgzfMode::kOn;
+  } else if (value == "off") {
+    *mode = FastqBgzfMode::kOff;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+inline const char *FastqBgzfModeName(FastqBgzfMode mode) {
+  switch (mode) {
+    case FastqBgzfMode::kOn:
+      return "on";
+    case FastqBgzfMode::kOff:
+      return "off";
+    case FastqBgzfMode::kAuto:
+    default:
+      return "auto";
+  }
+}
+
 // Source for --call-macs3-frag-peaks fragment rows (file reread vs in-memory).
 enum class Macs3FragPeaksSource { kFile, kMemory };
 
@@ -59,6 +92,10 @@ struct MappingParameters {
   int min_read_length = 30;
   int barcode_correction_error_threshold = 1;
   double barcode_correction_probability_threshold = 0.9;
+  // Ordinary runs learn priors until this many exact whitelist observations
+  // have been seen, finishing the current batch. 0 scans all barcode inputs.
+  // Mergeable workers collect their complete local histogram while mapping.
+  uint64_t barcode_sample_limit = 20000000;
   int multi_mapping_allocation_distance = 0;
   int multi_mapping_allocation_seed = 11;
   // Read with more than this number of mappings will be dropped.
@@ -98,6 +135,13 @@ struct MappingParameters {
   std::vector<std::string> barcode_file_paths;
   std::vector<std::string> read_pair_cbq_paths;
   std::vector<std::string> barcode_cbq_paths;
+  // FASTQ intake (see FastqBgzfMode). Applies to paired-end FASTQ lanes and to
+  // the barcode abundance pass.
+  FastqBgzfMode input_bgzf_mode = FastqBgzfMode::kAuto;
+  // BGZF inflate workers for one lane, split evenly across its files (read 1,
+  // read 2, barcode) as STAR Suite splits --bgzfReaderThreads across mates.
+  // 0 derives the total from num_threads.
+  int input_bgzf_reader_threads = 0;
   // Optional in-process paired-read source. This is intentionally generic:
   // executor/sharder-specific adapters live outside Chromap Suite. The first
   // supported use is stage-only ATAC mergeable-spill production.
@@ -112,6 +156,14 @@ struct MappingParameters {
   // TSV. Records store chrom_id/start/end/count/packed barcode key; chrom
   // names are written to <path>.chroms.tsv.
   std::string atac_fragment_binary_output_file_path;
+  // Sidecar-only ATAC output. Paired-end reads follow the fragment/BED
+  // mapping path (the path the BAM/CRAM dual mode also follows) and only the
+  // AEV1 sidecar at atac_fragment_binary_output_file_path (plus
+  // <path>.chroms.tsv) is written: no primary mapping output, no BAM/CRAM and
+  // no fragment text rows. mapping_output_format stays MAPPINGFORMAT_BED and
+  // mapping_output_file_path must be empty. The sidecar bytes equal those of
+  // the dual mode for the same input and mapping options.
+  bool atac_sidecar_only = false;
   // Optional canonical post-correction/post-dedup binary fragment container.
   // BED materialization always passes through this representation; setting a
   // path preserves it instead of deleting the temporary binary after export.
@@ -239,6 +291,49 @@ struct MappingParameters {
            !atac_fragment_output_file_path.empty() &&
            (mapping_output_format == MAPPINGFORMAT_BAM ||
             mapping_output_format == MAPPINGFORMAT_CRAM);
+  }
+
+  bool AtacSidecarOnly() const { return atac_sidecar_only; }
+
+  // Empty when the sidecar-only settings are consistent (or not requested);
+  // otherwise the reason they are not. Shared by the CLI, the libchromap
+  // runner and RunMapping so every entry point enforces the same contract.
+  std::string AtacSidecarOnlyConfigError() const {
+    if (!atac_sidecar_only) {
+      return "";
+    }
+    if (!HasPairedEndInput()) {
+      return "sidecar-only ATAC output requires paired-end reads";
+    }
+    if (mapping_output_format != MAPPINGFORMAT_BED) {
+      return "sidecar-only ATAC output uses the BED fragment path; do not "
+             "select SAM, BAM, CRAM, TagAlign, PAF or pairs output";
+    }
+    if (atac_fragment_binary_output_file_path.empty()) {
+      return "sidecar-only ATAC output requires an AEV1 sidecar path";
+    }
+    if (!mapping_output_file_path.empty()) {
+      return "sidecar-only ATAC output writes no primary mapping output; "
+             "leave the primary output path unset";
+    }
+    if (!atac_fragment_output_file_path.empty()) {
+      return "sidecar-only ATAC output writes no fragment text rows; leave "
+             "the ATAC fragments path unset";
+    }
+    if (sort_bam || write_index || emit_noY_stream || emit_Y_stream) {
+      return "sidecar-only ATAC output has no BAM/CRAM stream to sort, index "
+             "or split by Y";
+    }
+    if (CreatesMergeableAtacSpill() || atac_spill_materialization_mode) {
+      return "sidecar-only ATAC output cannot be combined with mergeable "
+             "spill staging or materialization";
+    }
+    if (call_macs3_frag_peaks &&
+        macs3_frag_peaks_source != Macs3FragPeaksSource::kMemory) {
+      return "sidecar-only ATAC output has no fragments file to reread; "
+             "MACS3 FRAG peaks need the memory source";
+    }
+    return "";
   }
 
   bool CreatesMergeableAtacSpill() const {

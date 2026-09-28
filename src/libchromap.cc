@@ -49,6 +49,10 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
     if (params.CreatesMergeableAtacSpill()) {
       params.low_memory_mode = true;
     }
+    const std::string sidecar_only_error = params.AtacSidecarOnlyConfigError();
+    if (!sidecar_only_error.empty()) {
+      return MakeFailure(params, sidecar_only_error);
+    }
     if (params.UsesPairedEndReadProvider() &&
         !params.CreatesMergeableAtacSpill()) {
       return MakeFailure(
@@ -98,7 +102,9 @@ ChromapRunResult RunMapping(const MappingParameters &mapping_parameters) {
           return MakeFailure(params, "unknown mapping output format");
       }
     } else {
-      if (params.AtacDualFragmentAndBam() ||
+      // Sidecar-only output uses the ATAC record the dual mode uses, with or
+      // without --low-mem, so both write the same sidecar.
+      if (params.AtacDualFragmentAndBam() || params.AtacSidecarOnly() ||
           params.CreatesMergeableAtacSpill()) {
         chromap_for_mapping.MapPairedEndReads<AtacSpillRecord>();
       } else if (params.low_memory_mode &&

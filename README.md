@@ -24,6 +24,7 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
   systems. The four historical khash/occurrence sections and their on-disk
   format are unchanged. Unsupported filesystems automatically fall back to
   positioned buffered reads; neither path performs a production checksum pass.
+- **FASTQ intake shared with STAR Suite** (`--input-bgzf-mode {auto|on|off}`, `--input-bgzf-reader-threads N`). A paired-end lane whose files are all BGZF (for example written by `bgzip`) is read with STAR Suite's BGZF reader, mirrored under [`src/star_input/`](src/star_input/MIRROR.md): each file is inflated by parallel workers and consumed in order on its own thread, and records are paired by ordinal with STAR Suite's read-name check. Ordinary gzip is read with zlib, with read 1, read 2 and the barcode file decompressed on their own threads in every batch. The records Chromap maps, and therefore its outputs, are the same in every mode. See [FASTQ intake](#fastq-intake-gzip-and-bgzf).
 - **`--Tn5-shift-mode {classical|symmetric}`** picks the Tn5 cut-site offset convention on BED/BEDPE/PAF. `classical` (`+4 / -5`; Buenrostro 2013 / Cell Ranger ARC) is the default; `symmetric` (`+4 / -4`; ChromBPNet) is the alternative. Implies `--Tn5-shift`. Active offsets are echoed at startup. SAM/BAM output remains intentionally unshifted (shifting would require coordinated edits to `POS`, `MPOS`, `TLEN`, `CIGAR`, `NM`, `MD`).
 - **`--temp-dir DIR`** for custom temporary directory (helpful in Docker/container environments).
 - **Optional materialized reference sidecar** (`--reference-sidecar`). Index
@@ -268,6 +269,40 @@ BED output directed to `/dev/null`: FASTQ.gz took `3:04.47`, uncompressed CBQ
 took `2:52.27`, with identical read/mapping/output counts (`53,969,811`
 output mappings). The manifest is under
 `plans/artifacts/cbq_atac_full_timing/20260531T081906Z/`.
+
+### FASTQ intake (gzip and BGZF)
+
+No option is needed: with the default `--input-bgzf-mode auto`, a paired-end
+lane uses the BGZF reader when every one of its files (`-1`, `-2` and `-b`) is
+a regular BGZF FASTQ file whose first records pair, and zlib otherwise. The
+barcode abundance pass reads a BGZF barcode file the same way. The stderr log
+names the reader chosen for each lane and the loader time.
+
+```sh
+# Require the BGZF reader (fails if a file does not qualify) and set the
+# inflate threads for each lane, split across its files.
+chromap --preset atac -t 32 -x ref.index -r ref.fa \
+  -1 R1.fastq.gz -2 R3.fastq.gz -b R2.fastq.gz --read-format bc:8:23:- \
+  --barcode-whitelist whitelist.txt -o fragments.tsv \
+  --input-bgzf-mode on --input-bgzf-reader-threads 24
+```
+
+- `auto` (default): BGZF reader when every file of the lane qualifies,
+  otherwise zlib. FIFOs and other non-regular files always use zlib.
+- `on`: BGZF reader required; a file that is not regular BGZF FASTQ is an
+  error. `off`: always zlib.
+- `--input-bgzf-reader-threads 0` (default) derives the inflate workers from
+  `--num-threads` (`num_threads - files`, at least one per file from three
+  threads up); a positive value is the total for the lane.
+- The BGZF reader keeps STAR Suite's limits: four-line FASTQ records, header
+  lines up to 512 characters and sequences up to 650 bases. `auto` checks the
+  first record of each file; `off` reads anything kseq reads.
+- Records of a BGZF lane must pair: the same ordinal and read-name stem (a
+  trailing `/1`, `/2` or `/3` removed) in every file. The zlib path pairs
+  records by position only.
+- Library hosts set `MappingParameters::input_bgzf_mode`
+  (`FastqBgzfMode::kAuto|kOn|kOff`) and `input_bgzf_reader_threads`.
+- Single-end mapping reads with zlib in every mode.
 
 ### ChIP-seq
 

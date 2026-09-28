@@ -8,6 +8,36 @@ are in [`docs/RELEASE_NOTES_vX.Y.Z.md`](docs/).
 
 ## [Unreleased]
 
+## [1.1.0] - Unreleased (draft)
+
+Bounded ATAC barcode learning by default, sidecar-only ATAC output, and FASTQ
+intake shared with STAR Suite. See
+[`docs/RELEASE_NOTES_v1.1.0.md`](docs/RELEASE_NOTES_v1.1.0.md).
+
+### Added
+
+- `--atac-sidecar-only` (`MappingParameters::atac_sidecar_only`): paired-end
+  ATAC runs write only the AEV1 sidecar and its `.chroms.tsv`, byte-identical
+  to the sidecar of the BAM dual mode.
+- BGZF FASTQ intake with STAR Suite's reader, mirrored under
+  `src/star_input/`: each file of a paired-end lane is inflated by parallel
+  workers and consumed on its own thread, and records are paired by ordinal
+  and read-name stem. `--input-bgzf-mode auto|on|off` (default `auto`) and
+  `--input-bgzf-reader-threads N` (`MappingParameters::input_bgzf_mode`,
+  `input_bgzf_reader_threads`); the barcode abundance pass reads BGZF too.
+- `tests/fastq_intake_harness` and `make test-fastq-intake-smoke`.
+
+### Changed
+
+- Ordinary runs learn barcode priors from `--barcode-sample-limit`
+  (default 20,000,000) exact whitelist observations, ending at a batch
+  boundary; `0` restores v1.0.1's complete-histogram learning. Barcoded
+  outputs can therefore differ from v1.0.1.
+- Plain-gzip FASTQ: read 1, read 2 and the barcode file are decompressed on
+  their own threads in every batch from three threads up, not only in the
+  first batch.
+- The stderr log names the FASTQ reader of each lane and its loader time.
+
 ## [1.0.1] - 2026-08-23
 
 Chromap Suite patch release embedding RapidMACS v1.0.1 and preserving exact

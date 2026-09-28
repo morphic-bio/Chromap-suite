@@ -222,8 +222,11 @@ void InitializeYNoYFastqOutputPaths(
 
   std::string output_dir = mapping_parameters->y_noy_fastq_output_dir;
   if (output_dir.empty()) {
-    output_dir =
-        OutputDirectoryFromPrimary(mapping_parameters->mapping_output_file_path);
+    // Sidecar-only ATAC runs have no primary output; anchor on the sidecar.
+    output_dir = OutputDirectoryFromPrimary(
+        mapping_parameters->AtacSidecarOnly()
+            ? mapping_parameters->atac_fragment_binary_output_file_path
+            : mapping_parameters->mapping_output_file_path);
   }
   const bool create_default_dir =
       mapping_parameters->y_fastq_output_prefix.empty() ||

@@ -2119,6 +2119,9 @@ void MappingWriter<AtacSpillRecord>::OutputHeader(
         mapping_parameters_.macs3_frag_buffer->assign(
             num_reference_sequences, std::vector<macs3::FragmentRecord>());
       }
+      if (mapping_parameters_.AtacSidecarOnly()) {
+        OpenAtacEvidenceBinaryOutput(num_reference_sequences, reference);
+      }
     }
     return;
   }
@@ -2206,10 +2209,18 @@ void MappingWriter<AtacSpillRecord>::AppendMapping(
   if (!mapping_parameters_.AtacDualFragmentAndBam()) {
     const PairedEndMappingWithBarcode &mwb = mapping;
     if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BED) {
-      std::string strand = mwb.IsPositiveStrand() ? "+" : "-";
-      const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
       uint32_t mapping_end_position = mwb.GetEndPosition();
-      if (mapping_parameters_.is_bulk_data) {
+      if (mapping_parameters_.AtacSidecarOnly()) {
+        // The same AEV1 record the dual BAM/CRAM branch below writes, with no
+        // text row formatted: start, exclusive end, collapsed duplicate count
+        // and the untranslated barcode key.
+        AppendAtacEvidenceBinaryRecord(rid, mwb.GetStartPosition(),
+                                       mapping_end_position,
+                                       static_cast<uint32_t>(mwb.num_dups_),
+                                       mwb.cell_barcode_);
+      } else if (mapping_parameters_.is_bulk_data) {
+        const std::string strand = mwb.IsPositiveStrand() ? "+" : "-";
+        const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
         this->AppendMappingOutput(
             std::string(reference_sequence_name) + "\t" +
             std::to_string(mwb.GetStartPosition()) + "\t" +
@@ -2217,6 +2228,7 @@ void MappingWriter<AtacSpillRecord>::AppendMapping(
             std::to_string(mwb.mapq_) + "\t" + strand + "\t" +
             std::to_string(mwb.num_dups_) + "\n");
       } else {
+        const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
         const std::string translated_barcode = barcode_translator_.Translate(
             mwb.cell_barcode_, cell_barcode_length_);
         this->AppendMappingOutput(

@@ -24,6 +24,7 @@
 #include "cbq_reader.h"
 #include "cxxopts.hpp"
 #include "draft_mapping_generator.h"
+#include "fastq_bgzf_input.h"
 #include "feature_barcode_matrix.h"
 #include "atac_spill_record.h"
 #include "index.h"
@@ -263,6 +264,10 @@ template <typename MappingRecord>
 void Chromap::MapSingleEndReads() {
   double real_start_time = GetRealTime();
 
+  if (mapping_parameters_.AtacSidecarOnly()) {
+    ExitWithMessage("sidecar-only ATAC output requires paired-end reads");
+  }
+
   SequenceBatch reference;
   Index index(mapping_parameters_.index_file_path);
   LoadReferenceAndIndex(reference, index);
@@ -321,7 +326,7 @@ void Chromap::MapSingleEndReads() {
         mapping_parameters_.barcode_whitelist_fingerprint =
             ComputeBarcodeWhitelistFingerprint();
       } else {
-        ComputeBarcodeAbundance(std::numeric_limits<uint64_t>::max());
+        ComputeBarcodeAbundance(mapping_parameters_.barcode_sample_limit);
       }
     }
   }
@@ -846,6 +851,20 @@ void Chromap::MapPairedEndReads() {
   // overflow path in mapping_writer.cc emits both streams identically
   // to the non-low-mem path on read-back.
 
+  // Sidecar-only output is written by the AtacSpillRecord writer alone; any
+  // other record type would map every read and write nothing.
+  if (mapping_parameters_.AtacSidecarOnly()) {
+    if (!std::is_same<MappingRecord, AtacSpillRecord>::value) {
+      ExitWithMessage(
+          "sidecar-only ATAC output requires the AtacSpillRecord mapping path");
+    }
+    const std::string sidecar_error =
+        mapping_parameters_.AtacSidecarOnlyConfigError();
+    if (!sidecar_error.empty()) {
+      ExitWithMessage(sidecar_error);
+    }
+  }
+
   // Load reference
   SequenceBatch reference;
   Index index(mapping_parameters_.index_file_path);
@@ -995,7 +1014,7 @@ void Chromap::MapPairedEndReads() {
         mapping_parameters_.barcode_whitelist_fingerprint =
             ComputeBarcodeWhitelistFingerprint();
       } else {
-        ComputeBarcodeAbundance(std::numeric_limits<uint64_t>::max());
+        ComputeBarcodeAbundance(mapping_parameters_.barcode_sample_limit);
       }
     }
   }
@@ -1108,11 +1127,25 @@ void Chromap::MapPairedEndReads() {
     uint64_t cbq_lane_record_count = 0;
     uint64_t cbq_lane_records_processed = 0;
     const uint64_t cbq_lane_global_record_offset = cbq_global_record_offset;
+    // The lane's reads come from a paired-end read provider when one is set in
+    // the parameters, or from the BGZF FASTQ reader when the lane's files
+    // qualify for it; otherwise from the zlib (kseq) reader below.
+    std::unique_ptr<BgzfPairedEndReadProvider> bgzf_read_provider;
+    PairedEndReadProvider *lane_read_provider =
+        use_paired_end_read_provider
+            ? mapping_parameters_.paired_end_read_provider.get()
+            : nullptr;
+    const char *lane_reader_name =
+        use_paired_end_read_provider ? "paired-end read provider" : "zlib";
+    // Time spent in the loader, which overlaps mapping of the previous batch.
+    double lane_load_seconds = 0.0;
+    uint64_t lane_loaded_pairs = 0;
     if (use_paired_end_read_provider) {
       // The provider owns its bounded input handles. It fills Chromap's normal
       // SequenceBatch objects directly, so mapping below is identical to the
       // regular FASTQ path and no decoded shard files or FIFOs are required.
     } else if (mapping_parameters_.UsesCbqInput()) {
+      lane_reader_name = "CBQ";
       std::string error;
       const std::string read_cbq_path =
           mapping_parameters_.read_pair_cbq_paths[read_file_index];
@@ -1226,25 +1259,67 @@ void Chromap::MapPairedEndReads() {
         cbq_batch_producer->Start();
       }
     } else {
-      // Set read batches to the current read files.
-      read_batch1_for_loading.InitializeLoading(
+      std::vector<std::string> lane_paths;
+      lane_paths.push_back(
           mapping_parameters_.read_file1_paths[read_file_index]);
-      read_batch2_for_loading.InitializeLoading(
+      lane_paths.push_back(
           mapping_parameters_.read_file2_paths[read_file_index]);
       if (!mapping_parameters_.is_bulk_data) {
-        barcode_batch_for_loading.InitializeLoading(
+        lane_paths.push_back(
             mapping_parameters_.barcode_file_paths[read_file_index]);
       }
+      bool use_bgzf_reader = false;
+      std::string bgzf_message;
+      if (!SelectBgzfFastqInput(mapping_parameters_.input_bgzf_mode,
+                                lane_paths, &use_bgzf_reader, &bgzf_message)) {
+        ExitWithMessage(bgzf_message);
+      }
+      if (use_bgzf_reader) {
+        const std::vector<uint32_t> inflate_workers =
+            BgzfInflateWorkersPerStream(
+                mapping_parameters_.input_bgzf_reader_threads,
+                mapping_parameters_.num_threads, lane_paths.size());
+        bgzf_read_provider.reset(new BgzfPairedEndReadProvider(
+            lane_paths[0], lane_paths[1],
+            mapping_parameters_.is_bulk_data ? std::string() : lane_paths[2],
+            inflate_workers));
+        std::string error;
+        if (!bgzf_read_provider->Open(&error)) {
+          ExitWithMessage("Cannot open BGZF FASTQ input: " + error);
+        }
+        lane_read_provider = bgzf_read_provider.get();
+        lane_reader_name = "BGZF";
+        std::cerr << "FASTQ lane " << read_file_index + 1
+                  << ": BGZF reader, inflate workers";
+        for (uint32_t workers : inflate_workers) {
+          std::cerr << " " << workers;
+        }
+        std::cerr << ".\n";
+      } else {
+        std::cerr << "FASTQ lane " << read_file_index + 1 << ": zlib reader ("
+                  << bgzf_message << ").\n";
+        // Set read batches to the current read files.
+        read_batch1_for_loading.InitializeLoading(
+            mapping_parameters_.read_file1_paths[read_file_index]);
+        read_batch2_for_loading.InitializeLoading(
+            mapping_parameters_.read_file2_paths[read_file_index]);
+        if (!mapping_parameters_.is_bulk_data) {
+          barcode_batch_for_loading.InitializeLoading(
+              mapping_parameters_.barcode_file_paths[read_file_index]);
+        }
+      }
     }
+    const bool lane_uses_read_provider = lane_read_provider != nullptr;
 
     // Load the first batches.
     uint32_t num_loaded_pairs_for_loading = 0;
+    const double first_load_start_time = GetRealTime();
     uint32_t num_loaded_pairs =
-        use_paired_end_read_provider
+        lane_uses_read_provider
             ? ([&]() {
                 uint32_t loaded = 0;
                 std::string error;
-                if (!mapping_parameters_.paired_end_read_provider->LoadBatch(
+                if (!lane_read_provider->LoadBatch(
                         read_batch_size_, read_batch1_for_loading,
                         read_batch2_for_loading, barcode_batch_for_loading,
                         loaded, error)) {
@@ -1264,6 +1339,8 @@ void Chromap::MapPairedEndReads() {
                   read_batch1_for_loading, read_batch2_for_loading,
                   barcode_batch_for_loading,
                   mapping_parameters_.num_threads >= 3 ? true : false);
+    lane_load_seconds += GetRealTime() - first_load_start_time;
+    lane_loaded_pairs += num_loaded_pairs;
     if (use_paired_end_read_provider ||
         !mapping_parameters_.UsesCbqInput()) {
       read_batch1_for_loading.SwapSequenceBatch(read_batch1);
@@ -1379,25 +1456,33 @@ void Chromap::MapPairedEndReads() {
             }
           }
 
-          if (use_paired_end_read_provider) {
+          // The loading task of one batch completes (taskwait below) before
+          // the next is created, so the lane_* tallies need no atomics.
+          if (lane_uses_read_provider) {
 #pragma omp task
             {
+              const double load_start_time = GetRealTime();
               std::string error;
-              if (!mapping_parameters_.paired_end_read_provider->LoadBatch(
+              if (!lane_read_provider->LoadBatch(
                       read_batch_size_, read_batch1_for_loading,
                       read_batch2_for_loading, barcode_batch_for_loading,
                       num_loaded_pairs_for_loading, error)) {
                 ExitWithMessage("Paired-end read provider failed: " + error);
               }
+              lane_load_seconds += GetRealTime() - load_start_time;
+              lane_loaded_pairs += num_loaded_pairs_for_loading;
             }
           } else if (!mapping_parameters_.UsesCbqInput()) {
 #pragma omp task
             {
+              const double load_start_time = GetRealTime();
               num_loaded_pairs_for_loading =
                   LoadPairedEndReadsWithBarcodes(
                       read_batch1_for_loading, read_batch2_for_loading,
                       barcode_batch_for_loading,
-                      mapping_parameters_.num_threads >= 12 ? true : false);
+                      mapping_parameters_.num_threads >= 3 ? true : false);
+              lane_load_seconds += GetRealTime() - load_start_time;
+              lane_loaded_pairs += num_loaded_pairs_for_loading;
             }  // end of openmp loading task
           }
 
@@ -2006,13 +2091,21 @@ void Chromap::MapPairedEndReads() {
       if (barcode_cbq_reader) {
         barcode_cbq_reader->Close();
       }
-    } else if (!use_paired_end_read_provider) {
+    } else if (!lane_uses_read_provider) {
       read_batch1_for_loading.FinalizeLoading();
       read_batch2_for_loading.FinalizeLoading();
 
       if (!mapping_parameters_.is_bulk_data) {
         barcode_batch_for_loading.FinalizeLoading();
       }
+    }
+    // Joins the BGZF inflate workers of this lane.
+    bgzf_read_provider.reset();
+    if (!mapping_parameters_.UsesCbqInput()) {
+      std::cerr << "FASTQ lane " << read_file_index + 1 << ": loaded "
+                << lane_loaded_pairs << " read pairs with the "
+                << lane_reader_name << " reader in " << lane_load_seconds
+                << "s of loader time (overlapping mapping).\n";
     }
     if (mapping_parameters_.UsesCbqInput() &&
         !use_paired_end_read_provider) {
