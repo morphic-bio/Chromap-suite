@@ -14,7 +14,18 @@ Branch `feat/star-mirrored-fastq-reader` in
 | `66d4537` | `src/version.h` -> 1.1.0 (code validated at this commit) |
 | `b4bcc51` | README, tests/README, CHANGELOG, `docs/RELEASE_NOTES_v1.1.0.md` draft (throughput pending) |
 | `a88fa44` | runbook and initial handoff |
-| this update | completed throughput results, 50M output identity and release-note measurements |
+| `b30347e` | completed throughput results, 50M output identity and release-note measurements |
+| `fc47c2f` | integration merge onto master `a7d2ba1`, preserving the feature history |
+| release finalization | dated release notes/changelog, Docker version/revision and release-build provenance |
+
+The user subsequently authorized integration. It was prepared in
+`/mnt/pikachu/Chromap-suite-v110-integration-20260928`, branch
+`integration/chromap-v1.1.0-20260928`. Merge `fc47c2f` combines master
+`a7d2ba1` and feature tip `b30347e` without conflicts. It retains the barcode
+learning and sidecar prerequisites and every feature commit, including
+validated source revision `66d4537`; the source and Makefile are identical
+to that revision. The feature worktree and its validation artifacts remain
+at their original revisions.
 
 Done:
 
@@ -101,12 +112,47 @@ use process wall time. These are individual observations, with two clean
 new-BGZF runs and one clean run for every other case. Contaminated runs are
 retained as evidence but excluded from these comparisons.
 
+## Integration validation
+
+Artifacts are under
+`/mnt/pikachu/Chromap-suite-v110-integration-20260928/plans/artifacts/v1.1.0-integration-20260928/`.
+Builds and checks were invoked at `nice -n 10`; smoke targets ran serially.
+
+- Fresh `make -j8 all chromap_lib_runner tests/fastq_intake_harness`: pass.
+- `make test-smoke`: pass, including all 12 peak-integration matrix cells
+  with identical narrowPeak and summit outputs, and all three low-memory
+  BED parity cases.
+- `make test-fastq-intake-smoke`: 27/27 pass.
+- `make test-atac-sidecar-only-smoke`: 17/17 pass.
+- `make test-libchromap-core-smoke`: 10/10 pass.
+- Installed-header/static-library SDK link check: pass.
+- Release tarball builds and its `chromap --version` is `1.1.0`; the engine
+  remains `0.3.3-r519`. The tarball's `licenses/STAR-input-LICENSE` matches
+  the mirrored source notices byte for byte.
+- Release workflow YAML, Docker build arguments, ancestry and the repository's
+  attribution-history check: pass. Historical commits and validation evidence
+  are preserved.
+- `docker buildx build --builder default --platform linux/amd64 --load
+  -t local/chromap-suite:v1.1.0 .`: pass, including the installed-SDK link
+  check in the Dockerfile. Local image ID:
+  `sha256:28a256637244ae4d7eea205e0add927879fdd22ba4fcc293b8a8b0c88b1b4624`.
+- `tests/run_container_smoke.sh local/chromap-suite:v1.1.0`: pass, 16
+  identical CLI/library alignment rows, version `1.1.0`, source revision
+  `fc47c2f`. The installed STAR notices match `src/star_input/LICENSE`.
+  Container validation for this integration covers amd64; the container
+  guide separately retains historical v1.0.1 arm64 evidence.
+
+`run_checks.sh`, `checks.tsv`, individual logs, SDK staging, the local tarball
+and its checksums are retained in that artifact directory. The container
+smoke now derives its expected version/revision from Dockerfile, with
+`EXPECTED_VERSION`/`EXPECTED_REVISION` overrides for tagged images.
+
 ## Next
 
-Reader implementation, validation and throughput documentation are complete.
-The branch is ready for coordinator review. The coordinator owns the release
-date, container ARG updates, merge, push and tag; no release action has been
-taken here.
+Local integration is complete: master includes merge `fc47c2f` and the
+separate release-finalization commit identified by annotated tag `v1.1.0`.
+The primary checkout's pre-existing untracked files are preserved. Publishing
+remains a separate step; nothing has been pushed to origin or an image registry.
 
 ## Open problems and decisions
 
@@ -124,7 +170,9 @@ taken here.
   loader itself.
 - BGZF timings use `bgzip` copies of the lane-1 subset (test inputs; the
   production files are plain gzip).
-- Dockerfile `CHROMAP_SUITE_VERSION`/`REVISION` ARGs still pin v1.0.1.
+- Integration updated Dockerfile `CHROMAP_SUITE_VERSION` to `1.1.0` and
+  `REVISION` to merge `fc47c2f`. The release workflow passes the version
+  derived from the tag and the exact tagged commit as build arguments.
 - Left in place for inspection: `/mnt/pikachu/STAR-suite-readercheck-20260928`
   (detached, built, untracked `multiomics_build.json`) and
   `/mnt/pikachu/multiomics-suite-readercheck-20260928` (detached, edited

@@ -150,6 +150,10 @@ coordinator releases.
     pending measurements. The final campaign has clean coverage in
     pass1/pass2/pass3; see the handoff for selected runs.
 12. **Version and notes.** `src/version.h` -> `1.1.0`;
-    `docs/RELEASE_NOTES_v1.1.0.md`, `CHANGELOG.md`. The Dockerfile's
-    `CHROMAP_SUITE_VERSION`/`REVISION` ARGs pin the packaged v1.0.1 container
-    and are left for the coordinator.
+    `docs/RELEASE_NOTES_v1.1.0.md`, `CHANGELOG.md`. The initial reader branch
+    left Docker version/revision ARGs for the coordinator. The subsequent
+    user-authorized integration sets the release date to 2026-09-28,
+    `CHROMAP_SUITE_VERSION` to `1.1.0` and the default source revision to
+    integration merge `fc47c2f`. Tagged Docker builds override both ARGs with
+    the release version and actual tagged commit. See the handoff for the
+    integration checks and publication state.

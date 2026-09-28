@@ -1,10 +1,12 @@
 # nf-core Container Package
 
-Chromap Suite `v1.0.1` is the source basis for the nf-core package. The build is
+Chromap Suite `v1.1.0` is the current source basis for the container. The build is
 pinned to:
 
-- Chromap Suite commit `98a4da086f81b7cb159d8fe44efff2fb168e0785`.
-- RapidMACS `v1.0.1` commit `c22ff439cc66337e1b7fc9b87b547478eb5c0d3b`.
+- Chromap Suite integration commit `fc47c2f0452a3c6788b11965ff24502f4e1b2ff5`
+  by default; release builds label the exact tagged commit.
+- RapidMACS `v1.0.1` plus one documentation commit,
+  `34df44818853a1beb59e98b0848813e38a4a8c51`.
 - Ubuntu 22.04 multi-architecture index
   `sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc`.
 
@@ -28,16 +30,20 @@ require these archives at runtime.
 ```bash
 git submodule update --init --recursive
 docker buildx build --platform linux/amd64 --load \
-  -t local/chromap-suite:v1.0.1 .
-tests/run_container_smoke.sh local/chromap-suite:v1.0.1
+  -t local/chromap-suite:v1.1.0 .
+tests/run_container_smoke.sh local/chromap-suite:v1.1.0
 docker buildx build --platform linux/arm64 --load \
-  -t local/chromap-suite:v1.0.1-arm64 .
-tests/run_container_smoke.sh local/chromap-suite:v1.0.1-arm64
+  -t local/chromap-suite:v1.1.0-arm64 .
+tests/run_container_smoke.sh local/chromap-suite:v1.1.0-arm64
 ```
 
 The container smoke verifies OCI provenance, checks every executable for
 missing shared libraries, builds a synthetic index, and requires exact BED-row
 parity between the container's Chromap CLI and `libchromap` runner.
+Expected version and revision default to the Dockerfile ARGs. When testing
+an image built with overridden ARGs, pass `EXPECTED_VERSION` and
+`EXPECTED_REVISION`; for a tagged release image, the revision is the full
+commit resolved by `git rev-parse 'v1.1.0^{commit}'`.
 
 The image supports linux/amd64 and linux/arm64. Chromap 0.3.3-r519 includes x86
 SSE2/SSE4.1 intrinsics in `ksw.cc` and `alignment.cc`. The amd64 build keeps
@@ -54,7 +60,18 @@ and a synthetic alignment. The installed SDK also compiles and runs a downstream
 composition gate was run on linux/amd64; the arm64 SDK and mapping gates cover
 the binary composition boundary pending a future full arm64 100K run.
 
-Pre-publication evidence from 2026-08-27:
+Local v1.1.0 integration evidence from 2026-09-28: the amd64 build, installed
+SDK link check and container smoke pass, with 16 identical CLI/library
+alignment rows. The image is `local/chromap-suite:v1.1.0`, ID
+`sha256:28a256637244ae4d7eea205e0add927879fdd22ba4fcc293b8a8b0c88b1b4624`,
+and its source label is integration commit `fc47c2f`. This check did not
+rebuild arm64 or publish a registry image. See the
+[integration handoff](handoffs/HANDOFF_STAR_MIRRORED_FASTQ_READER_20260928.md)
+for logs and release state.
+
+Historical v1.0.1 pre-publication evidence from 2026-08-27 (Chromap source
+`98a4da086f81b7cb159d8fe44efff2fb168e0785`, RapidMACS source
+`c22ff439cc66337e1b7fc9b87b547478eb5c0d3b`; these historical IDs are preserved):
 
 | Architecture | Container smoke | Alignment rows | Sorted alignment SHA-256 |
 |---|---:|---:|---|
@@ -70,15 +87,15 @@ before publishing the registry manifest.
 Do not publish an nf-core module with only a mutable image tag. After the image
 is pushed to its approved registry, record the registry manifest digest and use
 that digest in the submission evidence. The candidate human-readable tag is
-`v1.0.1`; the digest is the immutable identity.
+`v1.1.0`; the digest is the immutable identity.
 
 The owner-only publication step is:
 
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
-  --tag docker.io/biodepot/chromap-suite:v1.0.1 \
+  --tag docker.io/biodepot/chromap-suite:v1.1.0 \
   --push .
-docker buildx imagetools inspect docker.io/biodepot/chromap-suite:v1.0.1
+docker buildx imagetools inspect docker.io/biodepot/chromap-suite:v1.1.0
 ```
 
 Run it from the reviewed, committed package branch. The nf-core module files
@@ -111,7 +128,7 @@ distributed gather contract into the ordinary aligner.
 
 RapidMACS v1.0.1 does not provide a standalone `--version` option. The nf-core
 module therefore reports the enclosing Chromap Suite release with `chromap
---version`; this is `1.0.1`, and the image pins RapidMACS to the matching v1.0.1
+--version`; this is `1.1.0`, and the image pins RapidMACS to the v1.0.1-based
 commit listed above.
 
 ## STAR Suite 1.7.1 composition gate

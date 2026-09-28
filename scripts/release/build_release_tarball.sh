@@ -34,7 +34,7 @@ NAME="Chromap-suite-${VERSION}-linux-amd64-${LABEL}"
 WORK="$(mktemp -d)"
 STAGE="${WORK}/${NAME}"
 trap 'rm -rf "${WORK}"' EXIT
-mkdir -p "${STAGE}/bin" "${STAGE}/lib" "${STAGE}/include" "${STAGE}/docs"
+mkdir -p "${STAGE}/bin" "${STAGE}/lib" "${STAGE}/include" "${STAGE}/docs" "${STAGE}/licenses"
 
 for b in chromap chromap_callpeaks chromap_lib_runner; do
   [ -x "$b" ] || { echo "missing built binary: $b (run make first)" >&2; exit 1; }
@@ -43,6 +43,7 @@ done
 [ -f libchromap.a ]   && cp libchromap.a   "${STAGE}/lib/"
 [ -f src/libchromap.h ] && cp src/libchromap.h "${STAGE}/include/"
 cp README.md LICENSE CHANGELOG.md "${STAGE}/"
+cp src/star_input/LICENSE "${STAGE}/licenses/STAR-input-LICENSE"
 [ -f "docs/RELEASE_NOTES_${VERSION}.md" ] && cp "docs/RELEASE_NOTES_${VERSION}.md" "${STAGE}/docs/"
 
 engine="$(./chromap --upstream-version 2>&1 || echo unknown)"   # printed to stderr

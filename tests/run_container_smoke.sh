@@ -2,7 +2,9 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-image="${1:-local/chromap-suite:v1.0.1}"
+expected_version="${EXPECTED_VERSION:-$(sed -n 's/^ARG CHROMAP_SUITE_VERSION="\([^"]*\)"/\1/p' "${repo_root}/Dockerfile")}"
+expected_revision="${EXPECTED_REVISION:-$(sed -n 's/^ARG CHROMAP_SUITE_REVISION="\([^"]*\)"/\1/p' "${repo_root}/Dockerfile")}"
+image="${1:-local/chromap-suite:v${expected_version}}"
 artifact_root="${CHROMAP_ARTIFACT_ROOT:-${repo_root}/plans/artifacts}"
 run_id="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 out="${OUT:-${artifact_root}/container_smoke/${run_id}}"
@@ -28,13 +30,14 @@ run_container() {
   fail "unsupported image architecture: ${architecture}"
 
 version="$(docker run --rm --platform "${platform}" "${image}" chromap --version 2>&1)"
-[[ "${version}" == "1.0.1" ]] || fail "chromap --version=${version}"
+[[ -n "${expected_version}" && "${version}" == "${expected_version}" ]] || \
+  fail "chromap --version=${version}, expected ${expected_version}"
 
 revision="$(docker image inspect \
   --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
   "${image}")"
-[[ "${revision}" == "98a4da086f81b7cb159d8fe44efff2fb168e0785" ]] || \
-  fail "unexpected source revision label: ${revision}"
+[[ -n "${expected_revision}" && "${revision}" == "${expected_revision}" ]] || \
+  fail "source revision label=${revision}, expected ${expected_revision}"
 
 docker run --rm --platform "${platform}" "${image}" sh -ceu '
   for binary in chromap rapidmacs chromap_callpeaks chromap_lib_runner chromap_atac_spill_materializer; do

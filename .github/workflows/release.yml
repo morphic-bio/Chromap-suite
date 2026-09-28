@@ -104,6 +104,7 @@ jobs:
         id: tags
         run: |
           repo="${DOCKER_IMAGE_REPO:-biodepot/chromap-suite}"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           if echo "${GITHUB_REF_NAME}" | grep -qiE '^v0([.]|$)|[-](alpha|beta|rc|dev)'; then
             echo "tags=${repo}:${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
@@ -120,6 +121,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            CHROMAP_SUITE_VERSION=${{ steps.tags.outputs.version }}
+            CHROMAP_SUITE_REVISION=${{ github.sha }}
 
   github-release:
     name: Publish GitHub release

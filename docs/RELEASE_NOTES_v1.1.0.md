@@ -1,6 +1,6 @@
 # Chromap Suite v1.1.0 Release Notes
 
-Date: draft of 2026-09-28; set when the release is tagged.
+Date: 2026-09-28.
 
 Chromap Suite v1.1.0 makes three changes to the ATAC production path. Barcode
 learning is bounded again by default. A run can write the AEV1 fragment
@@ -147,3 +147,6 @@ commands, paths and reproduction steps are in the
   (`core/legacy/source/input/`, identical at STAR Suite `v1.9.5.a`) with
   namespace, include-path and include-guard edits only, under STAR Suite's
   MIT licences (`src/star_input/LICENSE`).
+- Release tarballs include the mirrored reader's notices in
+  `licenses/STAR-input-LICENSE`; containers install them under
+  `/opt/chromap-suite/share/licenses/chromap-suite/`.

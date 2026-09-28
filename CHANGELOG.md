@@ -8,7 +8,7 @@ are in [`docs/RELEASE_NOTES_vX.Y.Z.md`](docs/).
 
 ## [Unreleased]
 
-## [1.1.0] - Unreleased (draft)
+## [1.1.0] - 2026-09-28
 
 Bounded ATAC barcode learning by default, sidecar-only ATAC output, and FASTQ
 intake shared with STAR Suite. See
