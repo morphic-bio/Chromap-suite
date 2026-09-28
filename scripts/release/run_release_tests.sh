@@ -17,7 +17,8 @@ targets=(
 )
 for target in "${targets[@]}"; do
   echo "[release-tests] $target"
-  if make -j1 "$target" > "$artifact_root/$target.log" 2>&1; then
+  if make -j1 "$target" > "$artifact_root/$target.log" 2>&1 &&
+     ! grep -Eq '\] SKIP:' "$artifact_root/$target.log"; then
     printf '%s\tPASS\n' "$target" >> "$artifact_root/tests.tsv"
   else
     printf '%s\tFAIL\n' "$target" >> "$artifact_root/tests.tsv"

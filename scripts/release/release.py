@@ -209,7 +209,7 @@ def build_source(out, version):
         (source / "debian/changelog").write_text(
             f"chromap-suite ({upstream}-1) unstable; urgency=medium\n\n"
             f"  * Package Chromap Suite {tag}.\n\n"
-            f" -- Ling-Hong Hung <lhhunghimself@gmail.com>  {formatdate(meta['source_date_epoch'], usegmt=True)}\n")
+            f" -- Ling-Hong Hung <lhhunghimself@gmail.com>  {formatdate(meta['source_date_epoch'])}\n")
         run(["dpkg-source", "-b", source], cwd=temp,
             env=dict(os.environ, SOURCE_DATE_EPOCH=str(meta["source_date_epoch"])))
         paths = [p for p in temp.iterdir() if p.is_file()]

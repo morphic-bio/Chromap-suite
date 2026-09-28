@@ -2,6 +2,7 @@
 """Regression tests for packaging failure gates and publication dependencies."""
 import argparse
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -66,6 +67,39 @@ class PackagingGates(unittest.TestCase):
                 release.build(self.args(temp))
             tarball.assert_not_called()
             deb.assert_not_called()
+
+
+class TestRunnerGates(unittest.TestCase):
+    def invoke(self, make_body):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            bin_dir = temp / "bin"
+            bin_dir.mkdir()
+            for tool in ("samtools", "bgzip"):
+                (bin_dir / tool).symlink_to("/bin/true")
+            make = bin_dir / "make"
+            make.write_text("#!/bin/sh\n" + make_body + "\n")
+            make.chmod(0o755)
+            result = subprocess.run(["bash", str(ROOT / "scripts/release/run_release_tests.sh"),
+                                     str(temp / "results")], capture_output=True, text=True,
+                                    env=dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}"))
+            return result, (temp / "results/tests.tsv").read_text().splitlines()
+
+    def test_required_test_failure_stops_runner(self):
+        result, rows = self.invoke("exit 1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(rows, ["target\tstatus", "test-unit\tFAIL"])
+
+    def test_required_test_skip_is_failure(self):
+        result, rows = self.invoke("echo '[cbq-matrix] SKIP: encoder failed'")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(rows, ["target\tstatus", "test-unit\tFAIL"])
+
+    def test_optional_external_binseq_skip_is_allowed(self):
+        result, rows = self.invoke("echo '[input-format-smoke] SKIP BINSEQ: bqtools absent'")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(rows), 15)
+        self.assertTrue(all(row.endswith("\tPASS") for row in rows[1:]))
 
 
 class PublicationGates(unittest.TestCase):
