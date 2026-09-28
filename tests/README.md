@@ -36,6 +36,36 @@ Set `BQTOOLS=/path/to/bqtools` to exercise the BINSEQ cases when `bqtools` is
 not on `PATH`. BINSEQ is currently validated as a decode-to-FASTQ compatibility
 path there; native ATAC CBQ ingestion is covered by the smoke below.
 
+## FASTQ Intake Smoke
+
+`run_fastq_intake_smoke.sh` checks that the zlib (kseq) reader and the BGZF
+reader mirrored from STAR Suite (`src/star_input/`) deliver the same records
+and that Chromap's outputs do not depend on the reader. It generates a
+synthetic scATAC fixture of 1.1 million read pairs (more than two batches,
+header comments, an empty record in every file) and checks:
+
+- record dumps from `tests/fastq_intake_harness` are identical for kseq on
+  gzip and BGZF and for the BGZF provider with 0, 1, 3 and 17 inflate workers,
+  including a CRLF fixture; `auto` falls back to zlib when a file is gzip;
+- fragments BED, `--summary`, the `--atac-sidecar-only` sidecar and Y/noY
+  FASTQ output are byte-identical across `--input-bgzf-mode off|auto|on`,
+  explicit reader threads, `chromap_lib_runner`, and a lane mix of BGZF and
+  gzip;
+- FIFO inputs fed by a producer that interleaves records across the files
+  (bulk R1/R2 and a mergeable spill worker's R1/barcode/R2) match regular
+  files at 2 and 16 threads;
+- mispaired names, unequal record counts and invalid settings are rejected.
+
+Run it with:
+
+```bash
+make test-fastq-intake-smoke
+```
+
+The harness also reports a reader's loading rate without mapping:
+`tests/fastq_intake_harness --reader kseq-serial|kseq-threads|bgzf|auto
+--threads N R1 R2 [BC]`.
+
 ## CBQ ATAC Smoke
 
 `run_cbq_atac_smoke.sh` verifies native ATAC CBQ ingestion. It generates a small
