@@ -73,7 +73,7 @@ done
 for tool in chromap chromap_lib_runner; do
   "$prefix/bin/$tool" --preset atac -x "$out/ref.index" -r "$out/ref.fa" -t 1 \
     -1 "$out/R1.fq.bgz" -2 "$out/R2.fq.bgz" -b "$out/BC.fq.bgz" \
-    --barcode-whitelist "$out/whitelist.txt" --deterministic-mapping \
+    --barcode-whitelist "$out/whitelist.txt" \
     --input-bgzf-mode on --atac-sidecar-only \
     --atac-fragment-binary-output "$out/$tool.fragments.bin" \
     > "$out/$tool.sidecar.stdout" 2> "$out/$tool.sidecar.stderr"
