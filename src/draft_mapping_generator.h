@@ -20,7 +20,11 @@ class DraftMappingGenerator {
         split_alignment_(mapping_parameters.split_alignment),
         num_vpu_lanes_(mapping_parameters.GetNumVPULanes()),
         mapping_output_format_(mapping_parameters.mapping_output_format),
-        atac_dual_fragment_and_bam_(mapping_parameters.AtacDualFragmentAndBam()) {
+        // Sidecar-only output must place fragments exactly as the dual
+        // BAM/CRAM mode does, so it takes the same draft-position branch.
+        atac_dual_fragment_and_bam_(
+            mapping_parameters.AtacDualFragmentAndBam() ||
+            mapping_parameters.AtacSidecarOnly()) {
   }
 
   ~DraftMappingGenerator() = default;

@@ -116,6 +116,14 @@ struct MappingParameters {
   // TSV. Records store chrom_id/start/end/count/packed barcode key; chrom
   // names are written to <path>.chroms.tsv.
   std::string atac_fragment_binary_output_file_path;
+  // Sidecar-only ATAC output. Paired-end reads follow the fragment/BED
+  // mapping path (the path the BAM/CRAM dual mode also follows) and only the
+  // AEV1 sidecar at atac_fragment_binary_output_file_path (plus
+  // <path>.chroms.tsv) is written: no primary mapping output, no BAM/CRAM and
+  // no fragment text rows. mapping_output_format stays MAPPINGFORMAT_BED and
+  // mapping_output_file_path must be empty. The sidecar bytes equal those of
+  // the dual mode for the same input and mapping options.
+  bool atac_sidecar_only = false;
   // Optional canonical post-correction/post-dedup binary fragment container.
   // BED materialization always passes through this representation; setting a
   // path preserves it instead of deleting the temporary binary after export.
@@ -243,6 +251,49 @@ struct MappingParameters {
            !atac_fragment_output_file_path.empty() &&
            (mapping_output_format == MAPPINGFORMAT_BAM ||
             mapping_output_format == MAPPINGFORMAT_CRAM);
+  }
+
+  bool AtacSidecarOnly() const { return atac_sidecar_only; }
+
+  // Empty when the sidecar-only settings are consistent (or not requested);
+  // otherwise the reason they are not. Shared by the CLI, the libchromap
+  // runner and RunMapping so every entry point enforces the same contract.
+  std::string AtacSidecarOnlyConfigError() const {
+    if (!atac_sidecar_only) {
+      return "";
+    }
+    if (!HasPairedEndInput()) {
+      return "sidecar-only ATAC output requires paired-end reads";
+    }
+    if (mapping_output_format != MAPPINGFORMAT_BED) {
+      return "sidecar-only ATAC output uses the BED fragment path; do not "
+             "select SAM, BAM, CRAM, TagAlign, PAF or pairs output";
+    }
+    if (atac_fragment_binary_output_file_path.empty()) {
+      return "sidecar-only ATAC output requires an AEV1 sidecar path";
+    }
+    if (!mapping_output_file_path.empty()) {
+      return "sidecar-only ATAC output writes no primary mapping output; "
+             "leave the primary output path unset";
+    }
+    if (!atac_fragment_output_file_path.empty()) {
+      return "sidecar-only ATAC output writes no fragment text rows; leave "
+             "the ATAC fragments path unset";
+    }
+    if (sort_bam || write_index || emit_noY_stream || emit_Y_stream) {
+      return "sidecar-only ATAC output has no BAM/CRAM stream to sort, index "
+             "or split by Y";
+    }
+    if (CreatesMergeableAtacSpill() || atac_spill_materialization_mode) {
+      return "sidecar-only ATAC output cannot be combined with mergeable "
+             "spill staging or materialization";
+    }
+    if (call_macs3_frag_peaks &&
+        macs3_frag_peaks_source != Macs3FragPeaksSource::kMemory) {
+      return "sidecar-only ATAC output has no fragments file to reread; "
+             "MACS3 FRAG peaks need the memory source";
+    }
+    return "";
   }
 
   bool CreatesMergeableAtacSpill() const {

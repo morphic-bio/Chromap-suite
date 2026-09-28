@@ -104,6 +104,10 @@ class MappingWriter {
     if (mapping_parameters_.CreatesMergeableAtacSpill()) {
       return;
     }
+    if (mapping_parameters_.AtacSidecarOnly()) {
+      // Only the AEV1 sidecar is written; it is opened with the header.
+      return;
+    }
     if (mapping_parameters_.AtacDualFragmentAndBam()) {
       const std::string &af =
           mapping_parameters_.atac_fragment_output_file_path;
@@ -789,9 +793,12 @@ void MappingWriter<MappingRecord>::OutputTempMappings(
     std::vector<TempMappingFileHandle<MappingRecord>>
         &temp_mapping_file_handles) {
   TempMappingFileHandle<MappingRecord> temp_mapping_file_handle;
+  // Sidecar-only ATAC runs have no primary output path to derive from.
   temp_mapping_file_handle.file_path =
-      mapping_parameters_.mapping_output_file_path + ".temp" +
-      std::to_string(temp_mapping_file_handles.size());
+      (mapping_parameters_.AtacSidecarOnly()
+           ? mapping_parameters_.atac_fragment_binary_output_file_path
+           : mapping_parameters_.mapping_output_file_path) +
+      ".temp" + std::to_string(temp_mapping_file_handles.size());
   if (mapping_parameters_.mapping_output_file_path == "/dev/stdout"
       || mapping_parameters_.mapping_output_file_path == "/dev/stderr")
   {

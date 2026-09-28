@@ -34,6 +34,14 @@ with paired-end BAM/CRAM and `--atac-fragments`; Chromap also writes
 `<path>.chroms.tsv` so sidecar `chrom_id` values can be decoded without relying
 on external chromosome order assumptions.
 
+`--atac-sidecar-only` writes the same AEV1 sidecar without BAM/CRAM, fragment
+text rows or a primary `-o` output. It keeps the paired-end fragment/BED
+mapping path and the prefix-only spill schema, and writes each retained
+fragment's sidecar record where the dual path would format a BAM pair and a
+text row. For the same input and mapping options the sidecar, its
+`.chroms.tsv` and the `--summary` table are byte-identical to the dual mode's
+(`make test-atac-sidecar-only-smoke`).
+
 ## Goals
 
 - Keep one internal source of truth for ATAC mappings regardless of requested

@@ -100,7 +100,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 
 -include $(deps)
 
-.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-macs3-fragment-buckets test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke \
+.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-macs3-fragment-buckets test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke test-atac-sidecar-only-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
 	 test-encode-cbq-cross-assay-smoke \
@@ -260,6 +260,10 @@ test-cbq-modality-matrix: chromap chromap_lib_runner tests/cbq_ordered_encoder
 # Serial benchmark; artifacts under plans/artifacts/cbq_atac_100k/<timestamp>/.
 test-cbq-atac-100k: chromap chromap_lib_runner tests/cbq_ordered_encoder
 	./tests/run_cbq_atac_100k.sh
+
+# Sidecar-only ATAC output vs dual BAM + fragments + sidecar (synthetic fixture).
+test-atac-sidecar-only-smoke: chromap chromap_lib_runner
+	BUILD=0 bash ./tests/run_atac_sidecar_only_smoke.sh
 
 # Hermetic synthetic smoke for CLI vs libchromap parity. Artifacts are written
 # under CHROMAP_ARTIFACT_ROOT (default: plans/artifacts).

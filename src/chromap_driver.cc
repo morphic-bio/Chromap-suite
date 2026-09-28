@@ -231,8 +231,15 @@ void AddOutputOptions(cxxopts::Options &options) {
           "atac-fragment-binary-output",
           "With paired reads, --BAM/--CRAM, and --atac-fragments: also write the "
           "compact AEV1 binary sidecar to this path (plus <path>.chroms.tsv). "
-          "Fragment rows are still written to the --atac-fragments path.",
+          "Fragment rows are still written to the --atac-fragments path. "
+          "With --atac-sidecar-only this sidecar is the only output.",
           cxxopts::value<std::string>(), "FILE")(
+          "atac-sidecar-only",
+          "With paired reads: follow the fragment/BED mapping path and write only "
+          "the AEV1 sidecar named by --atac-fragment-binary-output (plus "
+          "<path>.chroms.tsv). No -o, BAM/CRAM or fragment text rows. The "
+          "sidecar is byte-identical to the one --BAM/--CRAM --atac-fragments "
+          "--atac-fragment-binary-output writes for the same input and options.")(
           "create-mergeable-spill-record",
           "Stage-only ATAC mode: write one durable, sorted, pre-dedup "
           "AtacSpillRecord shard for post-alignment gather/materialization. "
@@ -951,14 +958,19 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       chromap::ExitWithMessage(
           "No reference specified; use --ref or --reference-sidecar");
     }
+    mapping_parameters.atac_sidecar_only = result.count("atac-sidecar-only") > 0;
     if (result.count("o")) {
+      if (mapping_parameters.atac_sidecar_only) {
+        chromap::ExitWithMessage(
+            "--atac-sidecar-only writes no primary output; do not pass -o");
+      }
       mapping_parameters.mapping_output_file_path =
           result["output"].as<std::string>();
     } else if (mapping_parameters.CreatesMergeableAtacSpill()) {
       // The staging flag is intentionally sidecar-only. Keep the historical
       // MappingParameters output field non-empty without creating a file.
       mapping_parameters.mapping_output_file_path = "/dev/null";
-    } else {
+    } else if (!mapping_parameters.atac_sidecar_only) {
       chromap::ExitWithMessage("No output file specified!");
     }
     if (result.count("x")) {
@@ -1216,6 +1228,18 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       }
     }
 
+    if (mapping_parameters.AtacSidecarOnly()) {
+      if (mapping_parameters.atac_fragment_binary_output_file_path.empty()) {
+        chromap::ExitWithMessage(
+            "--atac-sidecar-only requires --atac-fragment-binary-output");
+      }
+      const std::string sidecar_error =
+          mapping_parameters.AtacSidecarOnlyConfigError();
+      if (!sidecar_error.empty()) {
+        chromap::ExitWithMessage("--atac-sidecar-only: " + sidecar_error);
+      }
+    }
+
     if (!mapping_parameters.atac_fragment_output_file_path.empty()) {
       if (!mapping_parameters.HasPairedEndInput()) {
         chromap::ExitWithMessage(
@@ -1239,11 +1263,12 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       }
     }
 
-    if (!mapping_parameters.atac_fragment_binary_output_file_path.empty()) {
+    if (!mapping_parameters.atac_fragment_binary_output_file_path.empty() &&
+        !mapping_parameters.AtacSidecarOnly()) {
       if (!mapping_parameters.AtacDualFragmentAndBam()) {
         chromap::ExitWithMessage(
             "--atac-fragment-binary-output requires paired-end reads, "
-            "--BAM or --CRAM, and --atac-fragments");
+            "--BAM or --CRAM, and --atac-fragments (or --atac-sidecar-only)");
       }
       if (mapping_parameters.atac_fragment_binary_output_file_path ==
           mapping_parameters.mapping_output_file_path) {
@@ -1359,7 +1384,10 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
         mapping_parameters.y_read_names_output_path = result["Y-read-names-output"].as<std::string>();
       } else {
         // Derive from output path: <output>.Y.names.txt
-        std::string output_path = mapping_parameters.mapping_output_file_path;
+        std::string output_path =
+            mapping_parameters.AtacSidecarOnly()
+                ? mapping_parameters.atac_fragment_binary_output_file_path
+                : mapping_parameters.mapping_output_file_path;
         if (output_path == "-" || output_path == "/dev/stdout" || output_path == "/dev/stderr") {
           chromap::ExitWithMessage("--emit-Y-read-names requires --Y-read-names-output when primary output is stdout");
         }
@@ -1605,8 +1633,15 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       std::cerr << "Cell barcode whitelist file: "
                 << mapping_parameters.barcode_whitelist_file_path << "\n";
     }
-    std::cerr << "Output file: " << mapping_parameters.mapping_output_file_path
-              << "\n";
+    if (mapping_parameters.AtacSidecarOnly()) {
+      std::cerr << "Output file: none (sidecar-only ATAC)\n"
+                << "ATAC AEV1 sidecar: "
+                << mapping_parameters.atac_fragment_binary_output_file_path
+                << "\n";
+    } else {
+      std::cerr << "Output file: " << mapping_parameters.mapping_output_file_path
+                << "\n";
+    }
     if (mapping_parameters.AtacDualFragmentAndBam()) {
       std::cerr << "ATAC fragments file: "
                 << mapping_parameters.atac_fragment_output_file_path << "\n";
@@ -1659,6 +1694,7 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     } else {
       // Paired-end reads.
       if (mapping_parameters.AtacDualFragmentAndBam() ||
+          mapping_parameters.AtacSidecarOnly() ||
           mapping_parameters.CreatesMergeableAtacSpill()) {
         chromap_for_mapping.MapPairedEndReads<chromap::AtacSpillRecord>();
       } else if (mapping_parameters.low_memory_mode &&
@@ -1834,7 +1870,9 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
           mapping_parameters.summary_metadata_file_path,
           mapping_parameters.AtacDualFragmentAndBam()
               ? mapping_parameters.atac_fragment_output_file_path
-              : mapping_parameters.mapping_output_file_path,
+              : mapping_parameters.AtacSidecarOnly()
+                    ? mapping_parameters.atac_fragment_binary_output_file_path
+                    : mapping_parameters.mapping_output_file_path,
           mapping_parameters.macs3_frag_peaks_narrowpeak_path,
           mapping_parameters.macs3_frag_peaks_summits_path, work_used, keep,
           mapping_parameters.macs3_frag_threshold_mode,

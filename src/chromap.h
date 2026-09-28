@@ -263,6 +263,10 @@ template <typename MappingRecord>
 void Chromap::MapSingleEndReads() {
   double real_start_time = GetRealTime();
 
+  if (mapping_parameters_.AtacSidecarOnly()) {
+    ExitWithMessage("sidecar-only ATAC output requires paired-end reads");
+  }
+
   SequenceBatch reference;
   Index index(mapping_parameters_.index_file_path);
   LoadReferenceAndIndex(reference, index);
@@ -845,6 +849,20 @@ void Chromap::MapPairedEndReads() {
   // is supported as of relink-libmacs3 — the AtacSpillRecord
   // overflow path in mapping_writer.cc emits both streams identically
   // to the non-low-mem path on read-back.
+
+  // Sidecar-only output is written by the AtacSpillRecord writer alone; any
+  // other record type would map every read and write nothing.
+  if (mapping_parameters_.AtacSidecarOnly()) {
+    if (!std::is_same<MappingRecord, AtacSpillRecord>::value) {
+      ExitWithMessage(
+          "sidecar-only ATAC output requires the AtacSpillRecord mapping path");
+    }
+    const std::string sidecar_error =
+        mapping_parameters_.AtacSidecarOnlyConfigError();
+    if (!sidecar_error.empty()) {
+      ExitWithMessage(sidecar_error);
+    }
+  }
 
   // Load reference
   SequenceBatch reference;
