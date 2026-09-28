@@ -27,6 +27,39 @@ enum MappingOutputFormat {
 
 enum class ReadInputFormat { kFastq, kCbq };
 
+// FASTQ intake for gzip-compressed inputs, with the semantics of STAR Suite's
+// --readFilesBgzfMode (auto|range|off). kAuto reads a paired-end lane with the
+// BGZF reader mirrored from STAR Suite (src/star_input/) when every file of the
+// lane is a regular BGZF FASTQ file, and with zlib (kseq) otherwise. kOn
+// requires the BGZF reader and fails when a file does not qualify. kOff always
+// uses zlib. The records Chromap maps are the same in every mode.
+enum class FastqBgzfMode { kAuto, kOn, kOff };
+
+inline bool ParseFastqBgzfMode(const std::string &value, FastqBgzfMode *mode) {
+  if (value == "auto") {
+    *mode = FastqBgzfMode::kAuto;
+  } else if (value == "on") {
+    *mode = FastqBgzfMode::kOn;
+  } else if (value == "off") {
+    *mode = FastqBgzfMode::kOff;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+inline const char *FastqBgzfModeName(FastqBgzfMode mode) {
+  switch (mode) {
+    case FastqBgzfMode::kOn:
+      return "on";
+    case FastqBgzfMode::kOff:
+      return "off";
+    case FastqBgzfMode::kAuto:
+    default:
+      return "auto";
+  }
+}
+
 // Source for --call-macs3-frag-peaks fragment rows (file reread vs in-memory).
 enum class Macs3FragPeaksSource { kFile, kMemory };
 
@@ -102,6 +135,13 @@ struct MappingParameters {
   std::vector<std::string> barcode_file_paths;
   std::vector<std::string> read_pair_cbq_paths;
   std::vector<std::string> barcode_cbq_paths;
+  // FASTQ intake (see FastqBgzfMode). Applies to paired-end FASTQ lanes and to
+  // the barcode abundance pass.
+  FastqBgzfMode input_bgzf_mode = FastqBgzfMode::kAuto;
+  // BGZF inflate workers for one lane, split evenly across its files (read 1,
+  // read 2, barcode) as STAR Suite splits --bgzfReaderThreads across mates.
+  // 0 derives the total from num_threads.
+  int input_bgzf_reader_threads = 0;
   // Optional in-process paired-read source. This is intentionally generic:
   // executor/sharder-specific adapters live outside Chromap Suite. The first
   // supported use is stage-only ATAC mergeable-spill production.

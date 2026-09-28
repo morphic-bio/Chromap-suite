@@ -19,9 +19,11 @@ CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(RAPIDMACS_DI
 DEPFLAGS=-MMD -MP
 LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -ldl -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
-core_cpp_source=sequence_batch.cc materialized_reference.cc cbq_reader.cc cbq_batch_producer.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc atac_kway_spill.cc atac_mergeable_spill.cc atac_hot_spill.cc atac_materialized_binary.cc atac_spill_compactor.cc atac_spill_materializer.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
+core_cpp_source=sequence_batch.cc fastq_bgzf_input.cc materialized_reference.cc cbq_reader.cc cbq_batch_producer.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc atac_kway_spill.cc atac_mergeable_spill.cc atac_hot_spill.cc atac_materialized_binary.cc atac_spill_compactor.cc atac_spill_materializer.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
 driver_cpp_source=chromap_driver.cc
 libchromap_cpp_source=libchromap.cc
+# BGZF FASTQ reader mirrored from STAR Suite; see src/star_input/MIRROR.md.
+star_input_cpp_source=star_input/BgzfBlockReader.cpp star_input/BgzfRangeReader.cpp
 runner_cpp_source=chromap_lib_runner.cc
 atac_materializer_cpp_source=atac_spill_materializer_main.cc
 src_dir=src
@@ -29,9 +31,10 @@ objs_dir=objs
 core_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(core_cpp_source))
 driver_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(driver_cpp_source))
 libchromap_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(libchromap_cpp_source))
+star_input_objs=$(patsubst %.cpp,$(objs_dir)/%.o,$(star_input_cpp_source))
 runner_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(runner_cpp_source))
 atac_materializer_objs=$(patsubst %.cc,$(objs_dir)/%.o,$(atac_materializer_cpp_source))
-deps=$(core_objs:.o=.d) $(driver_objs:.o=.d) $(libchromap_objs:.o=.d) $(runner_objs:.o=.d) $(atac_materializer_objs:.o=.d)
+deps=$(core_objs:.o=.d) $(star_input_objs:.o=.d) $(driver_objs:.o=.d) $(libchromap_objs:.o=.d) $(runner_objs:.o=.d) $(atac_materializer_objs:.o=.d)
 
 exec=chromap
 libchromap=libchromap.a
@@ -70,9 +73,9 @@ $(RAPIDMACS_LIB) $(RAPIDMACS_CLI): librapidmacs
 $(exec): $(driver_objs) $(libchromap) $(RAPIDMACS_LIB)
 	$(CXX) $(CXXFLAGS) $(driver_objs) $(libchromap) $(RAPIDMACS_LIB) -o $(exec) $(LDFLAGS)
 
-$(libchromap): $(core_objs) $(libchromap_objs)
+$(libchromap): $(core_objs) $(star_input_objs) $(libchromap_objs)
 	rm -f $(libchromap)
-	ar rcs $(libchromap) $(core_objs) $(libchromap_objs)
+	ar rcs $(libchromap) $(core_objs) $(star_input_objs) $(libchromap_objs)
 
 $(runner): $(libchromap) $(runner_objs) $(RAPIDMACS_LIB)
 	$(CXX) $(CXXFLAGS) $(runner_objs) $(libchromap) $(RAPIDMACS_LIB) -o $(runner) $(LDFLAGS)
@@ -98,9 +101,13 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -I$(src_dir) -c $< -o $@
 
+$(objs_dir)/star_input/%.o: $(src_dir)/star_input/%.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -I$(src_dir) -c $< -o $@
+
 -include $(deps)
 
-.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-macs3-fragment-buckets test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke test-atac-sidecar-only-smoke \
+.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-macs3-fragment-buckets test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke test-atac-sidecar-only-smoke test-fastq-intake-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
 	 test-encode-cbq-cross-assay-smoke \
@@ -112,7 +119,7 @@ $(objs_dir)/%.o: $(src_dir)/%.cc
 	test-peak-narrowpeak-100k test-peak-integration-100k \
 	test-peak-integration-matrix-100k test-lowmem-bed-100k test-smoke librapidmacs
 clean:
-	-rm -rf $(exec) $(libchromap) $(runner) $(atac_materializer) $(index_load_probe) $(reference_load_probe) $(peak_caller) $(peak_caller_compat) $(objs_dir)
+	-rm -rf $(exec) $(libchromap) $(runner) $(atac_materializer) $(index_load_probe) $(reference_load_probe) $(peak_caller) $(peak_caller_compat) $(objs_dir) tests/fastq_intake_harness
 	-$(MAKE) -C $(RAPIDMACS_DIR) clean
 
 # 100K fragment peak-caller benchmark. Pair inputs: CHROMAP_PEAK_RUN_ROOT, or
@@ -225,6 +232,17 @@ test-macs3-fragment-buckets: dir
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_macs3_fragment_buckets.cc \
 		-o tests/test_macs3_fragment_buckets $(LDFLAGS)
 	./tests/test_macs3_fragment_buckets
+
+# FASTQ intake: record dump and loading rate through the zlib (kseq) and BGZF
+# readers (tests/fastq_intake_harness.cc).
+tests/fastq_intake_harness: tests/fastq_intake_harness.cc $(libchromap) $(RAPIDMACS_LIB)
+	$(CXX) $(CXXFLAGS) -I$(src_dir) $< $(libchromap) $(RAPIDMACS_LIB) -o $@ $(LDFLAGS)
+
+# Hermetic FASTQ intake smoke: zlib and BGZF readers deliver the same records;
+# Chromap outputs are byte-identical across --input-bgzf-mode, reader threads,
+# mixed lanes and interleaving FIFO producers; invalid settings are rejected.
+test-fastq-intake-smoke: chromap chromap_lib_runner tests/fastq_intake_harness
+	BUILD=0 bash ./tests/run_fastq_intake_smoke.sh
 
 # Hermetic input-format smoke. Verifies plain/gzip FASTQ parity and, when
 # bqtools is available, CBQ default/uncompressed decode-to-FASTQ compatibility.

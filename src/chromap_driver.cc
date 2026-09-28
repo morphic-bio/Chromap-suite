@@ -124,6 +124,15 @@ void AddInputOptions(cxxopts::Options &options) {
       cxxopts::value<std::string>(), "FILE")(
       "input-format", "Read input format: fastq or cbq [fastq]",
       cxxopts::value<std::string>(), "STR")(
+      "input-bgzf-mode",
+      "Paired-end FASTQ intake: auto reads a lane with the parallel BGZF "
+      "reader when all its files are BGZF FASTQ, on requires that reader, "
+      "off always uses zlib [auto]",
+      cxxopts::value<std::string>(), "STR")(
+      "input-bgzf-reader-threads",
+      "BGZF inflate threads per lane, split across its files; 0 derives "
+      "them from --num-threads [0]",
+      cxxopts::value<int>(), "INT")(
       "1,read1", "Single-end read files or paired-end read files 1",
       cxxopts::value<std::vector<std::string>>(),
       "FILE")("2,read2", "Paired-end read files 2",
@@ -988,6 +997,18 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
       } else {
         chromap::ExitWithMessage(
             "--input-format must be \"fastq\" or \"cbq\"");
+      }
+    }
+    if (result.count("input-bgzf-mode") &&
+        !ParseFastqBgzfMode(result["input-bgzf-mode"].as<std::string>(),
+                            &mapping_parameters.input_bgzf_mode)) {
+      chromap::ExitWithMessage("--input-bgzf-mode must be auto, on or off");
+    }
+    if (result.count("input-bgzf-reader-threads")) {
+      mapping_parameters.input_bgzf_reader_threads =
+          result["input-bgzf-reader-threads"].as<int>();
+      if (mapping_parameters.input_bgzf_reader_threads < 0) {
+        chromap::ExitWithMessage("--input-bgzf-reader-threads must be >= 0");
       }
     }
 

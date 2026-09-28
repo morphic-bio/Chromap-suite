@@ -403,78 +403,41 @@ uint32_t Chromap::LoadPairedEndReadsWithBarcodes(SequenceBatch &read_batch1,
     uint32_t num_loaded_read2 = 0;
     uint32_t num_loaded_barcode = 0;
 
-    // The first batch is loaded before MapPairedEndReads enters its OpenMP
-    // parallel region. OpenMP tasks created there are included tasks and run
-    // serially, which is invisible for regular files but deadlocks bounded,
-    // synchronized FIFOs whose producer interleaves R1/barcode/R2 records.
-    // Use real reader threads only for that initial, out-of-region batch;
-    // later batches retain the existing OpenMP task path.
-    if (!omp_in_parallel()) {
-      std::thread read1_thread([&]() {
+    // Every batch decompresses and parses each file on its own thread. Real
+    // threads are used, not OpenMP tasks: the first batch is loaded before
+    // MapPairedEndReads enters its parallel region, where tasks are included
+    // tasks and run serially, and later batches are loaded inside it, where
+    // the team threads are busy mapping and the files could still be read one
+    // after another. Serial loading is also what deadlocks bounded,
+    // synchronized FIFOs whose producer interleaves R1/barcode/R2 records; a
+    // reader thread per file drains them together.
+    std::thread read1_thread([&]() {
+      uint32_t i = 0;
+      for (; i < read_batch_size_; ++i) {
+        if (read_batch1.LoadOneSequenceAndSaveAt(i)) break;
+      }
+      num_loaded_read1 = i;
+    });
+    std::thread read2_thread([&]() {
+      uint32_t i = 0;
+      for (; i < read_batch_size_; ++i) {
+        if (read_batch2.LoadOneSequenceAndSaveAt(i)) break;
+      }
+      num_loaded_read2 = i;
+    });
+    std::unique_ptr<std::thread> barcode_thread;
+    if (!mapping_parameters_.is_bulk_data) {
+      barcode_thread.reset(new std::thread([&]() {
         uint32_t i = 0;
         for (; i < read_batch_size_; ++i) {
-          if (read_batch1.LoadOneSequenceAndSaveAt(i)) break;
+          if (barcode_batch.LoadOneSequenceAndSaveAt(i)) break;
         }
-        num_loaded_read1 = i;
-      });
-      std::thread read2_thread([&]() {
-        uint32_t i = 0;
-        for (; i < read_batch_size_; ++i) {
-          if (read_batch2.LoadOneSequenceAndSaveAt(i)) break;
-        }
-        num_loaded_read2 = i;
-      });
-      std::unique_ptr<std::thread> barcode_thread;
-      if (!mapping_parameters_.is_bulk_data) {
-        barcode_thread.reset(new std::thread([&]() {
-          uint32_t i = 0;
-          for (; i < read_batch_size_; ++i) {
-            if (barcode_batch.LoadOneSequenceAndSaveAt(i)) break;
-          }
-          num_loaded_barcode = i;
-        }));
-      }
-      read1_thread.join();
-      read2_thread.join();
-      if (barcode_thread) barcode_thread->join();
-    } else {
-#pragma omp task shared(num_loaded_read1, read_batch1)
-      {
-        uint32_t i = 0 ;
-        for (i = 0 ; i < read_batch_size_; ++i) {
-          if (read_batch1.LoadOneSequenceAndSaveAt(i) == true) { // true: no more read
-            break ;
-          }
-        }
-        num_loaded_read1 = i ;
-      }
-
-#pragma omp task shared(num_loaded_read2, read_batch2)
-      {
-        uint32_t i = 0 ;
-        for (i = 0 ; i < read_batch_size_; ++i) {
-          if (read_batch2.LoadOneSequenceAndSaveAt(i) == true) { // true: no more read
-            break ;
-          }
-        }
-        num_loaded_read2 = i ;
-      }
-
-#pragma omp task shared(num_loaded_barcode, barcode_batch)
-      {
-        if (!mapping_parameters_.is_bulk_data) {
-          uint32_t i = 0 ;
-          for (i = 0 ; i < read_batch_size_; ++i) {
-            if (barcode_batch.LoadOneSequenceAndSaveAt(i) == true) { // true: no more read
-              break ;
-            }
-          }
-          num_loaded_barcode = i ;
-        }
-      }
-
-#pragma omp taskwait
+        num_loaded_barcode = i;
+      }));
     }
+    read1_thread.join();
+    read2_thread.join();
+    if (barcode_thread) barcode_thread->join();
     if (mapping_parameters_.is_bulk_data) {
       num_loaded_barcode = num_loaded_read2;
     }
@@ -972,6 +935,7 @@ void Chromap::ComputeBarcodeAbundance(uint64_t max_num_sample_barcodes) {
        read_file_index < num_sources;
        ++read_file_index) {
     std::unique_ptr<CbqLaneReader> barcode_cbq_reader;
+    std::unique_ptr<BgzfFastqStream> barcode_bgzf_stream;
     if (mapping_parameters_.UsesCbqInput()) {
       std::string error;
       const std::string &barcode_path =
@@ -984,14 +948,48 @@ void Chromap::ComputeBarcodeAbundance(uint64_t max_num_sample_barcodes) {
     } else {
       const std::string &barcode_path =
           mapping_parameters_.barcode_file_paths[read_file_index];
-      barcode_batch.InitializeLoading(
-          barcode_path);
+      bool use_bgzf_reader = false;
+      std::string bgzf_message;
+      if (!SelectBgzfFastqInput(mapping_parameters_.input_bgzf_mode,
+                                std::vector<std::string>(1, barcode_path),
+                                &use_bgzf_reader, &bgzf_message)) {
+        ExitWithMessage(bgzf_message);
+      }
+      if (use_bgzf_reader) {
+        const uint32_t inflate_workers = BgzfInflateWorkersPerStream(
+            mapping_parameters_.input_bgzf_reader_threads,
+            mapping_parameters_.num_threads, 1)[0];
+        barcode_bgzf_stream.reset(new BgzfFastqStream());
+        std::string error;
+        if (!barcode_bgzf_stream->Open(barcode_path, inflate_workers,
+                                       &error)) {
+          ExitWithMessage("Cannot open BGZF barcode input: " + error);
+        }
+        std::cerr << "Barcode abundance input " << read_file_index + 1
+                  << ": BGZF reader, inflate workers " << inflate_workers
+                  << ".\n";
+      } else {
+        barcode_batch.InitializeLoading(
+            barcode_path);
+      }
     }
-    uint32_t num_loaded_barcodes =
-        mapping_parameters_.UsesCbqInput()
-            ? LoadBarcodesFromCbq(*barcode_cbq_reader, barcode_batch,
-                                  read_batch_size_)
-            : barcode_batch.LoadBatch();
+    auto load_barcodes = [&]() -> uint32_t {
+      if (mapping_parameters_.UsesCbqInput()) {
+        return LoadBarcodesFromCbq(*barcode_cbq_reader, barcode_batch,
+                                   read_batch_size_);
+      }
+      if (barcode_bgzf_stream) {
+        uint32_t loaded = 0;
+        std::string error;
+        if (!barcode_bgzf_stream->LoadBatch(barcode_batch, read_batch_size_,
+                                            &loaded, &error)) {
+          ExitWithMessage("BGZF barcode input failed: " + error);
+        }
+        return loaded;
+      }
+      return barcode_batch.LoadBatch();
+    };
+    uint32_t num_loaded_barcodes = load_barcodes();
     while (num_loaded_barcodes > 0) {
       for (uint32_t barcode_index = 0; barcode_index < num_loaded_barcodes;
            ++barcode_index) {
@@ -1030,15 +1028,11 @@ void Chromap::ComputeBarcodeAbundance(uint64_t max_num_sample_barcodes) {
       if (num_sample_barcodes_ >= max_num_sample_barcodes) {
         break;
       }
-      num_loaded_barcodes =
-          mapping_parameters_.UsesCbqInput()
-              ? LoadBarcodesFromCbq(*barcode_cbq_reader, barcode_batch,
-                                    read_batch_size_)
-              : barcode_batch.LoadBatch();
+      num_loaded_barcodes = load_barcodes();
     }
     if (mapping_parameters_.UsesCbqInput()) {
       barcode_cbq_reader->Close();
-    } else {
+    } else if (!barcode_bgzf_stream) {
       barcode_batch.FinalizeLoading();
     }
     if (num_sample_barcodes_ >= max_num_sample_barcodes) {

@@ -1,0 +1,864 @@
+#include "star_input/BgzfRangeReader.h"
+
+#include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cstring>
+#include <fcntl.h>
+#include <limits>
+#include <sstream>
+#include <sys/stat.h>
+#include <unistd.h>
+
+namespace chromap {
+namespace star_input {
+namespace {
+
+const size_t kMaxBlocksPerWork = 64;
+
+bool set_error(std::string* error, const std::string& message) {
+    if (error != nullptr) {
+        *error = message;
+    }
+    return false;
+}
+
+} // namespace
+
+void BgzfBatchLease::clear() {
+    buffers_.clear();
+}
+
+void BgzfBatchLease::retain(
+        const std::shared_ptr<std::vector<unsigned char>>& buffer) {
+    if (buffer == nullptr) {
+        return;
+    }
+    if (buffers_.empty() || buffers_.back().get() != buffer.get()) {
+        buffers_.push_back(buffer);
+    }
+}
+
+void BgzfFastqRecord::ensure_owned_fields() {
+    if (ownedFields == nullptr) {
+        ownedFields.reset(new BgzfFastqOwnedFields);
+    }
+}
+
+char* BgzfFastqRecord::name_storage() {
+    ensure_owned_fields();
+    return ownedFields->name;
+}
+
+char* BgzfFastqRecord::sequence_storage() {
+    ensure_owned_fields();
+    return ownedFields->sequence;
+}
+
+char* BgzfFastqRecord::quality_storage() {
+    ensure_owned_fields();
+    return ownedFields->quality;
+}
+
+BgzfRangeReader::BgzfRangeReader() = default;
+
+BgzfRangeReader::~BgzfRangeReader() {
+    close_input();
+}
+
+void BgzfRangeReader::close_input() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopping_ = true;
+    }
+    readyCv_.notify_all();
+    spaceCv_.notify_all();
+    for (size_t index = 0; index < workers_.size(); ++index) {
+        if (workers_[index].joinable()) {
+            workers_[index].join();
+        }
+    }
+    workers_.clear();
+    report_state_locked(false);
+    if (inputFd_ >= 0) {
+        ::close(inputFd_);
+        inputFd_ = -1;
+    }
+}
+
+void BgzfRangeReader::fail_locked(const std::string& message) {
+    failed_ = true;
+    if (workerError_.empty()) {
+        workerError_ = message;
+    }
+    readyCv_.notify_all();
+    spaceCv_.notify_all();
+}
+
+void BgzfRangeReader::report_state_locked(bool live) {
+    if (!permitHooks_.observe) return;
+    uint64_t ready = 0;
+    // Only contiguous ordered output can feed the consumer.
+    while (ready < completed_.size()) {
+        const uint64_t sequence = nextConsumeSequence_ + ready;
+        const auto& slot = completed_[sequence % completed_.size()];
+        if (!slot.ready || slot.sequence != sequence) break;
+        ++ready;
+    }
+    permitHooks_.observe(permitHooks_.context, this, ready, outstandingWork_,
+        maxOutstandingWork_, workerCount_, consumerWaiting_ ? 1 : 0, live ? 1 : 0);
+}
+
+bool BgzfRangeReader::open(const std::string& path,
+                           uint64_t range_start,
+                           uint64_t range_end,
+                           uint32_t worker_threads,
+                           bool check_crc,
+                           std::string* error,
+                           const BgzfWorkPermitHooks* permit_hooks,
+                           bool store_quality,
+                           BgzfNameMode name_mode) {
+    close_input();
+    if (error != nullptr) {
+        error->clear();
+    }
+    struct stat info;
+    if (::stat(path.c_str(), &info) != 0) {
+        return set_error(error, "could not stat BGZF input " + path + ": " +
+                                std::strerror(errno));
+    }
+    if (info.st_size < 0) {
+        return set_error(error, "BGZF input has a negative file size: " + path);
+    }
+    const uint64_t physical_end = static_cast<uint64_t>(info.st_size);
+    if (range_end == std::numeric_limits<uint64_t>::max()) {
+        range_end = physical_end;
+    }
+    if (range_start > range_end || range_end > physical_end) {
+        std::ostringstream message;
+        message << "BGZF compressed range [" << range_start << ',' << range_end
+                << ") is outside file size " << physical_end;
+        return set_error(error, message.str());
+    }
+    if (permit_hooks != nullptr &&
+        ((permit_hooks->acquire == nullptr) !=
+         (permit_hooks->release == nullptr))) {
+        return set_error(error,
+                         "BGZF inflate permit hooks require both acquire and release");
+    }
+
+    inputFd_ = ::open(path.c_str(), O_RDONLY);
+    if (inputFd_ < 0) {
+        return set_error(error, "could not open BGZF input " + path + ": " +
+                                std::strerror(errno));
+    }
+    path_ = path;
+    checkCrc_ = check_crc;
+    storeQuality_ = store_quality;
+    nameMode_ = name_mode;
+    rangeStart_ = range_start;
+    rangeEnd_ = range_end;
+    claimedOffset_ = range_start;
+    nextClaimSequence_ = 0;
+    claimedWorkCount_ = 0;
+    nextConsumeSequence_ = 0;
+    currentBlockOffset_ = range_start;
+    recordsRead_ = 0;
+    workerCount_ = worker_threads;
+    permitHooks_ = permit_hooks == nullptr
+        ? BgzfWorkPermitHooks() : *permit_hooks;
+    const uint64_t range_bytes = range_end - range_start;
+    const uint64_t planning_threads = std::max<uint32_t>(worker_threads, 1);
+    const uint64_t planned = range_bytes / (planning_threads * 128U);
+    targetCompressedBytes_ = std::max<uint64_t>(64U * 1024U,
+        std::min<uint64_t>(1024U * 1024U, planned));
+    maxOutstandingWork_ = std::max<size_t>(4, static_cast<size_t>(worker_threads) * 2);
+    outstandingWork_ = 0;
+    consumerWaiting_ = false;
+    buffer_.reset();
+    cursor_ = 0;
+    completed_.assign(maxOutstandingWork_, CompletedSlot());
+    claimsFinished_ = range_start == range_end;
+    claimExhausted_ = claimsFinished_;
+    failed_ = false;
+    stopping_ = false;
+    workerError_.clear();
+    report_state_locked();
+
+    workers_.reserve(worker_threads);
+    try {
+        for (uint32_t worker = 0; worker < worker_threads; ++worker) {
+            workers_.emplace_back(&BgzfRangeReader::worker_loop, this);
+        }
+    } catch (const std::exception& exc) {
+        close_input();
+        return set_error(error, std::string("could not start BGZF inflate worker: ") +
+                                exc.what());
+    }
+    return true;
+}
+
+void BgzfRangeReader::worker_loop() {
+    try {
+        BgzfInflater inflater;
+        CompressedWork work;
+        while (true) {
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                spaceCv_.wait(lock, [&]() {
+                    return stopping_ || failed_ || claimsFinished_ ||
+                           outstandingWork_ < maxOutstandingWork_;
+                });
+                if (stopping_ || failed_ || claimsFinished_) {
+                    return;
+                }
+                ++outstandingWork_;
+                report_state_locked();
+            }
+
+            uint64_t sequence = 0;
+            bool at_end = false;
+            bool stop_after_claim = false;
+            std::string header_error;
+            {
+                // Only compressed-frontier discovery is serialized. In
+                // particular, its pread calls do not hold the completion mutex,
+                // so an ordered consumer can take an already-inflated slot.
+                std::lock_guard<std::mutex> claim_lock(claimMutex_);
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (stopping_ || failed_) {
+                        --outstandingWork_;
+                        stop_after_claim = true;
+                    }
+                }
+                if (!stop_after_claim) {
+                    if (claimExhausted_) {
+                        at_end = true;
+                    } else if (!claim_work(&work, &sequence, &at_end,
+                                           &header_error)) {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        --outstandingWork_;
+                        fail_locked(header_error);
+                        stop_after_claim = true;
+                    }
+                }
+                if (!stop_after_claim) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (stopping_ || failed_) {
+                        --outstandingWork_;
+                        stop_after_claim = true;
+                    } else if (at_end) {
+                        --outstandingWork_;
+                    } else {
+                        // Publish every claimed sequence before a later worker can
+                        // publish EOF through this same claim lock.
+                        claimedWorkCount_ = sequence + 1;
+                    }
+                    if (claimExhausted_) {
+                        claimsFinished_ = true;
+                    }
+                }
+            }
+            if (stop_after_claim) {
+                spaceCv_.notify_all();
+                return;
+            }
+            if (at_end) {
+                readyCv_.notify_all();
+                spaceCv_.notify_all();
+                return;
+            }
+
+            InflatedBlock result;
+            std::string inflate_error;
+            if (!inflate_work_permitted(&inflater, work, &result, &inflate_error)) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                --outstandingWork_;
+                fail_locked(inflate_error);
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (stopping_ || failed_) {
+                    --outstandingWork_;
+                    return;
+                }
+                CompletedSlot& slot = completed_[sequence % completed_.size()];
+                if (slot.ready) {
+                    --outstandingWork_;
+                    fail_locked("BGZF completion ring slot collision");
+                    return;
+                }
+                slot.sequence = sequence;
+                slot.block = std::move(result);
+                slot.ready = true;
+                report_state_locked();
+            }
+            readyCv_.notify_all();
+        }
+    } catch (const std::exception& e) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        fail_locked(std::string("BGZF inflate worker exception: ") + e.what());
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        fail_locked("Unknown BGZF inflate worker exception");
+    }
+}
+
+bool BgzfRangeReader::claim_work(CompressedWork* work,
+                                 uint64_t* sequence,
+                                 bool* at_end,
+                                 std::string* error) {
+    work->compressedOffset = claimedOffset_;
+    work->blocks.clear();
+    work->bytes.clear();
+    *at_end = false;
+    bool reached_end = false;
+    if (!read_bgzf_work_fd(inputFd_, claimedOffset_, rangeEnd_,
+                           targetCompressedBytes_, kMaxBlocksPerWork,
+                           &work->blocks, &work->bytes, &reached_end, error)) {
+        return false;
+    }
+    if (reached_end) {
+        claimedOffset_ = rangeEnd_;
+        claimExhausted_ = true;
+    } else {
+        claimedOffset_ += work->bytes.size();
+    }
+    if (work->blocks.empty()) {
+        *at_end = true;
+        return true;
+    }
+    *sequence = nextClaimSequence_++;
+    return true;
+}
+
+bool BgzfRangeReader::inflate_work(BgzfInflater* inflater,
+                                   const CompressedWork& work,
+                                   InflatedBlock* result,
+                                   std::string* error) {
+    if (inflater == nullptr || result == nullptr || work.blocks.empty()) {
+        return set_error(error, "invalid BGZF compressed work item");
+    }
+    result->compressedOffset = work.blocks.front().compressedOffset;
+    size_t output_bytes = 0;
+    for (size_t index = 0; index < work.blocks.size(); ++index) {
+        if (work.blocks[index].isize >
+            std::numeric_limits<size_t>::max() - output_bytes) {
+            return set_error(error, "BGZF work output exceeds platform memory limits");
+        }
+        output_bytes += work.blocks[index].isize;
+    }
+    result->bytes = std::make_shared<std::vector<unsigned char>>();
+    result->bytes->resize(output_bytes);
+    size_t output_offset = 0;
+    for (size_t index = 0; index < work.blocks.size(); ++index) {
+        const BgzfBlock& block = work.blocks[index];
+        if (block.compressedOffset < work.compressedOffset) {
+            return set_error(error, "BGZF member precedes its claimed work range");
+        }
+        const uint64_t relative64 = block.compressedOffset - work.compressedOffset;
+        if (relative64 > work.bytes.size() ||
+            block.compressedSize > work.bytes.size() - static_cast<size_t>(relative64)) {
+            return set_error(error, "BGZF member exceeds its claimed work range");
+        }
+        unsigned char* destination = block.isize == 0
+            ? nullptr : result->bytes->data() + output_offset;
+        if (!inflater->inflate_block(
+                work.bytes.data() + static_cast<size_t>(relative64),
+                block.compressedSize, block.compressedOffset, checkCrc_,
+                destination, block.isize, error)) {
+            return false;
+        }
+        output_offset += block.isize;
+    }
+    return true;
+}
+
+bool BgzfRangeReader::inflate_work_permitted(BgzfInflater* inflater,
+                                             const CompressedWork& work,
+                                             InflatedBlock* result,
+                                             std::string* error) {
+    if (!permitHooks_.enabled()) {
+        return inflate_work(inflater, work, result, error);
+    }
+
+    const uint64_t wait_ns = permitHooks_.acquire(permitHooks_.context);
+    const std::chrono::steady_clock::time_point work_start =
+        std::chrono::steady_clock::now();
+    bool ok;
+    try {
+        ok = inflate_work(inflater, work, result, error);
+    } catch (...) {
+        // Return compute capacity before the worker publishes an input failure.
+        permitHooks_.release(permitHooks_.context, wait_ns, 0, 0, 0);
+        throw;
+    }
+    const uint64_t work_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - work_start).count());
+    permitHooks_.release(permitHooks_.context,
+                         wait_ns,
+                         static_cast<uint64_t>(work.blocks.size()),
+                         static_cast<uint64_t>(work.bytes.size()),
+                         work_ns);
+    return ok;
+}
+
+bool BgzfRangeReader::claim_and_inflate_sync(InflatedBlock* result,
+                                              bool* at_end,
+                                              std::string* error) {
+    CompressedWork work;
+    uint64_t sequence = 0;
+    if (!claim_work(&work, &sequence, at_end, error)) {
+        return false;
+    }
+    if (*at_end) {
+        return true;
+    }
+    return inflate_work_permitted(&syncInflater_, work, result, error);
+}
+
+bool BgzfRangeReader::next_bytes(const char** data, size_t* size, std::string* error) {
+    if (!data || !size) return set_error(error, "null BGZF byte-window output");
+    if (error) error->clear();
+    *data = nullptr; *size = 0;
+    do {
+        if (buffer_) cursor_ = buffer_->size();
+        if (!append_next_block(error)) return false;
+    } while (buffer_->empty());
+    *data = reinterpret_cast<const char*>(buffer_->data());
+    *size = buffer_->size();
+    cursor_ = *size;
+    return true;
+}
+
+bool BgzfRangeReader::append_next_block(std::string* error) {
+    InflatedBlock block;
+    if (workerCount_ == 0) {
+        bool at_end = false;
+        if (!claim_and_inflate_sync(&block, &at_end, error)) {
+            return false;
+        }
+        if (at_end) {
+            return false;
+        }
+    } else {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const auto& nextSlot = completed_[nextConsumeSequence_ % completed_.size()];
+        consumerWaiting_ = !(nextSlot.ready && nextSlot.sequence == nextConsumeSequence_) &&
+            !(claimsFinished_ && nextConsumeSequence_ == claimedWorkCount_);
+        report_state_locked();
+        readyCv_.wait(lock, [&]() {
+            const CompletedSlot& slot =
+                completed_[nextConsumeSequence_ % completed_.size()];
+            return stopping_ || failed_ ||
+                   (slot.ready && slot.sequence == nextConsumeSequence_) ||
+                   (claimsFinished_ && nextConsumeSequence_ == claimedWorkCount_);
+        });
+        consumerWaiting_ = false;
+        report_state_locked();
+        if (failed_) {
+            return set_error(error, workerError_.empty()
+                ? "BGZF inflate worker failed" : workerError_);
+        }
+        CompletedSlot& slot =
+            completed_[nextConsumeSequence_ % completed_.size()];
+        if (!slot.ready || slot.sequence != nextConsumeSequence_) {
+            return false;
+        }
+        block = std::move(slot.block);
+        slot.ready = false;
+        ++nextConsumeSequence_;
+        --outstandingWork_;
+        report_state_locked();
+        lock.unlock();
+        spaceCv_.notify_all();
+    }
+
+    if (block.bytes == nullptr) {
+        return set_error(error, "BGZF inflate worker returned no output buffer");
+    }
+    const size_t buffer_size = buffer_ == nullptr ? 0 : buffer_->size();
+    if (cursor_ == buffer_size) {
+        buffer_ = std::move(block.bytes);
+        cursor_ = 0;
+        currentBlockOffset_ = block.compressedOffset;
+        return true;
+    }
+    std::shared_ptr<std::vector<unsigned char>> combined =
+        std::make_shared<std::vector<unsigned char>>();
+    combined->reserve(buffer_size - cursor_ + block.bytes->size());
+    combined->insert(combined->end(), buffer_->begin() +
+                     static_cast<std::ptrdiff_t>(cursor_), buffer_->end());
+    combined->insert(combined->end(), block.bytes->begin(), block.bytes->end());
+    buffer_ = std::move(combined);
+    cursor_ = 0;
+    currentBlockOffset_ = block.compressedOffset;
+    return true;
+}
+
+bool BgzfRangeReader::read_line_view(const unsigned char** line,
+                                     size_t* line_size,
+                                     bool allow_clean_end,
+                                     std::string* error,
+                                     bool* line_is_buffer_view) {
+    if (line == nullptr || line_size == nullptr) {
+        return set_error(error, "BGZF FASTQ line view destination is null");
+    }
+    *line = nullptr;
+    *line_size = 0;
+    if (line_is_buffer_view != nullptr) {
+        *line_is_buffer_view = false;
+    }
+
+    size_t available = buffer_ == nullptr ? 0 : buffer_->size() - cursor_;
+    const unsigned char *begin = available == 0
+        ? nullptr : buffer_->data() + cursor_;
+    const void *found = available == 0
+        ? nullptr : std::memchr(begin, '\n', available);
+    if (found != nullptr) {
+        const unsigned char *newline =
+            static_cast<const unsigned char *>(found);
+        size_t size = static_cast<size_t>(newline - begin);
+        cursor_ += size + 1;
+        if (size != 0 && begin[size - 1] == '\r') {
+            --size;
+        }
+        *line = begin;
+        *line_size = size;
+        if (line_is_buffer_view != nullptr) {
+            *line_is_buffer_view = true;
+        }
+        return true;
+    }
+
+    size_t scratch_size = 0;
+    const auto line_too_long = [&]() {
+        std::ostringstream message;
+        message << "BGZF FASTQ line exceeds fixed Illumina capacity "
+                << kBgzfFastqSequenceCapacity << " near block offset "
+                << currentBlockOffset_;
+        return set_error(error, message.str());
+    };
+    while (true) {
+        if (available != 0) {
+            if (available > sizeof(lineScratch_) - scratch_size) {
+                return line_too_long();
+            }
+            std::memcpy(lineScratch_ + scratch_size, begin, available);
+            scratch_size += available;
+            cursor_ = buffer_->size();
+        }
+
+        std::string append_error;
+        if (append_next_block(&append_error)) {
+            available = buffer_ == nullptr ? 0 : buffer_->size() - cursor_;
+            begin = available == 0 ? nullptr : buffer_->data() + cursor_;
+            found = available == 0
+                ? nullptr : std::memchr(begin, '\n', available);
+            if (found == nullptr) {
+                continue;
+            }
+
+            const unsigned char *newline =
+                static_cast<const unsigned char *>(found);
+            const size_t segment_size = static_cast<size_t>(newline - begin);
+            cursor_ += segment_size + 1;
+            if (scratch_size == 0) {
+                size_t size = segment_size;
+                if (size != 0 && begin[size - 1] == '\r') {
+                    --size;
+                }
+                *line = begin;
+                *line_size = size;
+                if (line_is_buffer_view != nullptr) {
+                    *line_is_buffer_view = true;
+                }
+                return true;
+            }
+            if (segment_size > sizeof(lineScratch_) - scratch_size) {
+                return line_too_long();
+            }
+            if (segment_size != 0) {
+                std::memcpy(lineScratch_ + scratch_size, begin, segment_size);
+                scratch_size += segment_size;
+            }
+            if (scratch_size != 0 && lineScratch_[scratch_size - 1] == '\r') {
+                --scratch_size;
+            }
+            *line = lineScratch_;
+            *line_size = scratch_size;
+            return true;
+        }
+        if (!append_error.empty()) {
+            return set_error(error, append_error);
+        }
+        if (scratch_size != 0) {
+            if (lineScratch_[scratch_size - 1] == '\r') {
+                --scratch_size;
+            }
+            *line = lineScratch_;
+            *line_size = scratch_size;
+            return true;
+        }
+        if (allow_clean_end) {
+            return false;
+        }
+        std::ostringstream message;
+        message << "unexpected end of BGZF FASTQ record after block offset "
+                << currentBlockOffset_;
+        return set_error(error, message.str());
+    }
+}
+
+bool BgzfRangeReader::read_name_token(BgzfFastqRecord* record,
+                                      bool allow_clean_end,
+                                      std::string* error,
+                                      BgzfBatchLease* lease) {
+    record->nameLength = 0;
+    record->nameView = nullptr;
+    record->readFilter = 'N';
+    bool saw_at = false;
+    bool token_finished = nameMode_ == BgzfNameMode::Skip;
+    bool token_spanned_buffer = false;
+    const bool capture_filter = nameMode_ == BgzfNameMode::TokenAndIlluminaFilter;
+    bool filter_field_started = false;
+    bool filter_field_finished = false;
+    unsigned char filter_prefix[4] = {0, 0, 0, 0};
+    size_t filter_prefix_size = 0;
+    while (true) {
+        if (buffer_ == nullptr || cursor_ == buffer_->size()) {
+            std::string append_error;
+            if (!append_next_block(&append_error)) {
+                if (!append_error.empty()) {
+                    return set_error(error, append_error);
+                }
+                if (!saw_at && allow_clean_end) {
+                    return false;
+                }
+                if (saw_at) {
+                    return true;
+                }
+                std::ostringstream message;
+                message << "unexpected end of BGZF FASTQ record after block offset "
+                        << currentBlockOffset_;
+                return set_error(error, message.str());
+            }
+        }
+
+        const size_t available = buffer_->size() - cursor_;
+        const unsigned char* begin = buffer_->data() + cursor_;
+        const void* found = std::memchr(begin, '\n', available);
+        const size_t segment_size = found == nullptr
+            ? available
+            : static_cast<const unsigned char*>(found) - begin;
+        size_t position = 0;
+        if (!saw_at) {
+            if (segment_size == 0 || begin[0] != '@') {
+                std::ostringstream message;
+                message << "BGZF FASTQ record " << recordsRead_
+                        << " does not start with @ (block offset "
+                        << currentBlockOffset_ << ')';
+                return set_error(error, message.str());
+            }
+            saw_at = true;
+            position = 1;
+        }
+
+        if (!token_finished) {
+            const size_t token_begin = position;
+            while (position < segment_size) {
+                const unsigned char value = begin[position];
+                if (value == ' ' || value == '\t' || value == '\r') {
+                    break;
+                }
+                ++position;
+            }
+            const size_t token_part_size = position - token_begin;
+            if (token_part_size > kBgzfFastqNameCapacity - record->nameLength) {
+                std::ostringstream message;
+                message << "BGZF FASTQ record " << recordsRead_
+                        << " has read-name token exceeding fixed capacity "
+                        << kBgzfFastqNameCapacity;
+                return set_error(error, message.str());
+            }
+            const bool token_ends_here = position < segment_size || found != nullptr;
+            if (!token_spanned_buffer && token_ends_here && lease != nullptr) {
+                record->nameView = reinterpret_cast<const char*>(begin + token_begin);
+                lease->retain(buffer_);
+            } else if (token_part_size != 0) {
+                std::memcpy(record->name_storage() + record->nameLength,
+                            begin + token_begin, token_part_size);
+            }
+            record->nameLength += static_cast<uint16_t>(token_part_size);
+            if (token_ends_here) {
+                token_finished = true;
+            } else {
+                token_spanned_buffer = true;
+            }
+        }
+
+        if (capture_filter && token_finished && !filter_field_finished) {
+            while (position < segment_size) {
+                const unsigned char value = begin[position++];
+                const bool whitespace = value == ' ' || value == '\t' || value == '\r';
+                if (!filter_field_started) {
+                    if (whitespace) {
+                        continue;
+                    }
+                    filter_field_started = true;
+                } else if (whitespace) {
+                    filter_field_finished = true;
+                    break;
+                }
+                if (filter_prefix_size < sizeof(filter_prefix)) {
+                    filter_prefix[filter_prefix_size++] = value;
+                }
+            }
+        }
+
+        cursor_ += segment_size;
+        if (found != nullptr) {
+            ++cursor_;
+            if (capture_filter && filter_prefix_size >= 4 &&
+                filter_prefix[1] == ':' && filter_prefix[2] == 'Y' &&
+                filter_prefix[3] == ':') {
+                record->readFilter = 'Y';
+            }
+            return true;
+        }
+    }
+}
+
+bool BgzfRangeReader::parse_record(BgzfFastqRecord* record, std::string* error,
+                                   BgzfBatchLease* lease) {
+    if (record == nullptr) {
+        return set_error(error, "BGZF FASTQ record destination is null");
+    }
+    record->nameView = nullptr;
+    record->sequenceView = nullptr;
+    record->qualityView = nullptr;
+    record->readFilter = 'N';
+    const unsigned char *line = nullptr;
+    size_t line_size = 0;
+    if (nameMode_ == BgzfNameMode::Full) {
+        if (!read_line_view(&line, &line_size, true, error)) {
+            return false;
+        }
+        if (line_size == 0 || line[0] != '@') {
+            std::ostringstream message;
+            message << "BGZF FASTQ record " << recordsRead_
+                    << " does not start with @ (block offset "
+                    << currentBlockOffset_ << ')';
+            return set_error(error, message.str());
+        }
+        if (line_size - 1 > kBgzfFastqNameCapacity) {
+            std::ostringstream message;
+            message << "BGZF FASTQ record " << recordsRead_
+                    << " has read name length " << (line_size - 1)
+                    << " exceeding fixed capacity " << kBgzfFastqNameCapacity;
+            return set_error(error, message.str());
+        }
+        record->nameLength = static_cast<uint16_t>(line_size - 1);
+        char* name_storage = record->name_storage();
+        if (record->nameLength != 0) {
+            std::memcpy(name_storage, line + 1, record->nameLength);
+        }
+    } else if (!read_name_token(record, true, error, lease)) {
+        return false;
+    }
+
+    bool sequence_is_buffer_view = false;
+    if (!read_line_view(&line, &line_size, false, error,
+                        &sequence_is_buffer_view)) {
+        return false;
+    }
+    if (line_size > kBgzfFastqSequenceCapacity) {
+        std::ostringstream message;
+        message << "BGZF FASTQ record " << recordsRead_ << " has sequence length "
+                << line_size << " exceeding fixed capacity "
+                << kBgzfFastqSequenceCapacity;
+        return set_error(error, message.str());
+    }
+    record->sequenceLength = static_cast<uint16_t>(line_size);
+    if (lease != nullptr && sequence_is_buffer_view) {
+        record->sequenceView = reinterpret_cast<const char*>(line);
+        lease->retain(buffer_);
+    } else if (line_size != 0) {
+        std::memcpy(record->sequence_storage(), line, line_size);
+    }
+
+    if (!read_line_view(&line, &line_size, false, error)) {
+        return false;
+    }
+    if (line_size == 0 || line[0] != '+') {
+        std::ostringstream message;
+        message << "BGZF FASTQ record " << recordsRead_
+                << " has an invalid plus line (block offset " << currentBlockOffset_ << ')';
+        return set_error(error, message.str());
+    }
+
+    bool quality_is_buffer_view = false;
+    if (!read_line_view(&line, &line_size, false, error,
+                        &quality_is_buffer_view)) {
+        return false;
+    }
+    if (line_size > kBgzfFastqSequenceCapacity) {
+        std::ostringstream message;
+        message << "BGZF FASTQ record " << recordsRead_ << " has quality length "
+                << line_size << " exceeding fixed capacity "
+                << kBgzfFastqSequenceCapacity;
+        return set_error(error, message.str());
+    }
+    record->qualityLength = static_cast<uint16_t>(line_size);
+    if (storeQuality_ && line_size != 0) {
+        if (lease != nullptr && quality_is_buffer_view) {
+            record->qualityView = reinterpret_cast<const char*>(line);
+            lease->retain(buffer_);
+        } else {
+            std::memcpy(record->quality_storage(), line, line_size);
+        }
+    }
+    if (record->sequenceLength != record->qualityLength) {
+        std::ostringstream message;
+        message << "BGZF FASTQ record " << recordsRead_ << " has sequence length "
+                << record->sequenceLength << " but quality length "
+                << record->qualityLength << " (block offset "
+                << currentBlockOffset_ << ')';
+        return set_error(error, message.str());
+    }
+    record->ordinal = recordsRead_;
+    return true;
+}
+
+bool BgzfRangeReader::next(BgzfFastqRecord* record, std::string* error,
+                           BgzfBatchLease* lease) {
+    if (error != nullptr && !error->empty()) {
+        error->clear();
+    }
+    if (inputFd_ < 0) {
+        return set_error(error, "BGZF range reader is not open");
+    }
+    if (!parse_record(record, error, lease)) {
+        return false;
+    }
+    ++recordsRead_;
+    return true;
+}
+
+uint64_t BgzfRangeReader::records_read() const {
+    return recordsRead_;
+}
+
+uint64_t BgzfRangeReader::range_start() const {
+    return rangeStart_;
+}
+
+uint64_t BgzfRangeReader::range_end() const {
+    return rangeEnd_;
+}
+
+} // namespace star_input
+} // namespace chromap
