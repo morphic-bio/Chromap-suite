@@ -60,6 +60,7 @@ coordinator releases.
 | Standalone identity | `.../identity/`, `.../identity_det/` (+ `identity.json`) |
 | Embedded check | `.../embedded/` |
 | Throughput | `.../throughput/` |
+| Final tracked throughput and 50M output identity | `docs/benchmarks/fastq_intake_20260928/{throughput.tsv,identity.json}` |
 
 ## Steps
 
@@ -131,9 +132,23 @@ coordinator releases.
     taking the lock, evicts the three inputs (`evict_cache.py`), warms the
     index, and runs under
     `run_timed.py --record-dir DIR --time-output DIR/time.txt`.
-    `python3 throughput/summarize.py` writes `throughput.tsv`/`.json`.
-    Check: each case needs at least one `clean` verdict; rerun contaminated
-    cases under a new pass label.
+    `python3 throughput/summarize.py` writes `throughput.tsv`/`.json`
+    (`NA` in the TSV marks fields not reported by that case).
+    Check: each case needs at least one `clean` verdict; rerun cases lacking
+    a clean result under a new pass label. The recorded clean criteria are
+    start load1 <= 4, mean outside CPU fraction <= 0.05, outside md0 I/O
+    fraction <= 0.05 and no other STAR process seen.
+    After all timing jobs have stopped, run
+    `nice -n 10 python3 throughput/compare_outputs.py` from the validation
+    root. It requires clean coverage of all seven cases, successful exits
+    and lock records for every completed run, and the archived binary
+    hashes. It then compares every completed mapping run's sidecar and
+    `.chroms.tsv` to `pass1/chromap_old_gz`, allowing only candidate-cache
+    column differences in summaries. Check: `throughput/identity.json`
+    reports `PASS`. Copy the final `throughput.tsv` and `identity.json` to
+    `docs/benchmarks/fastq_intake_20260928/` and replace the release notes'
+    pending measurements. The final campaign has clean coverage in
+    pass1/pass2/pass3; see the handoff for selected runs.
 12. **Version and notes.** `src/version.h` -> `1.1.0`;
     `docs/RELEASE_NOTES_v1.1.0.md`, `CHANGELOG.md`. The Dockerfile's
     `CHROMAP_SUITE_VERSION`/`REVISION` ARGs pin the packaged v1.0.1 container

@@ -71,9 +71,40 @@ histogram. `--barcode-sample-limit 0` restores v1.0.1's behavior.
   FASTQ records, header lines up to 512 characters and sequences up to 650
   bases. Single-end mapping reads with zlib in every mode.
 
-Throughput, from standalone runs on 50,000,000 DOGMA-plex lane-1 ATAC read
-pairs at 32 threads: pending (the timed campaign is running; see
-docs/handoffs/HANDOFF_STAR_MIRRORED_FASTQ_READER_20260928.md).
+Throughput was measured on 50,000,000 DOGMA-plex lane-1 ATAC read pairs with
+the 32-thread setting on an Intel Core i9-13900KF host (32 logical CPUs).
+Standalone mapping used production ATAC settings and sidecar-only output.
+The baseline is `09b3164`, which already includes bounded barcode learning
+and sidecar-only output; the new binary is `66d4537`.
+
+| Input | Baseline wall (s) | New wall (s) | Wall-time reduction |
+|---|---:|---:|---:|
+| Ordinary gzip | 145.2 | 138.6 | 4.5% |
+| BGZF | 141.7 | 122.3, 122.8 | 13.3–13.7% |
+
+The intake-only harness, with mapping disabled, measured these reader
+strategies on the same records:
+
+| Reader | Wall (s) | Million read pairs/s | Compressed MB/s |
+|---|---:|---:|---:|
+| kseq, serial gzip | 82.0 | 0.612 | 56.2 |
+| kseq, one thread per gzip file | 30.3 | 1.667 | 153.2 |
+| Mirrored BGZF reader | 12.5 | 4.042 | 383.4 |
+
+Harness rates use its internal loading timer; wall time includes process
+startup and teardown. The harness compares reader strategies; the first
+table measures full-run version differences. Peak RSS was 22.9/23.0 GiB
+for old/new gzip and 23.1/22.1–22.4 GiB for old/new BGZF.
+
+Each timed run held the shared host lock from input page-cache eviction
+through completion, with the reference and index warmed. Only runs passing
+the recorded host-load checks are included above. These are individual
+observations (two clean runs for new BGZF, one for each other case). BGZF
+inputs are `bgzip` copies of the gzip subset; production DOGMA-plex inputs
+remain ordinary gzip. Full measurements, including excluded contaminated
+runs, are in [the throughput table](benchmarks/fastq_intake_20260928/throughput.tsv);
+commands, paths and reproduction steps are in the
+[runbook](runbooks/RUNBOOK_STAR_MIRRORED_FASTQ_READER_20260928.md).
 
 ## Validation
 
@@ -92,6 +123,11 @@ docs/handoffs/HANDOFF_STAR_MIRRORED_FASTQ_READER_20260928.md).
   `numcacheslots`), which differ in the same way between two runs of the old
   binary on the same reads. With `--deterministic-mapping` the summaries are
   byte-identical too.
+- All seven completed 50M-pair mapping runs in the throughput campaign also
+  produced byte-identical AEV1 sidecars and `.chroms.tsv` files across old/new
+  binaries and gzip/BGZF inputs. Summary differences were confined to the
+  same four candidate-cache columns. See the
+  [output identity report](benchmarks/fastq_intake_20260928/identity.json).
 - Embedded: STAR Suite `6e83853`, built unchanged against this branch, ran
   DOGMA-plex lane 1 (2,000,000 reads per arm, sidecar output). Its
   `atac_fragments.bin`, `.chroms.tsv` and every `atac/` output (peaks,

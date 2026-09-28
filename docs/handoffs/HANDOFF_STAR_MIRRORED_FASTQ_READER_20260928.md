@@ -13,7 +13,8 @@ Branch `feat/star-mirrored-fastq-reader` in
 | `baeb3ef` | Mirror (`src/star_input/`), glue and BGZF provider (`src/fastq_bgzf_input.{h,cc}`), options, gzip threads per batch, harness, intake smoke |
 | `66d4537` | `src/version.h` -> 1.1.0 (code validated at this commit) |
 | `b4bcc51` | README, tests/README, CHANGELOG, `docs/RELEASE_NOTES_v1.1.0.md` draft (throughput pending) |
-| this commit | runbook and this handoff |
+| `a88fa44` | runbook and initial handoff |
+| this update | completed throughput results, 50M output identity and release-note measurements |
 
 Done:
 
@@ -54,35 +55,58 @@ Done:
   six `atac/` files byte-identical to the no-BAM binary
   (`V/embedded/compare_readercheck_66d4537.json`, `VERDICT: PASS`).
 
-In progress:
+- Throughput: all seven cases have at least one clean result. The campaign
+  is no longer running; PID `1009455` is gone. Pass2 completed
+  `chromap_old_bgz` and `chromap_new_gz`, then stopped while waiting before
+  its redundant `chromap_old_gz` run (that directory contains only `tmp/`;
+  use the clean pass1 baseline). Pass3 completed the missing clean
+  `harness_kseq_threads_gz` case at 18:13:34 UTC on 2026-09-28. No further
+  timing runs are required by this runbook.
+- Final summary: `V/throughput/throughput.{tsv,json}` contains 14 completed
+  timed runs, eight clean and six contaminated. All completed runs exited
+  zero and recorded lock acquisition/release. The three timed binaries'
+  SHA256 hashes were checked against the archived values. A tracked copy of
+  all measurements is in
+  [`docs/benchmarks/fastq_intake_20260928/throughput.tsv`](../benchmarks/fastq_intake_20260928/throughput.tsv).
+- Post-campaign output comparison: `nice -n 10 python3
+  V/throughput/compare_outputs.py` -> `V/throughput/identity.json`,
+  `VERDICT: PASS`. All seven completed 50M-pair mapping runs, including
+  contaminated timings, have identical sidecar and `.chroms.tsv` hashes.
+  Summary differences are limited to `cachehit`, `fric`, `estfrip` and
+  `numcacheslots`. The report with full hashes and binary provenance is
+  [tracked here](../benchmarks/fastq_intake_20260928/identity.json).
+- Release notes now contain the throughput numbers and 50M output check.
+  Source and build files remain unchanged from validated commit `66d4537`.
+  The existing reports were also checked: all 26 standalone comparisons,
+  six deterministic comparisons and eight required embedded files pass.
 
-- Throughput campaign, PID `1009455`:
-  `cd V/throughput && ./run_throughput.sh pass2 harness_bgzf_bgz harness_kseq_threads_gz harness_kseq_serial_gz chromap_new_bgz chromap_old_bgz chromap_new_gz chromap_old_gz`
-  (log `V/throughput/campaign.log`, runs in `V/throughput/pass{1,2}/<case>/`).
-  It waits for a quiet host before each case. Remaining in pass2:
-  `chromap_old_bgz`, `chromap_new_gz`, `chromap_old_gz`.
+Final clean results, 50,000,000 lane-1 pairs, 32-thread setting, inputs
+evicted and reference/index warmed, Intel Core i9-13900KF (32 logical CPUs):
 
-Clean results so far (`python3 V/throughput/summarize.py` ->
-`throughput.tsv`), 50,000,000 lane-1 pairs, 32 threads, inputs evicted:
+| Case | Pass | Wall (s) | Max RSS (GiB) |
+|---|---|---:|---:|
+| chromap_old_gz | pass1 | 145.2 | 22.9 |
+| chromap_new_gz | pass2 | 138.6 | 23.0 |
+| chromap_old_bgz | pass2 | 141.7 | 23.1 |
+| chromap_new_bgz | pass1, pass2 | 122.8, 122.3 | 22.4, 22.1 |
+| harness_kseq_serial_gz | pass2 | 82.0 | 1.2 |
+| harness_kseq_threads_gz | pass3 | 30.3 | 1.2 |
+| harness_bgzf_bgz | pass2 | 12.5 | 1.0 |
 
-| Case | Wall (s) | Verdict |
-|---|---|---|
-| chromap_old_gz (pass1) | 145.2 | clean |
-| chromap_new_bgz (pass1, pass2) | 122.8, 122.3 | clean |
-| harness_kseq_serial_gz (pass2) | 82.0 | clean |
-| harness_bgzf_bgz (pass2) | 12.5 | clean |
-| chromap_new_gz, chromap_old_bgz, harness_kseq_threads_gz | pass1/2 contaminated | rerun |
+Full mapping wall time decreased 4.5% on gzip and 13.3–13.7% on BGZF.
+Harness loading rates are 0.612M, 1.667M and 4.042M pairs/s for serial
+gzip, threaded gzip and BGZF, respectively. Harness rates use the internal
+loading timer and compare reader strategies; full-run version comparisons
+use process wall time. These are individual observations, with two clean
+new-BGZF runs and one clean run for every other case. Contaminated runs are
+retained as evidence but excluded from these comparisons.
 
 ## Next
 
-1. Let pass2 finish (`tail V/throughput/campaign.log`).
-2. Rerun every case without a clean verdict under a new pass label, e.g.
-   `cd V/throughput && nohup ./run_throughput.sh pass3 chromap_new_gz chromap_old_bgz harness_kseq_threads_gz > campaign3.log 2>&1 &`.
-3. `python3 V/throughput/summarize.py`; after the campaign (not during it)
-   check the 50M sidecars old vs new are identical
-   (`sha256sum V/throughput/pass*/chromap_*/atac_fragments.bin`).
-4. Put the numbers in `docs/RELEASE_NOTES_v1.1.0.md` (replace "pending"),
-   update this handoff, commit, report.
+Reader implementation, validation and throughput documentation are complete.
+The branch is ready for coordinator review. The coordinator owns the release
+date, container ARG updates, merge, push and tag; no release action has been
+taken here.
 
 ## Open problems and decisions
 
