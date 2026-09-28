@@ -30,7 +30,7 @@ The implementation is independent of STAR Suite and requires no STAR checkout.
 
 The test gate covers unit tests, barcode sampling, reference sidecars, fragment
 storage and peak calling, spill records/materialization, FASTQ intake, input
-formats, ATAC sidecars, libchromap and CBQ. Python 3, samtools and bgzip are
+formats, ATAC sidecars, libchromap and CBQ. Python 3, samtools, bgzip and GNU time are
 required; test inputs are generated locally. Optional external BQTools paths can
 be skipped by their existing tests. The local `make test-smoke` additionally
 uses out-of-tree 100K fixtures for peak and low-memory qualification; those

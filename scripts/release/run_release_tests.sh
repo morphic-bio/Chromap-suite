@@ -6,6 +6,7 @@ artifact_root="$(realpath -m "${1:-$repo_root/plans/artifacts/release-tests}")"
 mkdir -p "$artifact_root"
 cd "$repo_root"
 for tool in python3 samtools bgzip; do command -v "$tool" >/dev/null; done
+test -x /usr/bin/time
 export CHROMAP_ARTIFACT_ROOT="$artifact_root" BUILD=0 THREADS=4
 printf 'target\tstatus\n' > "$artifact_root/tests.tsv"
 targets=(

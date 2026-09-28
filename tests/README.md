@@ -438,7 +438,7 @@ cd tests/e2e
 `make test-release` builds the suite and runs the 14 portable release targets
 serially. The target list and per-target logs are owned by
 `scripts/release/run_release_tests.sh`; set `CHROMAP_ARTIFACT_ROOT` to choose the
-results directory. These tests require Python 3, samtools and bgzip, and generate
+results directory. These tests require Python 3, samtools, bgzip and GNU time, and generate
 their own biological inputs. The existing `make test-smoke` also uses external
 100K fixtures and remains a local qualification step.
 

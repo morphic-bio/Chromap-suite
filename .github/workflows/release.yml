@@ -67,7 +67,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config python3 dpkg-dev debhelper fakeroot \
+            build-essential pkg-config python3 dpkg-dev debhelper fakeroot time \
             zlib1g-dev libbz2-dev liblzma-dev libdeflate-dev \
             libcurl4-gnutls-dev libssl-dev libhts-dev samtools tabix
       - name: Build, test, check staged binaries and SDK, then package
@@ -141,7 +141,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config python3 dpkg-dev debhelper fakeroot \
+            build-essential pkg-config python3 dpkg-dev debhelper fakeroot time \
             zlib1g-dev libbz2-dev liblzma-dev libdeflate-dev \
             libcurl4-gnutls-dev libssl-dev libhts-dev samtools tabix
       - name: Build self-contained Debian source package

@@ -5,7 +5,7 @@ Maintainer: Ling-Hong Hung <lhhunghimself@gmail.com>
 Build-Depends: debhelper-compat (= 13), build-essential, pkg-config, python3,
  zlib1g-dev, libbz2-dev, liblzma-dev, libdeflate-dev,
  libcurl4-gnutls-dev | libcurl4-openssl-dev, libssl-dev, libhts-dev,
- samtools, tabix
+ samtools, tabix, time
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
 Homepage: https://github.com/morphic-bio/Chromap-suite
