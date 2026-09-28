@@ -137,6 +137,17 @@ commands, paths and reproduction steps are in the
   tiers (`test-smoke`, input-format, libchromap core, sidecar-only, CBQ ATAC,
   CBQ modality matrix, CBQ range reader, runtime spill schema) pass.
 
+## Release packages and checks
+
+The release workflow builds amd64 tarballs and Debian packages on Ubuntu 22.04
+and 24.04. Each build must pass the shared 14-target release gate, packaged
+runtime checks and an SDK link check before packaging. Publication additionally
+requires clean-container checks (22.04 artifacts on 22.04 and 24.04; 24.04
+artifacts on 24.04), Debian install/removal validation, an unsigned Debian source
+bundle rebuilt and tested from its exported sources, and a Docker smoke check.
+Manual workflow runs validate without publishing. See the
+[release procedure](releasing.md) for commands and configuration.
+
 ## Versioning and provenance
 
 - `chromap --version` -> `1.1.0` (suite); `chromap --upstream-version`
@@ -148,5 +159,5 @@ commands, paths and reproduction steps are in the
   namespace, include-path and include-guard edits only, under STAR Suite's
   MIT licences (`src/star_input/LICENSE`).
 - Release tarballs include the mirrored reader's notices in
-  `licenses/STAR-input-LICENSE`; containers install them under
+  `share/licenses/chromap-suite/STAR-input-LICENSE`; containers install them under
   `/opt/chromap-suite/share/licenses/chromap-suite/`.

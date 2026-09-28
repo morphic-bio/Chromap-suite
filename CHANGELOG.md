@@ -26,6 +26,10 @@ intake shared with STAR Suite. See
   `--input-bgzf-reader-threads N` (`MappingParameters::input_bgzf_mode`,
   `input_bgzf_reader_threads`); the barcode abundance pass reads BGZF too.
 - `tests/fastq_intake_harness` and `make test-fastq-intake-smoke`.
+- A shared test gate (`make test-release`) and automated Ubuntu 22.04/24.04
+  tarball and Debian packaging. Publication requires package runtime checks,
+  Debian install/removal checks, a tested source-package rebuild, and a Docker
+  smoke check. Manual workflow runs validate without publishing.
 
 ### Changed
 

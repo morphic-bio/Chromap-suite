@@ -149,8 +149,13 @@ smoke now derives its expected version/revision from Dockerfile, with
 
 ## Next
 
-Local integration is complete: master includes merge `fc47c2f` and the
-separate release-finalization commit identified by annotated tag `v1.1.0`.
+Local integration includes merge `fc47c2f` and release-finalization commit
+`0a4c71c`. The subsequent user-requested release pipeline adds test-gated
+tarballs, Debian binaries and source packages, clean-runtime validation, and
+Docker publication dependencies. See the [release procedure](../releasing.md)
+and [pipeline validation runbook](../runbooks/RUNBOOK_TEST_GATED_RELEASE_20260928.md).
+The unpublished local `v1.1.0` tag is advanced with that integration; the
+earlier container and tarball above remain evidence for the initial merge.
 The primary checkout's pre-existing untracked files are preserved. Publishing
 remains a separate step; nothing has been pushed to origin or an image registry.
 

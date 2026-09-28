@@ -149,6 +149,15 @@ Reusable scripts and recorded outputs:
 
 ## Building & Installing
 
+### Release packages
+
+The release pipeline builds tarballs and Debian packages for Ubuntu 22.04 and
+24.04 on amd64. Both formats include the command-line tools and static library
+SDK. Install a downloaded Debian package with `sudo apt install ./<file>.deb`,
+or extract a tarball and add its `bin/` directory to `PATH` after installing its
+declared runtime dependencies. See the [release procedure](docs/releasing.md)
+for package contents, compatibility checks, source bundles and local builds.
+
 ### From source
 
 ```sh
@@ -159,7 +168,9 @@ git submodule update --init --recursive
 make
 ```
 
-Requirements: GCC ≥ 7.3.0, GNU make, OpenMP, zlib, htslib build dependencies (libcurl, libcrypto, libbz2, liblzma, libdeflate). The vendored htslib submodule is built from source as part of `make` so no system htslib is required.
+Requirements: GCC ≥ 7.3.0, GNU make, OpenMP, zlib, system `libhts-dev`, and the
+development libraries for libcurl, libcrypto, libbz2, liblzma and libdeflate.
+The Makefile uses vendored HTS headers and links against the system HTS library.
 
 Compile-time switches:
 
@@ -174,7 +185,11 @@ make LEGACY_OVERFLOW=1
 ### Validation
 
 ```sh
-# Hermetic S0 smoke matrix (regression cases C01–C11, synthetic fixtures)
+# Portable release gate: 14 targets with generated fixtures
+# Requires Python 3, samtools, bgzip and GNU time in addition to build dependencies
+make test-release
+
+# Additional local qualification, including external 100K biological fixtures
 make test-smoke
 
 # Single-component validators (pre-spinoff correctness checks; still useful)
