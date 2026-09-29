@@ -136,7 +136,7 @@ To cut a release:
    `git push origin master --follow-tags`.
 
 Pushing the tag triggers `.github/workflows/release.yml`. The shared
-`scripts/release/build_release.sh` entry point builds, runs the 14 hermetic
+`scripts/release/build_release.sh` entry point builds, runs the 15 hermetic
 release test targets, checks staged binaries and the SDK, and only then creates
 tarballs and Debian packages for Ubuntu 22.04 / 24.04. Publication also requires
 clean-container tarball and Debian install/runtime/purge checks, a Debian source

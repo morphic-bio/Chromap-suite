@@ -25,13 +25,9 @@ coordinator releases.
 
 ## Rules
 
-- Patent: do not read, copy or derive from `/mnt/pikachu/libbfastq`,
-  `/mnt/pikachu/fgqzip`, `/mnt/pikachu/zshard*` or the Chromap branch
-  `feature/fqgzip-input-adapter-20260730` (worktree
-  `/mnt/pikachu/Chromap-suite-fqgzip-adapter-20260730`). Mirror only from
-  STAR Suite `core/legacy/source/input/`. Do not implement parallel
-  decompression of ordinary gzip. If something seems to exist only in those
-  repositories, stop and report.
+- Excluded material: follow the exclusions in the maintainers' private notes.
+  Mirror only from STAR Suite `core/legacy/source/input/`. If something seems
+  to exist only in excluded material, stop and report.
 - Clean room: never read 10x Genomics code.
 - STAR-suite: no source changes. A detached worktree for the embedded build
   is allowed.

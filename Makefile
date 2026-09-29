@@ -107,7 +107,7 @@ $(objs_dir)/star_input/%.o: $(src_dir)/star_input/%.cpp
 
 -include $(deps)
 
-.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-macs3-fragment-buckets test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke test-atac-sidecar-only-smoke test-fastq-intake-smoke \
+.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-lowmem-overflow-edge-cases test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-macs3-fragment-buckets test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke test-atac-sidecar-only-smoke test-fastq-intake-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
 	 test-encode-cbq-cross-assay-smoke \
@@ -200,6 +200,15 @@ test-atac-spill-record-roundtrip: dir $(libchromap)
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_atac_spill_record_roundtrip.cc \
 		$(libchromap) -o tests/test_atac_spill_record_roundtrip $(LDFLAGS)
 	./tests/test_atac_spill_record_roundtrip
+
+# Low-memory overflow merge edge cases: an unopenable spill file stops the
+# run, and bulk-level dedup reads no abundance for barcodes absent from the
+# whitelist table. Hermetic; each case runs in a forked child.
+test-lowmem-overflow-edge-cases: dir $(libchromap) $(RAPIDMACS_LIB)
+	@mkdir -p tests
+	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_lowmem_overflow_edge_cases.cc \
+		$(libchromap) $(RAPIDMACS_LIB) -o tests/test_lowmem_overflow_edge_cases $(LDFLAGS)
+	./tests/test_lowmem_overflow_edge_cases
 
 tests/test_atac_mergeable_spill_materializer: tests/test_atac_mergeable_spill_materializer.cc $(libchromap) $(RAPIDMACS_LIB)
 	$(CXX) $(CXXFLAGS) -I$(src_dir) $< $(libchromap) $(RAPIDMACS_LIB) \

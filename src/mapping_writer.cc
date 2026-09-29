@@ -5,8 +5,11 @@
 #include <atomic>
 #include <unordered_set>
 #include <unordered_map>
+#include <sys/resource.h>
 #include <unistd.h>
+#include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <sstream>
 #include "chromap.h"
@@ -35,6 +38,43 @@ uint32_t LowMemMidBatchOverflowFlushCount() {
 #endif
 
 namespace {
+
+// A low-memory spill file that cannot be opened stops the run: skipping it
+// would drop its records without an error. The spill files are temporary, so
+// they are removed before exiting. files_for_reference is the number of spill
+// files the merge keeps open at once for the reference being merged (0 while
+// scanning).
+void ExitOnUnopenableOverflowFile(
+    const std::vector<std::string> &overflow_file_paths,
+    const std::string &path, int open_errno, uint32_t rid,
+    size_t files_for_reference) {
+  std::ostringstream message;
+  message << "Cannot open low-memory overflow file " << path << ": "
+          << (open_errno != 0 ? std::strerror(open_errno) : "unknown error");
+  if (open_errno == EMFILE || open_errno == ENFILE) {
+    std::string limit_text = "unknown";
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit) == 0) {
+      limit_text = limit.rlim_cur == RLIM_INFINITY
+                       ? std::string("unlimited")
+                       : std::to_string(
+                             static_cast<unsigned long long>(limit.rlim_cur));
+    }
+    message << ". The low-memory merge opens all spill files of a reference "
+               "at once";
+    if (files_for_reference > 0) {
+      message << " (" << files_for_reference << " for reference " << rid
+              << ")";
+    }
+    message << ", and the open-file limit is " << limit_text
+            << ". Raise the limit (ulimit -n) or use a larger --low-mem-ram "
+               "so that fewer spill files are written";
+  }
+  for (const std::string &spill_path : overflow_file_paths) {
+    unlink(spill_path.c_str());
+  }
+  ExitWithMessage(message.str());
+}
 
 std::string DeriveReadGroupFromFilenameImpl(const std::string &filename) {
   size_t last_slash = filename.find_last_of("/\\");
@@ -1322,9 +1362,11 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
   for (size_t fi = 0; fi < shared_overflow_file_paths_.size(); ++fi) {
     OverflowReader scanner(shared_overflow_file_paths_[fi]);
     if (!scanner.IsValid()) {
-      continue;
+      ExitOnUnopenableOverflowFile(shared_overflow_file_paths_,
+                                   shared_overflow_file_paths_[fi],
+                                   scanner.OpenErrno(), 0, 0);
     }
-    
+
     // Scan file to find all rids it contains
     uint32_t rid;
     std::string payload;
@@ -1384,10 +1426,13 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
     // Note: OverflowWriter creates one file per rid, so each file contains only records for one rid
     for (size_t fi : file_indices) {
       readers[fi].reset(new OverflowReader(shared_overflow_file_paths_[fi]));
-      if (!readers[fi] || !readers[fi]->IsValid()) {
-        continue;
+      if (!readers[fi]->IsValid()) {
+        ExitOnUnopenableOverflowFile(shared_overflow_file_paths_,
+                                     shared_overflow_file_paths_[fi],
+                                     readers[fi]->OpenErrno(), current_rid,
+                                     file_indices.size());
       }
-      
+
       uint32_t rid;
       std::string payload;
       if (readers[fi]->ReadNext(rid, payload)) {

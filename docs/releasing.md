@@ -8,7 +8,7 @@ The implementation is independent of STAR Suite and requires no STAR checkout.
 
 1. Check that the requested tag matches `CHROMAP_SUITE_VERSION` and has release
    notes. Run regression tests for failure propagation and workflow dependencies.
-2. Build on Ubuntu 22.04 and 24.04 (amd64). On each baseline, run the 14 targets in
+2. Build on Ubuntu 22.04 and 24.04 (amd64). On each baseline, run the 15 targets in
    `scripts/release/run_release_tests.sh` serially, then check staged binaries and
    compile/link/run a consumer against the packaged SDK. Only after these pass
    does `scripts/release/build_release.sh` create the tarball and binary `.deb`.

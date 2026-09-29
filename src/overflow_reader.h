@@ -30,6 +30,9 @@ public:
     // Check if reader is valid (file opened successfully)
     bool IsValid() const { return file_ != nullptr; }
 
+    // errno from the failed open when !IsValid(); 0 otherwise.
+    int OpenErrno() const { return open_errno_; }
+
     // Get current file path
     const std::string& GetPath() const { return path_; }
 
@@ -38,6 +41,7 @@ private:
 
     std::string path_;
     FILE* file_;
+    int open_errno_ = 0;
     bool prefix_checked_ = false;
     bool file_has_atac_spill_header_ = false;
     bool file_has_atac_kway_header_ = false;

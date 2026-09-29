@@ -8,6 +8,28 @@ are in [`docs/RELEASE_NOTES_vX.Y.Z.md`](docs/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-29
+
+Two fixes to the low-memory (`--low-mem`) merge of spilled mappings. See
+[`docs/RELEASE_NOTES_v1.1.1.md`](docs/RELEASE_NOTES_v1.1.1.md).
+
+### Fixed
+
+- A low-memory spill file that cannot be opened now stops the run with an
+  error. Previously the merge skipped the file and wrote output without its
+  records. When the open-file limit is the cause, the message gives the limit
+  and suggests `ulimit -n` or a larger `--low-mem-ram`.
+- Bulk-level duplicate removal on barcoded data no longer reads past the
+  whitelist table. A barcode outside the table (with
+  `--output-mappings-not-in-whitelist`, or when no `--barcode-whitelist` is
+  given) has abundance 0 when the kept barcode is chosen. Without a whitelist
+  this previously could crash.
+
+### Added
+
+- `make test-lowmem-overflow-edge-cases`, a hermetic regression test for both
+  fixes, added to the release gate (now 15 targets).
+
 ## [1.1.0] - 2026-09-28
 
 Bounded ATAC barcode learning by default, sidecar-only ATAC output, and FASTQ
