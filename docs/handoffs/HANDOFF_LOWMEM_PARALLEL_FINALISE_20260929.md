@@ -51,8 +51,8 @@ Design note: `docs/design/LOWMEM_PARALLEL_FINALISE_20260929.md`.
 
 ## Excluded material
 
-Follow the exclusions in the private coordinator handoff; never read or copy
-the directories it names.
+Follow the exclusions in the maintainers' private notes; never read or copy the
+material they name.
 
 ## Estimate for the rest
 

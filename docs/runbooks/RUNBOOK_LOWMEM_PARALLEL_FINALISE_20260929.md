@@ -37,8 +37,8 @@ Standing project rules:
   `/mnt/pikachu/refdata-cellranger-arc-GRCh38-2020-A-2.0.0`, use only
   `fasta/genome.fa`, as the existing tests do. Use the ATAC barcode whitelist
   as reference data. Do not open other files in that package.
-- **Excluded material.** Follow the exclusions in the private coordinator
-  handoff; never read or copy the directories it names.
+- **Excluded material.** Follow the exclusions in the maintainers' private
+  notes; never read or copy the material they name.
 - **Spill reader.** `OverflowReader` (the reader for the low-memory spill
   temp files) may change in M3.
 - **No timing.** No benchmarks or timing claims. Runs are for output identity
@@ -930,6 +930,10 @@ Stop and report immediately if any of these happens:
 | D10 | Accepted. `test-lowmem-parallel-finalize` joins the release gate. |
 | D11 | Fix first. The two bugs ship as 1.1.1 (M-1) before 1.2.0 work. |
 | D12 | The documents are committed on the design branch. M-1 now; M0 waits for the coordinator. |
+| D13 (29 Sep, after M-1) | "Go ahead with the implementations of the runbooks": M0-M4 run without waiting for review between milestones. Stop only on an output difference outside the recorded `<RUN>` normalisation, a needed change in another repository, or near 90% of the usage limit; stop at the end of M4. |
+| D14 | 1.2.0 builds on 1.1.1 by merge, not rebase. Implementation branch `feat/lowmem-parallel-finalize-20260929` (worktree `/mnt/pikachu/Chromap-suite-lowmem-feat-20260929`) was created from the design branch and `fix/v1.1.1-lowmem-edge-cases` was merged into it (`9d3c30b`). The design branch is no longer updated; the runbook and handoff continue on the implementation branch. |
+| D15 | The N = 1 serial path (the v1.1.0 loop) holds one permit for the whole finalisation when permit hooks are present, as the parallel tasks do. Output stays byte-identical. |
+| D16 | Sharing pikachu: any run that loads a genome index or can exceed about 16 GB RSS holds `flock /mnt/pikachu/e2e_bench_20260926/pikachu_timed.lock`; builds use `nice -n 10` and at most `-j16`; nothing is timed. |
 
 ### 7.1 TODO (after 1.2.0)
 
@@ -938,10 +942,6 @@ Stop and report immediately if any of these happens:
 - **Remove the duplicate serial path (D5).** Two copies of the merge loop will
   diverge. Once the per-reference path has shipped, make it the only path.
 - **Parallel finalisation for bulk data (D6)**, for the same reason.
-- **N = 1 and permits.** Should the N = 1 serial loop (not a pool) hold a
-  permit when hooks are present? It would take one permit for its whole
-  duration, as a wrapper outside the verbatim loop. Settle this with the
-  author.
 - **`copy_file_range` for partition assembly**, with the discipline in
   correction 5 and a fallback. Only if it proves useful once benchmarking
   resumes.
