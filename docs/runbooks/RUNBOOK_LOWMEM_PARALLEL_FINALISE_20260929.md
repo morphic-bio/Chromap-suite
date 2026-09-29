@@ -1225,7 +1225,80 @@ Commits on the local branch:
 - **Quick E2E:** S1c_side, S1b_side and S1c_tag at the CLI default are
   identical to the baseline.
 
-### M4
+### M4: gates (final build `e14c8d3`; branch head also carries `ebd474b` docs and the `origin/master` 128ead3 merge `600dce4`, no source change)
 
-In progress: the full E2E set, the release gate and the fixture smokes. The
-results table follows when they finish.
+**Identity.** `V/compare/m4_summary.tsv`, per-case JSON in `V/compare/m4_*`.
+Every final-build run is compared with the baseline 1.1.1 run of the same
+case and mode, using the rules of §5.6:
+- summaries byte for byte in `det` mode, and without the cache columns in
+  default mode;
+- `summary.csv.macs3_frag_peaks.tsv` after the `<RUN>` normalisation.
+
+51 of 51 comparisons pass. The one expected-failure run also passes.
+
+| Case | Modes | Finalise threads | Spill files / flushes | Output records | Result |
+|---|---|---|---|---|---|
+| S1c_side, S1c_bed, S1c_tag (synthetic × 400 lanes, cell-level) | det, default | CLI default (32); det also 2, 7 | 1,200 / 400 | 3,241 | identical |
+| S1b_side, S1b_bed (bulk-level) | det, default | 32; side det also 2, 7 | 1,200 / 400 | 399 | identical |
+| S1c_side under `ulimit -n 1024` | det | 32, of which 2 ran at a time (limited by the open-file limit) | 1,200 / 400 | 3,241 | identical |
+| S1c_side under `ulimit -n 256` | det | 32 | 1,200 / 400 | — | expected error "Low-memory finalization needs 402 open files at once for reference 0 …", exit 255, no temp files left |
+| P1s_def, P1s_1K, P1b_def, P1b_1K (PBMC 100k) | det, default | 32; 1K cases det also 2, 7; P1s det also 1 (serial merge) | 122-400 / 0-4 | 320,017 | identical |
+| P2c, P2b (PBMC 100k × 256 lanes) | det, default | 32 | 25,408-25,600 / 256 | 320,017 / 319,264-5 | identical |
+| D1s_def, D1s_1K, D1b_1K (DOGMA 2M) | det, default | 32; 1K det also 2, 7 | 116-375 / 0-4 | 1,587,839 | identical |
+| D1w_1K (`--output-mappings-not-in-whitelist`) | det | 32 | 373 / 4 | 1,605,595 | identical (summary rows new during the merge) |
+| D2s_1K (DOGMA 50M) | det, default | 32 | 9,360 / 100 | 36,665,980-2 | identical |
+| P3s_1K (PBMC 3k full, 82.8M pairs) | default | 32 | 21,113 / 168 | 53,969,811 | identical |
+| F1s_def (DOGMA lane 1 full depth) | default | 32 | 40,049 / 335 | 316,453,702 | identical |
+
+**F1 cross-check against production output.** The final build's full-depth
+sidecar (7,594,888,880 bytes) and `.chroms.tsv` are byte-identical to the
+v1.1.0 output Multiomics 0.9.0 wrote for the same lane
+(`perf_lane_throughput_20260929/full_baseline`).
+
+**Tests.**
+- `make test-release`: 16 of 16 targets pass (`V/artifacts/release-tests/tests.tsv`).
+- `python3 -m unittest discover -s tests -p test_release_pipeline.py`: 13 tests
+  OK, after the `origin/master` merge.
+- `make test-lowmem-bed-100k` and `make test-atac-runtime-spill-schema-harness`:
+  PASS. Both ran under the lock, with the CLI default, so the parallel merge.
+- `test-atac-sidecar-only-smoke` and `test-libchromap-core-smoke` through
+  wrappers that append `--low-mem-finalize-threads 1` (the serial merge): PASS.
+- Unit harness: 143 runs pass, and match the baseline goldens.
+
+**Informal timings of the finalisation step (not a benchmark).**
+- Values are from each run's "Sorted, deduped and outputed mappings in" line.
+- Each is a single untimed run on a host shared with two other agents.
+- The parallel timer starts after the spill-file probe; the serial timer
+  includes its scan.
+
+| Case | Serial (1.1.1) | Parallel (32) |
+|---|---|---|
+| F1 full-depth DOGMA lane 1 | 680 s | 211 s |
+| D2 DOGMA 50M, default mode | 32 s | 13.5 s |
+| P2c PBMC 100k × 256 lanes | 38 s | 0.5 s |
+| P3 PBMC 3k full, with `--summary` | 43 s | **76 s** |
+| P3 PBMC 3k full, without `--summary` (diagnostic, sidecar identical) | — | 7.6 s |
+
+**Finding: summary contention (performance only; output unaffected).**
+- The D8 variant adds summary counts with two atomic adds per output group
+  into the shared row of the group's barcode.
+- PBMC output is dominated by about 3,000 cells, so 32 tasks keep updating the
+  same few thousand rows. The cache-line contention makes the P3 merge slower
+  than the serial merge.
+- Without `--summary`, P3 takes 7.6 s. DOGMA-plex, with more cells, is less
+  affected.
+- Proposed fix, for the author because it revisits D8:
+  - Each task aggregates its deltas per barcode in a small task-local map.
+  - When the task ends, it applies them with one atomic add per barcode and
+    field.
+  - New-barcode handling and byte identity are unchanged.
+  - The memory is transient: at most the distinct barcodes of the references
+    in flight. At lane-1 full depth there are 6.68M (reference, barcode) pairs
+    across 159 references in total.
+- Until then, runs with `--summary` on PBMC-like data may prefer
+  `--low-mem-finalize-threads 1`.
+
+**Release notes and changelog.**
+- `docs/RELEASE_NOTES_v1.2.0.md` is drafted and undated.
+- `CHANGELOG.md` has an `[Unreleased]` entry.
+- `src/version.h` stays 1.1.1 until the release step.
