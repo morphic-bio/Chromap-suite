@@ -93,25 +93,31 @@ bool AppendFileContents(FILE *destination, const std::string &path,
 // Directory part of a path ("." when it has none).
 std::string DirectoryOfPath(const std::string &path);
 
-// Summary counts for barcodes that had no row in the summary table when the
-// parallel merge started, in the order the serial merge would first update
-// them, aggregated per barcode.
-struct AtacSummaryNewKey {
+// Summary deltas of one merge task, aggregated per barcode in the order the
+// serial merge would first update each barcode. At the end of the task the
+// deltas of barcodes that already have a row are added to the summary table
+// (one atomic add per barcode and field); the others are kept, in order, and
+// inserted during the ordered assembly.
+struct AtacSummaryDelta {
   uint64_t barcode = 0;
   uint64_t duplicate = 0;
   uint64_t lowmapq = 0;
   uint64_t mapped = 0;
 };
 
-class AtacSummaryNewKeyLog {
+class AtacSummaryDeltaLog {
  public:
   // type is SUMMARY_METADATA_DUP, SUMMARY_METADATA_LOWMAPQ or
   // SUMMARY_METADATA_MAPPED.
   void Add(uint64_t barcode, int type, uint64_t change);
-  const std::vector<AtacSummaryNewKey> &keys() const { return keys_; }
+  // Appends an aggregated entry for a barcode not yet in this log.
+  void Append(const AtacSummaryDelta &delta);
+  const std::vector<AtacSummaryDelta> &keys() const { return keys_; }
+  // Frees the memory.
+  void Clear();
 
  private:
-  std::vector<AtacSummaryNewKey> keys_;
+  std::vector<AtacSummaryDelta> keys_;
   std::unordered_map<uint64_t, size_t> index_;
 };
 

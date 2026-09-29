@@ -244,19 +244,19 @@ std::string DirectoryOfPath(const std::string &path) {
   return path.substr(0, slash);
 }
 
-void AtacSummaryNewKeyLog::Add(uint64_t barcode, int type, uint64_t change) {
+void AtacSummaryDeltaLog::Add(uint64_t barcode, int type, uint64_t change) {
   auto found = index_.find(barcode);
   size_t slot;
   if (found == index_.end()) {
     slot = keys_.size();
     index_.emplace(barcode, slot);
-    AtacSummaryNewKey key;
+    AtacSummaryDelta key;
     key.barcode = barcode;
     keys_.push_back(key);
   } else {
     slot = found->second;
   }
-  AtacSummaryNewKey &key = keys_[slot];
+  AtacSummaryDelta &key = keys_[slot];
   if (type == SUMMARY_METADATA_DUP) {
     key.duplicate += change;
   } else if (type == SUMMARY_METADATA_LOWMAPQ) {
@@ -266,6 +266,16 @@ void AtacSummaryNewKeyLog::Add(uint64_t barcode, int type, uint64_t change) {
   } else {
     ExitWithMessage("Unexpected summary field in the low-memory merge");
   }
+}
+
+void AtacSummaryDeltaLog::Append(const AtacSummaryDelta &delta) {
+  index_.emplace(delta.barcode, keys_.size());
+  keys_.push_back(delta);
+}
+
+void AtacSummaryDeltaLog::Clear() {
+  std::vector<AtacSummaryDelta>().swap(keys_);
+  std::unordered_map<uint64_t, size_t>().swap(index_);
 }
 
 }  // namespace chromap

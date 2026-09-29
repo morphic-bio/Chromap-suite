@@ -965,7 +965,7 @@ struct TaskResult {
   std::string partition_path;
   uint64_t partition_records = 0;
   uint64_t records_merged = 0;
-  AtacSummaryNewKeyLog new_keys;
+  AtacSummaryDeltaLog new_keys;
 };
 
 // Full decode: the payload string and AtacSpillRecord the serial merge uses.
@@ -1059,21 +1059,42 @@ class AtacLowMemFinalizer {
   typedef lowmem_finalize_detail::Counters Counters;
   typedef lowmem_finalize_detail::Job Job;
 
-  void Summary(bool direct, AtacSummaryNewKeyLog *new_keys, uint64_t barcode,
-               int type, uint64_t change) {
+  // direct: the serial order at assembly (tails); otherwise the task's own
+  // log, aggregated per barcode and applied when the task ends.
+  void Summary(bool direct, AtacSummaryDeltaLog *task_summary,
+               uint64_t barcode, int type, uint64_t change) {
     if (!summary_enabled_) {
       return;
     }
-    SummaryMetadata &summary = w_.summary_metadata_;
     if (direct) {
-      summary.UpdateCount(barcode, type, change);
+      w_.summary_metadata_.UpdateCount(barcode, type, change);
       return;
     }
-    const khiter_t it = summary.FindExisting(barcode);
-    if (it != summary.End()) {
-      summary.AddExistingAtomic(it, type, change);
-    } else {
-      new_keys->Add(barcode, type, change);
+    task_summary->Add(barcode, type, change);
+  }
+
+  // Adds a finished task's deltas: one atomic add per barcode and field for
+  // barcodes that already have a row; the others keep their first-seen order
+  // and are inserted during the ordered assembly. No row is inserted here.
+  void ApplyTaskSummary(const AtacSummaryDeltaLog &task_summary,
+                        AtacSummaryDeltaLog *new_keys) {
+    SummaryMetadata &summary = w_.summary_metadata_;
+    for (const AtacSummaryDelta &delta : task_summary.keys()) {
+      const khiter_t it = summary.FindExisting(delta.barcode);
+      if (it == summary.End()) {
+        new_keys->Append(delta);
+        continue;
+      }
+      if (delta.duplicate != 0) {
+        summary.AddExistingAtomic(it, SUMMARY_METADATA_DUP, delta.duplicate);
+      }
+      if (delta.lowmapq != 0) {
+        summary.AddExistingAtomic(it, SUMMARY_METADATA_LOWMAPQ,
+                                  delta.lowmapq);
+      }
+      if (delta.mapped != 0) {
+        summary.AddExistingAtomic(it, SUMMARY_METADATA_MAPPED, delta.mapped);
+      }
     }
   }
 
@@ -1097,7 +1118,7 @@ class AtacLowMemFinalizer {
                  const khash_t(k64_seq) * barcode_whitelist_lookup_table,
                  lowmem_finalize_detail::GroupState<Record> *state,
                  bool end_of_stream, AtacFragmentSink *sink, bool direct,
-                 AtacSummaryNewKeyLog *new_keys, Counters *counters);
+                 AtacSummaryDeltaLog *task_summary, Counters *counters);
 
   template <typename Record>
   void EmitTail(uint32_t rid, const SequenceBatch &reference,
@@ -2152,7 +2173,7 @@ void AtacLowMemFinalizer::EmitGroup(
     uint32_t rid, const SequenceBatch &reference,
     const khash_t(k64_seq) * barcode_whitelist_lookup_table,
     lowmem_finalize_detail::GroupState<Record> *state, bool end_of_stream,
-    AtacFragmentSink *sink, bool direct, AtacSummaryNewKeyLog *new_keys,
+    AtacFragmentSink *sink, bool direct, AtacSummaryDeltaLog *task_summary,
     Counters *counters) {
   Record &last_mapping = state->last_mapping;
   const uint32_t num_last_mapping_dups = state->num_last_mapping_dups;
@@ -2175,13 +2196,13 @@ void AtacLowMemFinalizer::EmitGroup(
 
       WriteNonDualFragment(w_, sink, rid, reference, last_mapping);
       ++counters->passing;
-      Summary(direct, new_keys, last_mapping.GetBarcode(),
+      Summary(direct, task_summary, last_mapping.GetBarcode(),
               SUMMARY_METADATA_DUP, num_last_mapping_dups - 1);
     } else {
-      Summary(direct, new_keys, last_mapping.GetBarcode(),
+      Summary(direct, task_summary, last_mapping.GetBarcode(),
               SUMMARY_METADATA_LOWMAPQ, num_last_mapping_dups);
     }
-    Summary(direct, new_keys, last_mapping.GetBarcode(),
+    Summary(direct, task_summary, last_mapping.GetBarcode(),
             SUMMARY_METADATA_MAPPED, num_last_mapping_dups);
 
     if (last_mapping.is_unique_ == 1) {
@@ -2208,13 +2229,13 @@ void AtacLowMemFinalizer::EmitGroup(
     WriteNonDualFragment(w_, sink, rid, reference, last_mapping);
     ++counters->passing;
 
-    Summary(direct, new_keys, last_mapping.GetBarcode(), SUMMARY_METADATA_DUP,
+    Summary(direct, task_summary, last_mapping.GetBarcode(), SUMMARY_METADATA_DUP,
             num_last_mapping_dups - 1);
   } else {
-    Summary(direct, new_keys, last_mapping.GetBarcode(),
+    Summary(direct, task_summary, last_mapping.GetBarcode(),
             SUMMARY_METADATA_LOWMAPQ, num_last_mapping_dups);
   }
-  Summary(direct, new_keys, last_mapping.GetBarcode(), SUMMARY_METADATA_MAPPED,
+  Summary(direct, task_summary, last_mapping.GetBarcode(), SUMMARY_METADATA_MAPPED,
           num_last_mapping_dups);
 
   if (last_mapping.is_unique_ == 1) {
@@ -2303,6 +2324,7 @@ bool AtacLowMemFinalizer::RunTask(
   }
 
   lowmem_finalize_detail::GroupState<Record> state;
+  AtacSummaryDeltaLog task_summary;
   bool first = true;
   while (ok && !heap.empty()) {
     HeapEntry min_rec = heap.top();
@@ -2336,7 +2358,7 @@ bool AtacLowMemFinalizer::RunTask(
       if (!first) {
         EmitGroup(job.rid, reference, barcode_whitelist_lookup_table, &state,
                   /*end_of_stream=*/false, &sink, /*direct=*/false,
-                  &result->new_keys, &result->counters);
+                  &task_summary, &result->counters);
       }
       state.last_mapping = current_min_mapping;
       state.num_last_mapping_dups = 1;
@@ -2389,6 +2411,10 @@ bool AtacLowMemFinalizer::RunTask(
     return false;
   }
 
+  if (summary_enabled_) {
+    ApplyTaskSummary(task_summary, &result->new_keys);
+    task_summary.Clear();
+  }
   state.active = true;
   result->tail = state;
   // This reference's spill files are no longer needed.
@@ -2487,7 +2513,7 @@ void AtacLowMemFinalizer::RunTasksAndAssemble(
     unlink(result.partition_path.c_str());
     partitions[j].clear();
     if (summary_enabled_) {
-      for (const AtacSummaryNewKey &key : result.new_keys.keys()) {
+      for (const AtacSummaryDelta &key : result.new_keys.keys()) {
         // One put per field, so a put always follows the insertion.
         w_.summary_metadata_.UpdateCount(key.barcode, SUMMARY_METADATA_DUP,
                                          key.duplicate);
