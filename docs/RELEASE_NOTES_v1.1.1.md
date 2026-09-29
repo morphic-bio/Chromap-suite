@@ -1,6 +1,6 @@
 # Chromap Suite v1.1.1 Release Notes
 
-Date: 2026-09-29 (draft; the date is set when the release is made).
+Date: 2026-09-29
 
 Chromap Suite v1.1.1 fixes two errors in the low-memory (`--low-mem`) merge of
 spilled mappings. When neither error applies, the output is byte-identical to
