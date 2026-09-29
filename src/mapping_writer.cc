@@ -1,11 +1,13 @@
 #include "mapping_writer.h"
 
+#include <map>
 #include <queue>
 #include <algorithm>
 #include <atomic>
 #include <unordered_set>
 #include <unordered_map>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <cerrno>
 #include <cstdlib>
@@ -15,6 +17,7 @@
 #include "chromap.h"
 #include "atac_hot_spill.h"
 #include "atac_kway_spill.h"
+#include "atac_lowmem_finalize.h"
 #include "bam_sorter.h"
 #include "rapidmacs/frag_compact_store.h"
 #include "rapidmacs/fragments.h"
@@ -44,10 +47,9 @@ namespace {
 // they are removed before exiting. files_for_reference is the number of spill
 // files the merge keeps open at once for the reference being merged (0 while
 // scanning).
-void ExitOnUnopenableOverflowFile(
-    const std::vector<std::string> &overflow_file_paths,
-    const std::string &path, int open_errno, uint32_t rid,
-    size_t files_for_reference) {
+std::string UnopenableOverflowFileMessage(const std::string &path,
+                                          int open_errno, uint32_t rid,
+                                          size_t files_for_reference) {
   std::ostringstream message;
   message << "Cannot open low-memory overflow file " << path << ": "
           << (open_errno != 0 ? std::strerror(open_errno) : "unknown error");
@@ -70,10 +72,19 @@ void ExitOnUnopenableOverflowFile(
             << ". Raise the limit (ulimit -n) or use a larger --low-mem-ram "
                "so that fewer spill files are written";
   }
+  return message.str();
+}
+
+void ExitOnUnopenableOverflowFile(
+    const std::vector<std::string> &overflow_file_paths,
+    const std::string &path, int open_errno, uint32_t rid,
+    size_t files_for_reference) {
+  const std::string message = UnopenableOverflowFileMessage(
+      path, open_errno, rid, files_for_reference);
   for (const std::string &spill_path : overflow_file_paths) {
     unlink(spill_path.c_str());
   }
-  ExitWithMessage(message.str());
+  ExitWithMessage(message);
 }
 
 std::string DeriveReadGroupFromFilenameImpl(const std::string &filename) {
@@ -874,6 +885,333 @@ void MappingWriter<PairsMapping>::OutputTempMapping(
   fclose(temp_mapping_output_file);
 }
 
+// ---------------------------------------------------------------------------
+// Per-reference low-memory finalisation of paired-end ATAC spills.
+//
+// Every spill file holds one reference, and duplicates never cross
+// references, so each reference is merged and deduplicated by its own task.
+// A task writes its output (AEV1 records, or BED/TagAlign rows) to a
+// temporary partition file and its in-memory MACS3 fragments to its own
+// bucket. The partitions are appended to the output in reference order.
+//
+// The serial merge carries its group state from one reference into the next
+// and emits a reference's last group only when the next reference starts (or,
+// for the last reference, after the loop, with the MAPQ test before the
+// best-duplicate choice). Each task therefore returns its last group as a
+// tail, and the assembly emits the tails in the serial merge's positions.
+//
+// Summary counts: while tasks run, no row is inserted into the summary table.
+// Counts for barcodes that already have a row are added atomically; the other
+// barcodes are logged per task in the order the serial merge would first
+// update them and are inserted during the assembly. Together with the pending
+// resize applied before the tasks start (as the first serial put would), this
+// keeps the table layout, and so the summary row order, the same.
+// ---------------------------------------------------------------------------
+
+// Where one non-dual ATAC fragment is written.
+struct AtacFragmentSink {
+  FILE *evidence_fp = nullptr;        // AEV1 sidecar (sidecar-only runs)
+  uint64_t *evidence_records = nullptr;
+  FILE *text_fp = nullptr;            // BED or TagAlign rows
+  std::vector<std::vector<macs3::FragmentRecord>> *buckets = nullptr;
+  bool allow_bucket_resize = false;
+  bool evidence_write_failed = false;
+  bool text_write_failed = false;
+  bool bucket_out_of_range = false;
+};
+
+#ifndef LEGACY_OVERFLOW
+namespace lowmem_finalize_detail {
+
+struct Counters {
+  uint64_t uni = 0;
+  uint64_t multi = 0;
+  uint64_t passing = 0;
+};
+
+template <typename Record>
+struct GroupState {
+  bool active = false;
+  Record last_mapping;
+  uint32_t num_last_mapping_dups = 0;
+  std::vector<Record> bulk_dups;
+};
+
+struct Job {
+  uint32_t rid = 0;
+  std::vector<size_t> file_indices;  // ascending global spill-file indices
+  uint64_t spill_bytes = 0;
+};
+
+template <typename Record>
+struct TaskResult {
+  bool done = false;
+  std::string error;
+  Counters counters;
+  GroupState<Record> tail;
+  std::string partition_path;
+  uint64_t partition_records = 0;
+  uint64_t records_merged = 0;
+  AtacSummaryNewKeyLog new_keys;
+};
+
+// Full decode: the payload string and AtacSpillRecord the serial merge uses.
+struct FullDecodePolicy {
+  typedef AtacSpillRecord Record;
+  // 1: a record; 0: end of file; -1: error.
+  static int Next(OverflowReader *reader, uint32_t expected_rid,
+                  uint16_t schema, Record *record, std::string *payload,
+                  std::string *error) {
+    uint32_t rid = 0;
+    if (!reader->ReadNext(rid, *payload)) {
+      return 0;
+    }
+    if (rid != expected_rid) {
+      *error = "Low-memory spill file " + reader->GetPath() +
+               " holds a record for another reference";
+      return -1;
+    }
+    if (!DecodeAtacKwaySpillRecord(payload->data(), payload->size(), schema,
+                                   record, error)) {
+      return -1;
+    }
+    return 1;
+  }
+};
+
+}  // namespace lowmem_finalize_detail
+#endif  // LEGACY_OVERFLOW
+
+class AtacLowMemFinalizer {
+ public:
+  explicit AtacLowMemFinalizer(MappingWriter<AtacSpillRecord> &writer)
+      : w_(writer), p_(writer.mapping_parameters_) {
+    summary_enabled_ = !p_.summary_metadata_file_path.empty();
+    dedup_bulk_ = p_.remove_pcr_duplicates && !p_.is_bulk_data &&
+                  p_.remove_pcr_duplicates_at_bulk_level;
+  }
+
+  // Output formats and modes the per-reference path covers.
+  static bool ParametersEligible(const MappingParameters &p) {
+    return !p.AtacDualFragmentAndBam() && !p.CreatesMergeableAtacSpill() &&
+           !p.is_bulk_data &&
+           (p.mapping_output_format == MAPPINGFORMAT_BED ||
+            p.mapping_output_format == MAPPINGFORMAT_TAGALIGN);
+  }
+
+  // The non-dual branch of MappingWriter<AtacSpillRecord>::AppendMapping,
+  // writing to `sink`.
+  static void WriteNonDualFragment(MappingWriter<AtacSpillRecord> &w,
+                                   AtacFragmentSink *sink, uint32_t rid,
+                                   const SequenceBatch &reference,
+                                   const PairedEndMappingWithBarcode &mwb);
+
+#ifndef LEGACY_OVERFLOW
+  // Returns false, before writing anything, when the spill files are not
+  // ATAC k-way files of the covered schema; the caller then runs the serial
+  // merge.
+  bool Run(uint32_t num_reference_sequences, const SequenceBatch &reference,
+           const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+           int requested_workers);
+#endif  // LEGACY_OVERFLOW
+
+ private:
+  static void WriteText(AtacFragmentSink *sink, const std::string &line) {
+    if (sink->text_fp != nullptr &&
+        fwrite(line.data(), 1, line.size(), sink->text_fp) != line.size()) {
+      sink->text_write_failed = true;
+    }
+  }
+
+#ifndef LEGACY_OVERFLOW
+  typedef lowmem_finalize_detail::Counters Counters;
+  typedef lowmem_finalize_detail::Job Job;
+
+  void Summary(bool direct, AtacSummaryNewKeyLog *new_keys, uint64_t barcode,
+               int type, uint64_t change) {
+    if (!summary_enabled_) {
+      return;
+    }
+    SummaryMetadata &summary = w_.summary_metadata_;
+    if (direct) {
+      summary.UpdateCount(barcode, type, change);
+      return;
+    }
+    const khiter_t it = summary.FindExisting(barcode);
+    if (it != summary.End()) {
+      summary.AddExistingAtomic(it, type, change);
+    } else {
+      new_keys->Add(barcode, type, change);
+    }
+  }
+
+  AtacFragmentSink DirectSink() {
+    AtacFragmentSink sink;
+    if (p_.AtacSidecarOnly()) {
+      sink.evidence_fp = w_.atac_evidence_fp_;
+      sink.evidence_records = &w_.atac_evidence_records_written_;
+    }
+    sink.text_fp = w_.mapping_output_file_;
+    if (p_.mapping_output_format == MAPPINGFORMAT_BED &&
+        p_.macs3_frag_buffer) {
+      sink.buckets = p_.macs3_frag_buffer.get();
+      sink.allow_bucket_resize = true;
+    }
+    return sink;
+  }
+
+  template <typename Record>
+  void EmitGroup(uint32_t rid, const SequenceBatch &reference,
+                 const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+                 lowmem_finalize_detail::GroupState<Record> *state,
+                 bool end_of_stream, AtacFragmentSink *sink, bool direct,
+                 AtacSummaryNewKeyLog *new_keys, Counters *counters);
+
+  template <typename Record>
+  void EmitTail(uint32_t rid, const SequenceBatch &reference,
+                const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+                lowmem_finalize_detail::GroupState<Record> *state,
+                bool end_of_stream, Counters *counters) {
+    AtacFragmentSink sink = DirectSink();
+    EmitGroup(rid, reference, barcode_whitelist_lookup_table, state,
+              end_of_stream, &sink, /*direct=*/true, nullptr, counters);
+    if (sink.evidence_write_failed) {
+      ExitWithMessage("Failed to write ATAC evidence binary record: " +
+                      w_.atac_evidence_tmp_path_);
+    }
+  }
+
+  template <typename Policy>
+  bool RunTask(const Job &job, uint16_t schema,
+               const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+               const SequenceBatch &reference,
+               const std::string &partition_directory,
+               lowmem_finalize_detail::TaskResult<typename Policy::Record>
+                   *result);
+
+  template <typename Policy>
+  void RunTasksAndAssemble(
+      const std::vector<Job> &jobs, uint16_t schema, int workers,
+      const SequenceBatch &reference,
+      const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+      double start_time);
+
+  [[noreturn]] void FailAndCleanUp(const std::vector<std::string> &partitions,
+                                   const std::string &message) {
+    for (const std::string &path : partitions) {
+      if (!path.empty()) {
+        unlink(path.c_str());
+      }
+    }
+    std::vector<std::string> &spills =
+        MappingWriter<AtacSpillRecord>::shared_overflow_file_paths_;
+    for (const std::string &path : spills) {
+      unlink(path.c_str());
+    }
+    spills.clear();
+    ExitWithMessage(message);
+    std::abort();
+  }
+
+#endif  // LEGACY_OVERFLOW
+
+  MappingWriter<AtacSpillRecord> &w_;
+  const MappingParameters &p_;
+  bool summary_enabled_ = false;
+  bool dedup_bulk_ = false;
+};
+
+void AtacLowMemFinalizer::WriteNonDualFragment(
+    MappingWriter<AtacSpillRecord> &w, AtacFragmentSink *sink, uint32_t rid,
+    const SequenceBatch &reference, const PairedEndMappingWithBarcode &mwb) {
+  const MappingParameters &p = w.mapping_parameters_;
+  if (p.mapping_output_format == MAPPINGFORMAT_BED) {
+    uint32_t mapping_end_position = mwb.GetEndPosition();
+    if (p.AtacSidecarOnly()) {
+      // The same AEV1 record the dual BAM/CRAM branch writes, with no text
+      // row formatted: start, exclusive end, collapsed duplicate count and
+      // the untranslated barcode key.
+      if (sink->evidence_fp != nullptr) {
+        AtacEvidenceBinaryRecord rec;
+        rec.chrom_id = static_cast<int32_t>(rid);
+        rec.start = static_cast<int32_t>(mwb.GetStartPosition());
+        rec.end = static_cast<int32_t>(mapping_end_position);
+        rec.count = static_cast<uint32_t>(mwb.num_dups_);
+        rec.barcode_key = mwb.cell_barcode_;
+        if (fwrite(&rec, sizeof(rec), 1, sink->evidence_fp) != 1) {
+          sink->evidence_write_failed = true;
+        } else {
+          ++*sink->evidence_records;
+        }
+      }
+    } else if (p.is_bulk_data) {
+      const std::string strand = mwb.IsPositiveStrand() ? "+" : "-";
+      const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
+      WriteText(sink, std::string(reference_sequence_name) + "\t" +
+                          std::to_string(mwb.GetStartPosition()) + "\t" +
+                          std::to_string(mapping_end_position) + "\tN\t" +
+                          std::to_string(mwb.mapq_) + "\t" + strand + "\t" +
+                          std::to_string(mwb.num_dups_) + "\n");
+    } else {
+      const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
+      const std::string translated_barcode = w.barcode_translator_.Translate(
+          mwb.cell_barcode_, w.cell_barcode_length_);
+      WriteText(sink, std::string(reference_sequence_name) + "\t" +
+                          std::to_string(mwb.GetStartPosition()) + "\t" +
+                          std::to_string(mapping_end_position) + "\t" +
+                          translated_barcode + "\t" +
+                          std::to_string(mwb.num_dups_) + "\n");
+    }
+    if (sink->buckets != nullptr) {
+      macs3::FragmentRecord rec;
+      rec.chrom_id = static_cast<int32_t>(rid);
+      rec.start = static_cast<int32_t>(mwb.GetStartPosition());
+      rec.end = static_cast<int32_t>(mapping_end_position);
+      rec.count = static_cast<uint32_t>(mwb.num_dups_);
+      if (rec.end > rec.start && rec.count > 0) {
+        auto &buckets = *sink->buckets;
+        if (rid >= buckets.size()) {
+          if (!sink->allow_bucket_resize) {
+            sink->bucket_out_of_range = true;
+            return;
+          }
+          buckets.resize(rid + 1);
+        }
+        buckets[rid].push_back(rec);
+      }
+    }
+  } else {
+    bool positive_strand = mwb.IsPositiveStrand();
+    uint32_t positive_read_end =
+        mwb.fragment_start_position_ + mwb.positive_alignment_length_;
+    uint32_t negative_read_end =
+        mwb.fragment_start_position_ + mwb.fragment_length_;
+    uint32_t negative_read_start =
+        negative_read_end - mwb.negative_alignment_length_;
+    const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
+    if (positive_strand) {
+      WriteText(sink, std::string(reference_sequence_name) + "\t" +
+                          std::to_string(mwb.fragment_start_position_) + "\t" +
+                          std::to_string(positive_read_end) + "\tN\t" +
+                          std::to_string(mwb.mapq_) + "\t+\n" +
+                          std::string(reference_sequence_name) + "\t" +
+                          std::to_string(negative_read_start) + "\t" +
+                          std::to_string(negative_read_end) + "\tN\t" +
+                          std::to_string(mwb.mapq_) + "\t-\n");
+    } else {
+      WriteText(sink, std::string(reference_sequence_name) + "\t" +
+                          std::to_string(negative_read_start) + "\t" +
+                          std::to_string(negative_read_end) + "\tN\t" +
+                          std::to_string(mwb.mapq_) + "\t-\n" +
+                          std::string(reference_sequence_name) + "\t" +
+                          std::to_string(mwb.fragment_start_position_) + "\t" +
+                          std::to_string(positive_read_end) + "\tN\t" +
+                          std::to_string(mwb.mapq_) + "\t+\n");
+    }
+  }
+}
+
+
 #ifndef LEGACY_OVERFLOW
 // Overflow writer methods
 template <typename MappingRecord>
@@ -1315,6 +1653,18 @@ void MappingWriter<MappingRecord>::ProcessAndOutputMappingsInLowMemoryFromOverfl
     uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
     const SequenceBatch &reference,
     const khash_t(k64_seq) * barcode_whitelist_lookup_table) {
+  ProcessLowMemOverflowSerial(num_mappings_in_mem, num_reference_sequences,
+                              reference, barcode_whitelist_lookup_table);
+}
+
+// The serial low-memory merge: the v1.1.0 loop with the 1.1.1 fixes, kept
+// verbatim. MappingWriter<AtacSpillRecord> also has a per-reference path
+// (AtacLowMemFinalizer below) that produces the same bytes.
+template <typename MappingRecord>
+void MappingWriter<MappingRecord>::ProcessLowMemOverflowSerial(
+    uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
+    const SequenceBatch &reference,
+    const khash_t(k64_seq) * barcode_whitelist_lookup_table) {
   
   // All thread-local writers should already be closed by now
   // Use the shared collection of overflow file paths
@@ -1656,8 +2006,8 @@ template void MappingWriter<PAFMapping>::ProcessAndOutputMappingsInLowMemoryFrom
 
 template void MappingWriter<AtacSpillRecord>::OutputTempMappingsToOverflow(
     uint32_t, std::vector<std::vector<AtacSpillRecord>>&);
-template void MappingWriter<AtacSpillRecord>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
-    uint32_t, uint32_t, const SequenceBatch&, const khash_t(k64_seq)*);
+// MappingWriter<AtacSpillRecord>::ProcessAndOutputMappingsInLowMemoryFromOverflow
+// is an explicit specialization (after AtacLowMemFinalizer below).
 
 // BED writers (single/paired × with/without barcode). Serialization
 // added in bed_mapping.h; generic templates do all the work.
@@ -1760,6 +2110,526 @@ template void MappingWriter<MappingWithoutBarcode>::RotateThreadOverflowWriter()
 template void MappingWriter<PairedEndMappingWithBarcode>::RotateThreadOverflowWriter();
 template void MappingWriter<PairedEndMappingWithoutBarcode>::RotateThreadOverflowWriter();
 template void MappingWriter<AtacSpillRecord>::RotateThreadOverflowWriter();
+
+// The two emission blocks of the serial merge, kept statement for statement:
+// end_of_stream == false is the in-loop block (best duplicate, then the MAPQ
+// test); true is the block after the loop (MAPQ test on the last record, then
+// best duplicate).
+template <typename Record>
+void AtacLowMemFinalizer::EmitGroup(
+    uint32_t rid, const SequenceBatch &reference,
+    const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+    lowmem_finalize_detail::GroupState<Record> *state, bool end_of_stream,
+    AtacFragmentSink *sink, bool direct, AtacSummaryNewKeyLog *new_keys,
+    Counters *counters) {
+  Record &last_mapping = state->last_mapping;
+  const uint32_t num_last_mapping_dups = state->num_last_mapping_dups;
+  std::vector<Record> &temp_dups_for_bulk_level_dedup = state->bulk_dups;
+  if (!end_of_stream) {
+    if (dedup_bulk_) {
+      size_t best_mapping_index = FindBestIndexFromDuplicatesT(
+          barcode_whitelist_lookup_table, temp_dups_for_bulk_level_dedup);
+      last_mapping = temp_dups_for_bulk_level_dedup[best_mapping_index];
+      temp_dups_for_bulk_level_dedup.clear();
+    }
+
+    if (last_mapping.mapq_ >= p_.mapq_threshold) {
+      last_mapping.num_dups_ =
+          std::min((uint32_t)std::numeric_limits<uint8_t>::max(),
+                   num_last_mapping_dups);
+      if (p_.Tn5_shift) {
+        last_mapping.Tn5Shift(p_.Tn5_forward_shift, p_.Tn5_reverse_shift);
+      }
+
+      WriteNonDualFragment(w_, sink, rid, reference, last_mapping);
+      ++counters->passing;
+      Summary(direct, new_keys, last_mapping.GetBarcode(),
+              SUMMARY_METADATA_DUP, num_last_mapping_dups - 1);
+    } else {
+      Summary(direct, new_keys, last_mapping.GetBarcode(),
+              SUMMARY_METADATA_LOWMAPQ, num_last_mapping_dups);
+    }
+    Summary(direct, new_keys, last_mapping.GetBarcode(),
+            SUMMARY_METADATA_MAPPED, num_last_mapping_dups);
+
+    if (last_mapping.is_unique_ == 1) {
+      ++counters->uni;
+    } else {
+      ++counters->multi;
+    }
+    return;
+  }
+
+  if (last_mapping.mapq_ >= p_.mapq_threshold) {
+    if (dedup_bulk_) {
+      size_t best_mapping_index = FindBestIndexFromDuplicatesT(
+          barcode_whitelist_lookup_table, temp_dups_for_bulk_level_dedup);
+      last_mapping = temp_dups_for_bulk_level_dedup[best_mapping_index];
+      temp_dups_for_bulk_level_dedup.clear();
+    }
+
+    last_mapping.num_dups_ = std::min(
+        (uint32_t)std::numeric_limits<uint8_t>::max(), num_last_mapping_dups);
+    if (p_.Tn5_shift) {
+      last_mapping.Tn5Shift(p_.Tn5_forward_shift, p_.Tn5_reverse_shift);
+    }
+    WriteNonDualFragment(w_, sink, rid, reference, last_mapping);
+    ++counters->passing;
+
+    Summary(direct, new_keys, last_mapping.GetBarcode(), SUMMARY_METADATA_DUP,
+            num_last_mapping_dups - 1);
+  } else {
+    Summary(direct, new_keys, last_mapping.GetBarcode(),
+            SUMMARY_METADATA_LOWMAPQ, num_last_mapping_dups);
+  }
+  Summary(direct, new_keys, last_mapping.GetBarcode(), SUMMARY_METADATA_MAPPED,
+          num_last_mapping_dups);
+
+  if (last_mapping.is_unique_ == 1) {
+    ++counters->uni;
+  } else {
+    ++counters->multi;
+  }
+}
+
+template <typename Policy>
+bool AtacLowMemFinalizer::RunTask(
+    const Job &job, uint16_t schema,
+    const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+    const SequenceBatch &reference, const std::string &partition_directory,
+    lowmem_finalize_detail::TaskResult<typename Policy::Record> *result) {
+  typedef typename Policy::Record Record;
+  const std::vector<std::string> &paths =
+      MappingWriter<AtacSpillRecord>::shared_overflow_file_paths_;
+
+  FILE *partition = nullptr;
+  if (!CreateLowMemPartitionFile(partition_directory, job.rid,
+                                 &result->partition_path, &partition,
+                                 &result->error)) {
+    result->partition_path.clear();
+    return false;
+  }
+  std::vector<char> partition_buffer(1u << 20);
+  (void)setvbuf(partition, partition_buffer.data(), _IOFBF,
+                partition_buffer.size());
+
+  AtacFragmentSink sink;
+  if (p_.AtacSidecarOnly()) {
+    sink.evidence_fp = partition;
+    sink.evidence_records = &result->partition_records;
+  } else {
+    sink.text_fp = partition;
+  }
+  if (p_.mapping_output_format == MAPPINGFORMAT_BED && p_.macs3_frag_buffer) {
+    sink.buckets = p_.macs3_frag_buffer.get();
+    sink.allow_bucket_resize = false;
+  }
+
+  // The heap order of the serial merge: the smallest record first; equal
+  // records by the smaller global spill-file index.
+  struct HeapEntry {
+    Record mapping;
+    size_t file_index;
+    size_t slot;
+    bool operator<(const HeapEntry &other) const {
+      const bool a_less_b = mapping < other.mapping;
+      const bool b_less_a = other.mapping < mapping;
+      if (!a_less_b && !b_less_a) {
+        return file_index > other.file_index;
+      }
+      return !a_less_b;
+    }
+  };
+
+  std::vector<std::unique_ptr<OverflowReader>> readers(
+      job.file_indices.size());
+  std::priority_queue<HeapEntry> heap;
+  std::string payload;
+  bool ok = true;
+  for (size_t k = 0; k < job.file_indices.size(); ++k) {
+    const size_t fi = job.file_indices[k];
+    readers[k].reset(new OverflowReader(paths[fi]));
+    if (!readers[k]->IsValid()) {
+      result->error = UnopenableOverflowFileMessage(
+          paths[fi], readers[k]->OpenErrno(), job.rid,
+          job.file_indices.size());
+      ok = false;
+      break;
+    }
+    HeapEntry entry;
+    entry.file_index = fi;
+    entry.slot = k;
+    const int got = Policy::Next(readers[k].get(), job.rid, schema,
+                                 &entry.mapping, &payload, &result->error);
+    if (got < 0) {
+      ok = false;
+      break;
+    }
+    if (got > 0) {
+      heap.push(entry);
+    }
+  }
+
+  lowmem_finalize_detail::GroupState<Record> state;
+  bool first = true;
+  while (ok && !heap.empty()) {
+    HeapEntry min_rec = heap.top();
+    heap.pop();
+    ++result->records_merged;
+
+    const Record &current_min_mapping = min_rec.mapping;
+    const bool current_mapping_is_duplicated_at_cell_level =
+        !first && current_min_mapping == state.last_mapping;
+    const bool current_mapping_is_duplicated_at_bulk_level =
+        !first && dedup_bulk_ &&
+        current_min_mapping.IsSamePosition(state.last_mapping);
+    const bool current_mapping_is_duplicated =
+        current_mapping_is_duplicated_at_cell_level ||
+        current_mapping_is_duplicated_at_bulk_level;
+
+    if (p_.remove_pcr_duplicates && current_mapping_is_duplicated) {
+      ++state.num_last_mapping_dups;
+      if (dedup_bulk_) {
+        std::vector<Record> &temp = state.bulk_dups;
+        if (!temp.empty() && current_min_mapping == temp.back()) {
+          temp.back() = current_min_mapping;
+          temp.back().num_dups_ += 1;
+        } else {
+          temp.push_back(current_min_mapping);
+          temp.back().num_dups_ = 1;
+        }
+      }
+      state.last_mapping = current_min_mapping;
+    } else {
+      if (!first) {
+        EmitGroup(job.rid, reference, barcode_whitelist_lookup_table, &state,
+                  /*end_of_stream=*/false, &sink, /*direct=*/false,
+                  &result->new_keys, &result->counters);
+      }
+      state.last_mapping = current_min_mapping;
+      state.num_last_mapping_dups = 1;
+      if (dedup_bulk_) {
+        state.bulk_dups.push_back(current_min_mapping);
+        state.bulk_dups.back().num_dups_ = 1;
+      }
+      first = false;
+    }
+
+    HeapEntry next;
+    next.file_index = min_rec.file_index;
+    next.slot = min_rec.slot;
+    const int got = Policy::Next(readers[min_rec.slot].get(), job.rid, schema,
+                                 &next.mapping, &payload, &result->error);
+    if (got < 0) {
+      ok = false;
+      break;
+    }
+    if (got > 0) {
+      heap.push(next);
+    }
+  }
+  readers.clear();
+
+  if (ok && first) {
+    result->error = "Low-memory spill files of reference " +
+                    std::to_string(job.rid) + " hold no records";
+    ok = false;
+  }
+  if (ok && sink.bucket_out_of_range) {
+    result->error =
+        "Low-memory finalization: MACS3 fragment buckets are not sized for "
+        "reference " + std::to_string(job.rid);
+    ok = false;
+  }
+  if (fclose(partition) != 0 && ok) {
+    result->error = "Cannot close low-memory finalization partition " +
+                    result->partition_path;
+    ok = false;
+  }
+  if (ok && (sink.evidence_write_failed || sink.text_write_failed)) {
+    result->error = "Cannot write low-memory finalization partition " +
+                    result->partition_path;
+    ok = false;
+  }
+  if (!ok) {
+    unlink(result->partition_path.c_str());
+    result->partition_path.clear();
+    return false;
+  }
+
+  state.active = true;
+  result->tail = state;
+  // This reference's spill files are no longer needed.
+  for (size_t fi : job.file_indices) {
+    unlink(paths[fi].c_str());
+  }
+  result->done = true;
+  return true;
+}
+
+template <typename Policy>
+void AtacLowMemFinalizer::RunTasksAndAssemble(
+    const std::vector<Job> &jobs, uint16_t schema, int workers,
+    const SequenceBatch &reference,
+    const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+    double start_time) {
+  typedef typename Policy::Record Record;
+  std::vector<std::string> &paths =
+      MappingWriter<AtacSpillRecord>::shared_overflow_file_paths_;
+  const std::string partition_directory = DirectoryOfPath(paths[0]);
+
+  std::vector<lowmem_finalize_detail::TaskResult<Record>> results(
+      jobs.size());
+  // Longest first, by spill bytes; the output does not depend on the order.
+  std::vector<size_t> order(jobs.size());
+  for (size_t j = 0; j < order.size(); ++j) {
+    order[j] = j;
+  }
+  std::sort(order.begin(), order.end(), [&jobs](size_t a, size_t b) {
+    if (jobs[a].spill_bytes != jobs[b].spill_bytes) {
+      return jobs[a].spill_bytes > jobs[b].spill_bytes;
+    }
+    return jobs[a].rid < jobs[b].rid;
+  });
+
+  std::atomic<bool> failed(false);
+#pragma omp parallel for schedule(dynamic, 1) num_threads(workers)
+  for (int64_t k = 0; k < static_cast<int64_t>(order.size()); ++k) {
+    if (failed.load(std::memory_order_relaxed)) {
+      continue;
+    }
+    const size_t j = order[static_cast<size_t>(k)];
+    // Every task runs under a host permit when the host provides hooks.
+    LowMemPermitScope permit(p_);
+    const bool ok =
+        RunTask<Policy>(jobs[j], schema, barcode_whitelist_lookup_table,
+                        reference, partition_directory, &results[j]);
+    permit.Release(results[j].records_merged, jobs[j].spill_bytes);
+    if (!ok) {
+      failed.store(true, std::memory_order_relaxed);
+    }
+  }
+
+  std::vector<std::string> partitions(results.size());
+  for (size_t j = 0; j < results.size(); ++j) {
+    partitions[j] = results[j].partition_path;
+  }
+  if (failed.load()) {
+    std::string first_error;
+    for (size_t j = 0; j < results.size(); ++j) {
+      if (!results[j].error.empty()) {
+        first_error = results[j].error;
+        break;
+      }
+    }
+    FailAndCleanUp(partitions, first_error.empty()
+                                   ? std::string("Low-memory finalization failed")
+                                   : first_error);
+  }
+
+  // Ordered assembly, reference by reference.
+  FILE *destination =
+      p_.AtacSidecarOnly() ? w_.atac_evidence_fp_ : w_.mapping_output_file_;
+  std::vector<char> copy_buffer;
+  Counters totals;
+  lowmem_finalize_detail::GroupState<Record> pending;
+  uint32_t pending_rid = 0;
+  bool has_pending = false;
+  for (size_t j = 0; j < jobs.size(); ++j) {
+    lowmem_finalize_detail::TaskResult<Record> &result = results[j];
+    if (has_pending) {
+      EmitTail(pending_rid, reference, barcode_whitelist_lookup_table,
+               &pending, /*end_of_stream=*/false, &totals);
+    }
+    if (destination != nullptr) {
+      uint64_t copied = 0;
+      std::string error;
+      if (!AppendFileContents(destination, result.partition_path,
+                              &copy_buffer, &copied, &error)) {
+        FailAndCleanUp(partitions, error);
+      }
+    }
+    if (p_.AtacSidecarOnly()) {
+      w_.atac_evidence_records_written_ += result.partition_records;
+    }
+    unlink(result.partition_path.c_str());
+    partitions[j].clear();
+    if (summary_enabled_) {
+      for (const AtacSummaryNewKey &key : result.new_keys.keys()) {
+        // One put per field, so a put always follows the insertion.
+        w_.summary_metadata_.UpdateCount(key.barcode, SUMMARY_METADATA_DUP,
+                                         key.duplicate);
+        w_.summary_metadata_.UpdateCount(key.barcode,
+                                         SUMMARY_METADATA_LOWMAPQ,
+                                         key.lowmapq);
+        w_.summary_metadata_.UpdateCount(key.barcode, SUMMARY_METADATA_MAPPED,
+                                         key.mapped);
+      }
+    }
+    totals.uni += result.counters.uni;
+    totals.multi += result.counters.multi;
+    totals.passing += result.counters.passing;
+    pending = result.tail;
+    pending_rid = jobs[j].rid;
+    has_pending = true;
+    result.tail = lowmem_finalize_detail::GroupState<Record>();
+  }
+  if (has_pending) {
+    EmitTail(pending_rid, reference, barcode_whitelist_lookup_table, &pending,
+             /*end_of_stream=*/true, &totals);
+  }
+
+  for (const std::string &path : paths) {
+    unlink(path.c_str());
+  }
+  paths.clear();
+
+  if (p_.remove_pcr_duplicates) {
+    std::cerr << "Sorted, deduped and outputed mappings in "
+              << GetRealTime() - start_time << "s.\n";
+  } else {
+    std::cerr << "Sorted and outputed mappings in "
+              << GetRealTime() - start_time << "s.\n";
+  }
+  std::cerr << "# uni-mappings: " << totals.uni
+            << ", # multi-mappings: " << totals.multi
+            << ", total: " << totals.uni + totals.multi << ".\n";
+  std::cerr << "Number of output mappings (passed filters): "
+            << totals.passing << "\n";
+}
+
+bool AtacLowMemFinalizer::Run(
+    uint32_t num_reference_sequences, const SequenceBatch &reference,
+    const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+    int requested_workers) {
+  std::vector<std::string> &paths =
+      MappingWriter<AtacSpillRecord>::shared_overflow_file_paths_;
+  if (paths.empty()) {
+    return true;  // As the serial merge: nothing is written.
+  }
+
+  // Probe every spill file: reference, schema and size.
+  std::vector<AtacSpillProbe> probes(paths.size());
+  for (size_t i = 0; i < paths.size(); ++i) {
+    probes[i] = ProbeAtacKwaySpillFile(paths[i]);
+    switch (probes[i].status) {
+      case AtacSpillProbeStatus::kOpenFailed:
+        ExitOnUnopenableOverflowFile(paths, paths[i], probes[i].open_errno, 0,
+                                     0);
+        break;
+      case AtacSpillProbeStatus::kNotKway:
+        return false;
+      case AtacSpillProbeStatus::kInvalid:
+        ExitWithMessage("Unsupported or invalid ATAC k-way spill file header");
+        break;
+      case AtacSpillProbeStatus::kKway:
+        break;
+    }
+  }
+  const uint16_t schema = probes[0].schema_mask;
+  for (size_t i = 1; i < probes.size(); ++i) {
+    if (probes[i].schema_mask != schema) {
+      ExitWithMessage(
+          "Mismatched ATAC spill schema_mask between overflow temp files "
+          "(merge refused)");
+    }
+  }
+  if ((schema & (kAtacSpillSchemaHasBamPair | kAtacSpillSchemaIsBulk |
+                 kAtacSpillSchemaHasRawBarcodeEvidence)) != 0) {
+    return false;
+  }
+
+  // One job per reference, in reference order.
+  std::map<uint32_t, Job> by_reference;
+  for (size_t i = 0; i < probes.size(); ++i) {
+    Job &job = by_reference[probes[i].reference_id];
+    job.rid = probes[i].reference_id;
+    job.file_indices.push_back(i);
+    job.spill_bytes += probes[i].bytes;
+  }
+  std::vector<Job> jobs;
+  jobs.reserve(by_reference.size());
+  size_t max_files = 0;
+  uint32_t reference_with_most_files = 0;
+  for (auto &entry : by_reference) {
+    if (entry.second.file_indices.size() > max_files) {
+      max_files = entry.second.file_indices.size();
+      reference_with_most_files = entry.first;
+    }
+    jobs.push_back(std::move(entry.second));
+  }
+
+  std::cerr << "Processing " << paths.size()
+            << " overflow files for k-way merge\n";
+  std::cerr << "Low-memory overflow: mid-batch flush count: "
+            << LowMemMidBatchOverflowFlushCount() << "\n";
+  const double start_time = GetRealTime();
+
+  LowMemFinalizeWorkerPlan plan;
+  std::string error;
+  if (!PlanLowMemFinalizeWorkers(requested_workers, jobs.size(), max_files,
+                                 reference_with_most_files, &plan, &error)) {
+    FailAndCleanUp(std::vector<std::string>(), error);
+  }
+  std::cerr << "Low-memory finalization: " << jobs.size()
+            << " reference tasks on " << plan.workers << " threads";
+  if (plan.limited_by_open_files) {
+    std::cerr << " (limited by the open-file limit of "
+              << plan.open_file_limit << ")";
+  }
+  std::cerr << "\n";
+
+  if (summary_enabled_ &&
+      w_.summary_metadata_.ResizePendingOnNextPut()) {
+    // The serial merge's first summary update would resize the table before
+    // anything else; do the same before the tasks read it.
+    w_.summary_metadata_.ApplyPendingResizeLikePut();
+  }
+  if (p_.mapping_output_format == MAPPINGFORMAT_BED && p_.macs3_frag_buffer &&
+      p_.macs3_frag_buffer->size() < num_reference_sequences) {
+    p_.macs3_frag_buffer->resize(num_reference_sequences);
+  }
+
+  RunTasksAndAssemble<lowmem_finalize_detail::FullDecodePolicy>(
+      jobs, schema, plan.workers, reference, barcode_whitelist_lookup_table,
+      start_time);
+  return true;
+}
+
+template <>
+void MappingWriter<AtacSpillRecord>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
+    uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
+    const SequenceBatch &reference,
+    const khash_t(k64_seq) * barcode_whitelist_lookup_table) {
+  const int requested = RequestedLowMemFinalizeThreads(mapping_parameters_);
+  if (requested >= 2 &&
+      AtacLowMemFinalizer::ParametersEligible(mapping_parameters_)) {
+    AtacLowMemFinalizer finalizer(*this);
+    if (finalizer.Run(num_reference_sequences, reference,
+                      barcode_whitelist_lookup_table, requested)) {
+      return;
+    }
+  }
+  if (shared_overflow_file_paths_.empty()) {
+    return;
+  }
+  // The serial merge, under one host permit when the host provides hooks.
+  uint64_t spill_bytes = 0;
+  const uint64_t spill_files = shared_overflow_file_paths_.size();
+  if (mapping_parameters_.PermitHooksEnabled()) {
+    for (const std::string &path : shared_overflow_file_paths_) {
+      struct stat st;
+      if (stat(path.c_str(), &st) == 0) {
+        spill_bytes += static_cast<uint64_t>(st.st_size);
+      }
+    }
+  }
+  LowMemPermitScope permit(mapping_parameters_);
+  ProcessLowMemOverflowSerial(num_mappings_in_mem, num_reference_sequences,
+                              reference, barcode_whitelist_lookup_table);
+  permit.Release(spill_files, spill_bytes);
+}
+
 
 // AtacSpillRecord has WriteToFile / LoadFromFile / SerializedSize
 // (see atac_dual_mapping.h) and operator< / operator==, so the generic
@@ -2252,81 +3122,24 @@ void MappingWriter<AtacSpillRecord>::AppendMapping(
     uint32_t rid, const SequenceBatch &reference,
     const AtacSpillRecord &mapping) {
   if (!mapping_parameters_.AtacDualFragmentAndBam()) {
-    const PairedEndMappingWithBarcode &mwb = mapping;
-    if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BED) {
-      uint32_t mapping_end_position = mwb.GetEndPosition();
-      if (mapping_parameters_.AtacSidecarOnly()) {
-        // The same AEV1 record the dual BAM/CRAM branch below writes, with no
-        // text row formatted: start, exclusive end, collapsed duplicate count
-        // and the untranslated barcode key.
-        AppendAtacEvidenceBinaryRecord(rid, mwb.GetStartPosition(),
-                                       mapping_end_position,
-                                       static_cast<uint32_t>(mwb.num_dups_),
-                                       mwb.cell_barcode_);
-      } else if (mapping_parameters_.is_bulk_data) {
-        const std::string strand = mwb.IsPositiveStrand() ? "+" : "-";
-        const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
-        this->AppendMappingOutput(
-            std::string(reference_sequence_name) + "\t" +
-            std::to_string(mwb.GetStartPosition()) + "\t" +
-            std::to_string(mapping_end_position) + "\tN\t" +
-            std::to_string(mwb.mapq_) + "\t" + strand + "\t" +
-            std::to_string(mwb.num_dups_) + "\n");
-      } else {
-        const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
-        const std::string translated_barcode = barcode_translator_.Translate(
-            mwb.cell_barcode_, cell_barcode_length_);
-        this->AppendMappingOutput(
-            std::string(reference_sequence_name) + "\t" +
-            std::to_string(mwb.GetStartPosition()) + "\t" +
-            std::to_string(mapping_end_position) + "\t" +
-            translated_barcode + "\t" + std::to_string(mwb.num_dups_) +
-            "\n");
-      }
-      if (mapping_parameters_.macs3_frag_buffer) {
-        macs3::FragmentRecord rec;
-        rec.chrom_id = static_cast<int32_t>(rid);
-        rec.start = static_cast<int32_t>(mwb.GetStartPosition());
-        rec.end = static_cast<int32_t>(mapping_end_position);
-        rec.count = static_cast<uint32_t>(mwb.num_dups_);
-        if (rec.end > rec.start && rec.count > 0) {
-          auto& buckets = *mapping_parameters_.macs3_frag_buffer;
-          if (rid >= buckets.size()) {
-            buckets.resize(rid + 1);
-          }
-          buckets[rid].push_back(rec);
-        }
-      }
-    } else {
-      bool positive_strand = mwb.IsPositiveStrand();
-      uint32_t positive_read_end =
-          mwb.fragment_start_position_ + mwb.positive_alignment_length_;
-      uint32_t negative_read_end =
-          mwb.fragment_start_position_ + mwb.fragment_length_;
-      uint32_t negative_read_start =
-          negative_read_end - mwb.negative_alignment_length_;
-      const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
-      if (positive_strand) {
-        this->AppendMappingOutput(
-            std::string(reference_sequence_name) + "\t" +
-            std::to_string(mwb.fragment_start_position_) + "\t" +
-            std::to_string(positive_read_end) + "\tN\t" +
-            std::to_string(mwb.mapq_) + "\t+\n" +
-            std::string(reference_sequence_name) + "\t" +
-            std::to_string(negative_read_start) + "\t" +
-            std::to_string(negative_read_end) + "\tN\t" +
-            std::to_string(mwb.mapq_) + "\t-\n");
-      } else {
-        this->AppendMappingOutput(
-            std::string(reference_sequence_name) + "\t" +
-            std::to_string(negative_read_start) + "\t" +
-            std::to_string(negative_read_end) + "\tN\t" +
-            std::to_string(mwb.mapq_) + "\t-\n" +
-            std::string(reference_sequence_name) + "\t" +
-            std::to_string(mwb.fragment_start_position_) + "\t" +
-            std::to_string(positive_read_end) + "\tN\t" +
-            std::to_string(mwb.mapq_) + "\t+\n");
-      }
+    // Sidecar-only AEV1 records, or BED/TagAlign rows; the same code writes
+    // the per-reference partitions of the parallel low-memory merge.
+    AtacFragmentSink sink;
+    if (mapping_parameters_.AtacSidecarOnly()) {
+      sink.evidence_fp = atac_evidence_fp_;
+      sink.evidence_records = &atac_evidence_records_written_;
+    }
+    sink.text_fp = mapping_output_file_;
+    if (mapping_parameters_.mapping_output_format == MAPPINGFORMAT_BED &&
+        mapping_parameters_.macs3_frag_buffer) {
+      sink.buckets = mapping_parameters_.macs3_frag_buffer.get();
+      sink.allow_bucket_resize = true;
+    }
+    AtacLowMemFinalizer::WriteNonDualFragment(*this, &sink, rid, reference,
+                                              mapping);
+    if (sink.evidence_write_failed) {
+      ExitWithMessage("Failed to write ATAC evidence binary record: " +
+                      atac_evidence_tmp_path_);
     }
     return;
   }

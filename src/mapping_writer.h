@@ -84,8 +84,14 @@ static_assert(sizeof(AtacEvidenceBinaryHeader) == 32,
 static_assert(sizeof(AtacEvidenceBinaryRecord) == 24,
               "ATAC evidence binary record must be 24 bytes");
 
+// Per-reference low-memory finalisation of paired-end ATAC spills
+// (MappingWriter<AtacSpillRecord>); defined in mapping_writer.cc.
+class AtacLowMemFinalizer;
+
 template <typename MappingRecord>
 class MappingWriter {
+  friend class AtacLowMemFinalizer;
+
  public:
   MappingWriter() = delete;
 
@@ -451,6 +457,17 @@ class MappingWriter {
       const khash_t(k64_seq) * barcode_whitelist_lookup_table,
       const std::vector<MappingRecord> &duplicates);
 
+#ifndef LEGACY_OVERFLOW
+  // The serial low-memory merge (the v1.1.0 loop, with the 1.1.1 fixes). Every
+  // record type uses it; for AtacSpillRecord it serves
+  // --low-mem-finalize-threads 1 and every run the per-reference path does
+  // not cover (dual BAM/CRAM, bulk data).
+  void ProcessLowMemOverflowSerial(
+      uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
+      const SequenceBatch &reference,
+      const khash_t(k64_seq) * barcode_whitelist_lookup_table);
+#endif
+
   void OutputMappingsInVector(
       uint8_t mapq_threshold, uint32_t num_reference_sequences,
       const SequenceBatch &reference,
@@ -547,23 +564,23 @@ inline double WhitelistBarcodeAbundanceOrZero(
                   barcode_whitelist_lookup_table_iterator);
 }
 
-template <typename MappingRecord>
-size_t MappingWriter<MappingRecord>::FindBestMappingIndexFromDuplicates(
+// Bulk-level duplicate selection shared by the serial and the per-reference
+// low-memory merges: the kept record has the most duplicates, then the highest
+// whitelist abundance, then comes first in sort order.
+template <typename Record>
+size_t FindBestIndexFromDuplicatesT(
     const khash_t(k64_seq) * barcode_whitelist_lookup_table,
-    const std::vector<MappingRecord> &duplicates) {
-  // Find the best barcode, break ties first by the number of the
-  // barcodes in the dups, then by the barcode abundance.
+    const std::vector<Record> &duplicates) {
   size_t best_mapping_index = 0;
 
   double best_mapping_barcode_abundance = WhitelistBarcodeAbundanceOrZero(
       barcode_whitelist_lookup_table,
-      duplicates[best_mapping_index].GetBarcode());  /// (double)num_sample_barcodes_;
+      duplicates[best_mapping_index].GetBarcode());
 
   for (size_t bulk_dup_i = 1; bulk_dup_i < duplicates.size(); ++bulk_dup_i) {
     const double current_mapping_barcode_abundance =
-        WhitelistBarcodeAbundanceOrZero(
-            barcode_whitelist_lookup_table,
-            duplicates[bulk_dup_i].GetBarcode());  /// (double)num_sample_barcodes_;
+        WhitelistBarcodeAbundanceOrZero(barcode_whitelist_lookup_table,
+                                        duplicates[bulk_dup_i].GetBarcode());
 
     const bool same_num_dups_with_higer_barcode_abundance =
         duplicates[bulk_dup_i].num_dups_ ==
@@ -578,6 +595,14 @@ size_t MappingWriter<MappingRecord>::FindBestMappingIndexFromDuplicates(
     }
   }
   return best_mapping_index;
+}
+
+template <typename MappingRecord>
+size_t MappingWriter<MappingRecord>::FindBestMappingIndexFromDuplicates(
+    const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+    const std::vector<MappingRecord> &duplicates) {
+  return FindBestIndexFromDuplicatesT(barcode_whitelist_lookup_table,
+                                      duplicates);
 }
 
 template <typename MappingRecord>
@@ -1037,6 +1062,16 @@ template <>
 void MappingWriter<AtacSpillRecord>::AppendMapping(
     uint32_t rid, const SequenceBatch &reference,
     const AtacSpillRecord &mapping);
+
+#ifndef LEGACY_OVERFLOW
+// Paired-end ATAC: per-reference tasks when --low-mem-finalize-threads
+// resolves to 2 or more and the run is eligible; otherwise the serial merge.
+template <>
+void MappingWriter<AtacSpillRecord>::ProcessAndOutputMappingsInLowMemoryFromOverflow(
+    uint32_t num_mappings_in_mem, uint32_t num_reference_sequences,
+    const SequenceBatch &reference,
+    const khash_t(k64_seq) * barcode_whitelist_lookup_table);
+#endif
 
 template <>
 void MappingWriter<AtacSpillRecord>::OutputTempMapping(

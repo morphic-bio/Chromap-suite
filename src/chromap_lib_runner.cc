@@ -8,6 +8,7 @@
 
 #include "chromap.h"
 #include "cxxopts.hpp"
+#include "atac_lowmem_finalize.h"
 #include "libchromap.h"
 #include "utils.h"
 #include "y_noy_path_utils.h"
@@ -393,6 +394,10 @@ int main(int argc, char **argv) {
       ("low-mem", "Use low memory mode")
       ("low-mem-ram", "Low-memory spill threshold",
        cxxopts::value<std::string>(), "SIZE")
+      ("low-mem-finalize-threads",
+       "Threads for the paired-end ATAC low-memory merge (0 = --num-threads, "
+       "1 = serial) [0]",
+       cxxopts::value<int>(), "INT")
       ("hts-threads", "Htslib worker threads",
        cxxopts::value<int>(), "INT")
       ("read-group", "Read group ID",
@@ -663,6 +668,16 @@ int main(int argc, char **argv) {
           ParseSizeString(result["low-mem-ram"].as<std::string>(),
                           "--low-mem-ram");
     }
+    // As the chromap command line: the merge uses --num-threads unless set.
+    mapping_parameters.low_mem_finalize_threads = 0;
+    if (result.count("low-mem-finalize-threads")) {
+      const int threads = result["low-mem-finalize-threads"].as<int>();
+      if (threads < 0) {
+        std::cerr << "--low-mem-finalize-threads must be >= 0\n";
+        return 1;
+      }
+      mapping_parameters.low_mem_finalize_threads = threads;
+    }
     if (result.count("hts-threads")) {
       mapping_parameters.hts_threads = result["hts-threads"].as<int>();
     }
@@ -744,6 +759,8 @@ int main(int argc, char **argv) {
     ValidateInputs(mapping_parameters);
     PrintRunSummary(mapping_parameters);
 
+    // The low-memory merge keeps every spill file of a reference open.
+    chromap::RaiseOpenFileSoftLimitToHard();
     const chromap::ChromapRunResult run_result =
         chromap::RunMapping(mapping_parameters);
     if (!run_result.ok) {
