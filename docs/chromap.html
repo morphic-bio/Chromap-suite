@@ -281,6 +281,24 @@ large.</p> </td></tr>
 <p>Max RAM for low-memory spill buffer before writing temporary
 files. Supports K/M/G/T suffixes. Defaults to the legacy
 threshold (~1G; ~512M for SAM/PAF/PAIRS).</p> </td></tr>
+<tr valign="top" align="left">
+<td width="11%"></td>
+<td width="14%">
+
+
+<p><b>--low-mem-finalize-threads</b> <i>INT</i></p></td>
+<td width="1%"></td>
+<td width="74%">
+
+
+<p>Threads for the <b>--low-mem</b> merge of paired-end
+barcoded ATAC output (sidecar-only, BED or TagAlign): one
+task per reference, appended in reference order. 0 uses
+<b>--num-threads</b>; 1 merges serially. The output is the
+same for every value. Library hosts set
+MappingParameters::low_mem_finalize_threads (default 1);
+with permit hooks every task runs under a host permit
+[0].</p> </td></tr>
 </table>
 
 

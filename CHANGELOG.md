@@ -8,6 +8,28 @@ are in [`docs/RELEASE_NOTES_vX.Y.Z.md`](docs/).
 
 ## [Unreleased]
 
+### Added
+
+- `--low-mem-finalize-threads N` (`MappingParameters::low_mem_finalize_threads`).
+  With `--low-mem`, paired-end barcoded ATAC runs with sidecar-only, BED or
+  TagAlign output merge and deduplicate their spill files as one task per
+  reference, on N threads, and append the results in reference order.
+  - The output is byte-identical to the serial merge: the sidecar, the text,
+    the summary CSV, the in-memory peaks and summits, and the stderr counters.
+  - 0 (the command-line default) uses `--num-threads`; 1 keeps the serial
+    merge. The library default is 1, so embedding hosts opt in.
+  - With permit hooks, every merge task holds a host permit; the serial merge
+    holds one for its whole duration.
+  - Dual BAM/CRAM output and bulk data keep the serial merge.
+- `make test-lowmem-parallel-finalize`, added to the release gate (now 16
+  targets).
+
+### Changed
+
+- `chromap` and `chromap_lib_runner` raise the soft open-file limit to the hard
+  limit before mapping, because the low-memory merge keeps every spill file of
+  a reference open. The library never changes process limits.
+
 ## [1.1.1] - 2026-09-29
 
 Two fixes to the low-memory (`--low-mem`) merge of spilled mappings. See

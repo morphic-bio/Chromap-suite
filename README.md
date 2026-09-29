@@ -37,6 +37,7 @@ The full set of capabilities is organised by scope, mirroring Table 2 of the [Ch
 
 ### Reliability and tooling
 
+- **Parallel low-memory merge for paired-end ATAC** (`--low-mem-finalize-threads N`, default `--num-threads`). With `--low-mem`, sidecar-only, BED and TagAlign scATAC runs merge and deduplicate their spill files one reference per task, and write the same bytes as the serial merge. Embedding hosts opt in through `MappingParameters::low_mem_finalize_threads`; with permit hooks every task holds a host permit.
 - **Low-memory spillover (rewritten architecture)**. Per-thread overflow writers feeding a *k*-way merge on read-back **replace** the prior shared-buffer + atomic-write design. Supports the full cross-product of `--low-mem` with `--atac-fragments`, BAM output, `--macs3-frag-low-mem`, and Y-filtering modes; production-scale runs (≳10⁹ reads) handled cleanly. A pre-existing race condition in the legacy spillover that produced silent read drops at ~1/10⁴ on typical datasets and intermittent hangs at production scale is resolved as a side effect of the rewrite. The legacy temp-file system is available via `LEGACY_OVERFLOW=1` at compile time (single-threaded only). See [`HISTORY.md`](HISTORY.md) for file references and validation history.
 - **Concurrency coordination across new collaborators**. Worker threads coordinate with the native BAM writer, STAR Suite's permit allocator (when embedded), and librapidmacs peak-call paths under the existing OpenMP scheduler. The smoke matrix exercises all combinations of low-mem / BAM / peak-call / Y-filter modes.
 - **Regression suite (C01–C11)**. An 11-area parity matrix covering the main user-visible surfaces: index build, paired BED output, ChIP and ATAC presets, scATAC barcode handling, sorted BAM and index, low-memory BED parity, ATAC BAM + fragments, librapidmacs narrow peak calling, Hi-C pairs, and Y/noY split. Three tiers: **S0** hermetic synthetic for pre-commit smoke; **S1** ENCODE downsample for real-assay confidence (paired ENCODE accessions and downsample manifests committed; FASTQs cached out-of-tree); **S2** the 100K and paper-fixture tier reserved for heavier gates. The S0 tier is mandatory for pre-commit checks; S1 and S2 are opt-in.
@@ -185,7 +186,7 @@ make LEGACY_OVERFLOW=1
 ### Validation
 
 ```sh
-# Portable release gate: 15 targets with generated fixtures
+# Portable release gate: 16 targets with generated fixtures
 # Requires Python 3, samtools, bgzip and GNU time in addition to build dependencies
 make test-release
 
