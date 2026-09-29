@@ -190,6 +190,17 @@ void AddRandomFlushes(CaseSpec *spec, uint64_t seed, int flushes,
   }
 }
 
+// Barcodes credited TOTAL before the merge, as mapping does for whitelisted
+// reads: every barcode of the pool except every fifth, so both existing and
+// new summary rows occur.
+std::vector<uint64_t> MostBarcodes(int barcodes) {
+  std::vector<uint64_t> list;
+  for (int b = 0; b < barcodes; ++b) {
+    if (b % 5 != 4) list.push_back(0x1000 + b);
+  }
+  return list;
+}
+
 std::vector<std::pair<uint64_t, uint64_t>> WhitelistFor(int barcodes,
                                                         uint64_t seed) {
   std::mt19937_64 rng(seed);
@@ -486,6 +497,7 @@ std::vector<CaseSpec> BuildCases() {
     c.num_references = 3;
     AddRandomFlushes(&c, 11, 400, 12, 8, 40, &read_id);
     c.whitelist = WhitelistFor(8, 12);
+    c.summary_preseed = MostBarcodes(8);
     cases.push_back(c);
   }
   {  // U03
@@ -521,6 +533,7 @@ std::vector<CaseSpec> BuildCases() {
     c.bulk_level_dedup = true;
     AddRandomFlushes(&c, 21, 60, 30, 12, 15, &read_id);
     c.whitelist = WhitelistFor(12, 22);
+    c.summary_preseed = MostBarcodes(12);
     cases.push_back(c);
   }
   // U06-U08: end-of-stream groups (bulk-level dedup). At each position the
@@ -624,6 +637,7 @@ std::vector<CaseSpec> BuildCases() {
     c.tn5_shift = false;
     c.remove_pcr_duplicates = false;
     AddRandomFlushes(&c, 41, 10, 30, 6, 10, &read_id);
+    c.summary_preseed = MostBarcodes(6);
     cases.push_back(c);
   }
   {  // U13 BED text with a translate table
@@ -633,6 +647,7 @@ std::vector<CaseSpec> BuildCases() {
     c.output = OutputMode::kBed;
     c.translate_table = true;
     AddRandomFlushes(&c, 51, 30, 20, 10, 20, &read_id);
+    c.summary_preseed = MostBarcodes(10);
     cases.push_back(c);
   }
   {  // U13b BED text, bulk-level dedup
@@ -643,6 +658,7 @@ std::vector<CaseSpec> BuildCases() {
     c.bulk_level_dedup = true;
     AddRandomFlushes(&c, 52, 30, 20, 10, 20, &read_id);
     c.whitelist = WhitelistFor(10, 53);
+    c.summary_preseed = MostBarcodes(10);
     cases.push_back(c);
   }
   {  // U13c TagAlign
@@ -652,6 +668,7 @@ std::vector<CaseSpec> BuildCases() {
     c.output = OutputMode::kTagAlign;
     c.macs3_buffer = false;
     AddRandomFlushes(&c, 54, 30, 20, 10, 20, &read_id);
+    c.summary_preseed = MostBarcodes(10);
     cases.push_back(c);
   }
   {  // U14 open-file limits (40 files for reference 0)
@@ -659,6 +676,7 @@ std::vector<CaseSpec> BuildCases() {
     c.name = "U14_open_file_limits";
     c.num_references = 2;
     AddRandomFlushes(&c, 61, 40, 10, 6, 20, &read_id);
+    c.summary_preseed = MostBarcodes(6);
     cases.push_back(c);
   }
   {  // U15 a task fails: corrupt the first record of one spill file
