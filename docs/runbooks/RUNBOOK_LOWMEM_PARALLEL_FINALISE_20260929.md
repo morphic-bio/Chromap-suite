@@ -1102,3 +1102,130 @@ target (`V111/artifacts/release-tests/tests.tsv`).
   `docs/runbooks/RUNBOOK_STAR_MIRRORED_FASTQ_READER_20260928.md`, two lines of
   the text the coordinator asked to keep out of the public repository. This
   work's commits add none; see the handoff.
+
+## 11. 1.2.0 implementation results (29 September)
+
+Branch `feat/lowmem-parallel-finalize-20260929`, worktree
+`/mnt/pikachu/Chromap-suite-lowmem-feat-20260929`. Validation root `V`
+(`/mnt/pikachu/lowmem_parallel_validation_20260929`).
+
+Commits on the local branch:
+- `9d3c30b`: merge of `fix/v1.1.1-lowmem-edge-cases` (1.1.1).
+- `16a6fb6`: decisions D13-D16.
+- `f2f1b9f`: per-reference path (M1/M2).
+- `9ccdad5`: harness fix for U15.
+- `e14c8d3`: lean decode (M3).
+- `ebd474b`: documentation and the 16-target release gate.
+
+### M0: baseline
+
+- **Baseline binary.** Built from `16a6fb6` (source identical to 1.1.1
+  `73cafcd`): `V/bin/chromap_base_v111`, sha256 `d0ae41d2…`. It is identical to
+  the M-1 1.1.1 binary.
+- **Spill-reader buffer (correction 9).** Confirmed. Under
+  `strace -f -y -e trace=read`, all 1,640 reads of spill files in a 20-lane
+  synthetic run request 4,096 bytes (`V/measure/strace_synth`); the 8 MiB
+  `setvbuf` has no effect.
+- **Lane-1 full-depth sidecar** (`V/measure/lane1_full_per_reference.tsv`):
+  - 316,453,702 records over 159 references with output;
+  - largest shares: chr1 9.6%, chr19 7.3%, chr2 7.0%, chr17 6.2%, chr3 5.7%
+    (the design note's figures, now verified);
+  - 6,683,200 (reference, barcode) pairs, well below the 11M-25M bound of
+    correction 4.
+- **Summary policy controls.** Two baseline runs of P1s_def and D1s_def in
+  default mode are identical except for the summary columns `cachehit`, `fric`
+  and `estfrip`, and have identical row order. This confirms the default-mode
+  policy.
+- **Unit goldens.**
+  - The harness was compiled without the threads macro against the baseline
+    headers (`git archive 9d3c30b src`) and `V/lib_baseline/libchromap.a`.
+  - Its serial outputs for 19 cases are saved in `V/unit/goldens_baseline`
+    (91 files, sha256 in `goldens_baseline.sha256`).
+  - U15 has no baseline variant: the serial merge stops on its corrupt record,
+    as in v1.1.x.
+- **Baseline E2E runs** (`V/runs/*/*/base`), all exit 0:
+  - S1 (5 outputs), P1 (4), D1 (3) and P2 (2), in `det` and default modes;
+  - D1w in `det`;
+  - D2 in both modes;
+  - P3 and F1 in default mode (see M4).
+- **Flush counts and spill files (baseline stderr):**
+
+  | Case | Mid-batch flushes | Spill files |
+  |---|---|---|
+  | S1 | 400 | 1,200 (400 per reference) |
+  | P1 at 1K | 4 | 397-400 |
+  | P2 | 256 | 25,408-25,600 |
+  | D1 at 1K | 4 | 373-375 |
+  | D2 at 1K | 100 | 9,360 |
+
+  The P2 and D2 counts meet the §5.4 minimums.
+- **D2 spill listing** (`V/measure/D2s_1K_spill_listing.tsv`, captured when
+  the merge started):
+  - 9,360 files over 167 references, 2.46 GB of pre-dedup spill;
+  - at most 100 files per reference (one per flush);
+  - rid 0 (chr1) holds 9.5% of the spill bytes; the next are 6.9%, 6.6% and
+    6.0%.
+  - The spill shares follow the output shares, so chr1 bounds the per-reference
+    parallelism at about 10×, as design §5 expected.
+
+### M1/M2: per-reference path and parallel tasks (`f2f1b9f`)
+
+- **Structure.**
+  - The serial merge was moved verbatim into
+    `MappingWriter::ProcessLowMemOverflowSerial`.
+  - `MappingWriter<AtacSpillRecord>::ProcessAndOutputMappingsInLowMemoryFromOverflow`
+    is an explicit specialisation. It uses the per-reference
+    `AtacLowMemFinalizer` when N ≥ 2 and the run is eligible, and otherwise
+    the serial merge under one host permit (D15).
+  - `AppendMapping`'s non-dual branch and the task partitions share one
+    fragment writer (`AtacLowMemFinalizer::WriteNonDualFragment`).
+- **Deviation from §4.2: no separate serial-only M1 build.**
+  - The per-reference code was written directly with task sinks (partition,
+    atomic summary, new-barcode log).
+  - The per-reference path on one worker at a time is covered by the
+    `t7_permits1` variants (one host permit) and by `t7_nofile_150`
+    (open-file limit leaves one task).
+- **Unit harness:**
+  - 142 runs: 20 cases × serial, 2, 7, 32, 64 threads, auto, one permit;
+    3 permits and serial-with-permit on U02, U05 and U11c; limits on U14; U15.
+  - All identical to the serial merge; the serial outputs match the goldens
+    (`V/unit/check_against_goldens.log`).
+- **Synthetic E2E at 7 threads:** S1c/S1b in sidecar, BED and TagAlign are
+  byte-identical to the baseline (`V/compare/dev1_*`). The binary `dev1` was
+  built from this source.
+- **Mutation checks** (`V/unit/mutation_*.log`; each mutation built, run
+  against the goldens, then reverted):
+
+  | Mutation | Failing runs | Caught? |
+  |---|---|---|
+  | Last tail emitted with loop instead of end-of-stream semantics | 36 | yes |
+  | Pending tail emitted after its reference's partition instead of before | 116 | yes |
+  | New-barcode replay with only the MAPPED put | 81 | yes |
+  | New barcodes replayed in reverse order | 7 (U11) | yes |
+  | Explicit pending-resize step removed | 0 | no; see below |
+
+  The removed step is redundant, not required:
+  - The first summary update of the assembly (a tail emission, or a
+    new-barcode replay) always comes before any new key is inserted.
+  - So it applies a pending resize at the same point the serial merge's first
+    update would.
+  - The step is kept because D8 asked for it, and it is harmless.
+
+### M3: lean decode (`e14c8d3`)
+
+- **What changed.** `OverflowReader::ReadNextAtacRecordHeader` (returns
+  errors) and `DecodeAtacKwaySpillRecordLean`. The per-reference path now uses
+  `LeanDecodePolicy`, which holds `PairedEndMappingWithBarcode` in the heap.
+- **Unit harness: 143 runs pass**, identical to the serial merge and the
+  goldens, including:
+  - U16: lean and full decode give equal fields for 20,000 random records, and
+    both reject 8 crafted invalid headers.
+- **Build.** `V/bin/chromap_new_e14c8d3`, sha256 `5572046f…`; lib runner
+  `a46ed552…`. No new warnings.
+- **Quick E2E:** S1c_side, S1b_side and S1c_tag at the CLI default are
+  identical to the baseline.
+
+### M4
+
+In progress: the full E2E set, the release gate and the fixture smokes. The
+results table follows when they finish.

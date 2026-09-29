@@ -1,60 +1,67 @@
 # Handoff: parallel low-memory finalisation for paired-end ATAC (2026-09-29)
 
-Runbook: `docs/runbooks/RUNBOOK_LOWMEM_PARALLEL_FINALISE_20260929.md`.
-Design note: `docs/design/LOWMEM_PARALLEL_FINALISE_20260929.md`.
+- Runbook: `docs/runbooks/RUNBOOK_LOWMEM_PARALLEL_FINALISE_20260929.md`. §10
+  has the M-1 results; §11 has the 1.2.0 results.
+- Design note: `docs/design/LOWMEM_PARALLEL_FINALISE_20260929.md`.
 
-## State
+## State (update of 29 September, during M4)
 
-- **Design branch** `design/lowmem-parallel-finalise-20260929`, in worktree
-  `/mnt/pikachu/Chromap-suite-lowmem-parallel-20260929`, starts from `master`
-  `a47f077` (v1.1.0). It holds the design note, the runbook and this handoff,
-  committed on the local branch.
-- **Author decisions (29 September)** are in runbook §7; the TODO list is in
-  §7.1. The main points:
-  - Every per-reference task runs under a host permit (D4).
-  - The summary uses atomic adds into existing khash entries and logs only
-    new barcodes, in order (D8).
-  - TagAlign is in scope; bulk is out (D6).
-  - Two v1.1.0 bugs were fixed first, as Chromap Suite 1.1.1 (D11).
-- **M-1 (Chromap Suite 1.1.1) is complete.** Results are in runbook §10.
-  - **Branch** `fix/v1.1.1-lowmem-edge-cases`, in worktree
-    `/mnt/pikachu/Chromap-suite-v111-fix-20260929`. Local commits `777462b`,
-    `73cafcd` and `32e8808` sit on `v1.1.0`.
-  - **Validation root:** `/mnt/pikachu/chromap_v111_validation_20260929`.
-  - **Regression test:** fails 4 of 5 cases on v1.1.0 and passes 5 of 5 on
-    1.1.1.
-  - **Release gate:** `make test-release` passes 15 of 15.
-  - **Identity:** all 12 comparisons against v1.1.0 are identical, plus the
-    v1.1.0 control.
-  - Nothing has been pushed, tagged, released, merged or rebased between the
-    branches.
-- **M0-M4 (1.2.0)** have not started. They wait for the coordinator.
+### Branches
+
+| Branch | Worktree | Head / commits | Notes |
+|---|---|---|---|
+| `feat/lowmem-parallel-finalize-20260929` (implementation) | `/mnt/pikachu/Chromap-suite-lowmem-feat-20260929` | from the design branch, with `fix/v1.1.1-lowmem-edge-cases` merged in (`9d3c30b`) | Local commits up to `ebd474b`; the runbook and handoff are kept here from now on |
+| `fix/v1.1.1-lowmem-edge-cases` (1.1.1) | `/mnt/pikachu/Chromap-suite-v111-fix-20260929` | `25afe27` | Public `origin/master` `71030e9` merged in; whole-tree check clean. Waiting for the author's release |
+| `design/lowmem-parallel-finalise-20260929` | — | `31a10ee` | No longer updated |
+
+### Validation root
+
+`/mnt/pikachu/lowmem_parallel_validation_20260929`:
+
+- `bin/`: baseline 1.1.1 `chromap_base_v111` (`d0ae41d2…`) and final build
+  `chromap_new_e14c8d3` (`5572046f…`), with `SHA256SUMS`.
+- `runs/` and `compare/`: end-to-end identity runs and their comparisons.
+- `unit/`: unit logs and the baseline goldens.
+- `measure/`: the measurements.
+- `scripts/`: the drivers. These include `run_baseline.sh` and `run_new.sh`,
+  which run in the background with the shared lock.
+
+### Milestones
+
+- **M0:** done (runbook §11).
+- **M1/M2:** done, commit `f2f1b9f`.
+- **M3:** done, commit `e14c8d3`.
+  - Unit harness: 143 runs pass, including a check against the baseline
+    goldens.
+  - Mutation checks: the tests catch every ordering mistake that matters. The
+    one mutation they miss is harmless; runbook §11 explains why.
+- **M4:** in progress.
+  - Documentation and the 16-target release gate are committed (`ebd474b`).
+  - `make test-release` and the end-to-end runs are running.
+
+### Decisions applied
+
+- D13-D16 are recorded in runbook §7.
+- 1.2.0 builds on 1.1.1 by merge.
+- The N = 1 serial merge holds one permit when hooks are present.
+- Runs that load the genome index take the shared lock.
 
 ## Waiting on the author
 
-1. **Release of 1.1.1:** the tag and the push. The release date in
-   `CHANGELOG.md` and the release notes, and the Dockerfile's default source
-   revision, are set in that step.
-2. **How 1.2.0 picks up 1.1.1:** merge the fix branch into the design branch,
-   or rebase the design branch onto it.
-3. **The N = 1 permit question** (TODO §7.1): should the N = 1 serial loop
-   hold a permit when hooks are present?
-4. **Public-repository text.**
-   - None of this work's commits contains the excluded names or terms.
-     Checked with `git log -p a47f077..<branch>` on both branches.
-   - The already-public `origin/master` has two such lines, in
-     `docs/runbooks/RUNBOOK_STAR_MIRRORED_FASTQ_READER_20260928.md`, from
-     commit `a88fa44`, which is in `v1.1.0`.
-   - A whole-tree grep of any branch therefore still finds them.
-   - Whether to neutralise that file in a new commit is for the coordinator
-     and the author.
+1. Releasing 1.1.1: the tag, the push and the GitHub release.
+2. Releasing 1.2.0 after M4 reports: the version bump, release notes, tag and
+   push.
+3. Multiomics adoption. In multiomics-suite:
+   - pass `--chromapAtacLowMemFinalizeThreads` (the library default is 1);
+   - run G-M1 with a build pinned to the 1.2.0 commit.
 
 ## Excluded material
 
 Follow the exclusions in the maintainers' private notes; never read or copy the
 material they name.
 
-## Estimate for the rest
+## If usage runs short
 
-About 4.25 agent-days for M0-M4, plus about 11-12 hours of untimed identity
-runs, run one at a time (runbook §8).
+Stop and update this handoff. The background drivers write each run to
+`V/runs/<case>/<mode>/<binary>` and log progress to `V/logs/run_new.log`.
+Compare finished runs with `V/scripts/compare_case.py BASE NEW MODE OUT.json`.
