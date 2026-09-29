@@ -70,13 +70,48 @@ with a whitelist and without `--output-mappings-not-in-whitelist`.
   - bulk-level duplicate removal with barcodes outside the table.
 
   Linked against v1.1.0, four of the five cases fail:
-  - two runs finish without the missing records;
-  - one crashes;
-  - one keeps a barcode outside the table over a whitelisted one.
+  - with one of six spill files removed, the run writes 5 of 6 records and
+    exits normally;
+  - with an open-file limit of 24 and 40 spill files for one reference, the
+    run writes 20 of 40 records and exits normally;
+  - with an empty whitelist table, the run crashes (segmentation fault);
+  - with barcodes outside the table, it keeps a barcode outside the table
+    over a whitelisted barcode with abundance 7.
 
-  All five pass on v1.1.1. The test is now part of the release gate, which has
-  15 targets.
-- **Output identity with v1.1.0.** Results are pending; see the handoff.
+  All five pass on v1.1.1. Under valgrind, v1.1.0 shows invalid reads in the
+  whitelist lookup and v1.1.1 shows none. The test is now part of the release
+  gate, which has 15 targets and passes.
+- **Command-line runs** on the small synthetic scATAC fixture from the
+  sidecar-only smoke test:
+  - Barcodes, no whitelist, bulk-level duplicate removal and `--low-mem`:
+    v1.1.0 crashes; v1.1.1 writes 399 fragments.
+  - The same reads given as 100 lanes, with `--low-mem-ram 1K` (100 spill
+    files per reference) and `ulimit -n 64`:
+    - v1.1.0 exits normally with the same 3,241 fragments as a run without the
+      limit, but 3,082 of them carry lower duplicate counts: 303,921 in total,
+      instead of 460,645.
+    - v1.1.1 stops with the open-file message and leaves no temporary files.
+- **Output identity with v1.1.0.** Twelve comparisons are byte-identical: the
+  AEV1 sidecar and `.chroms.tsv`, the fragment text, the peaks, the summits,
+  the summary and the stderr counters. The cases are:
+  - the synthetic fixture as 100 lanes, sidecar output, with cell-level and
+    with bulk-level duplicate removal (100 spill flushes each);
+  - the PBMC 3k 100k fixture:
+    - sidecar and BED output, each at the default `--low-mem-ram` and at `1K`;
+    - sidecar output with bulk-level duplicate removal;
+    - paired-end BED without barcodes;
+    - single-end barcoded BED;
+  - DOGMA-plex lane 1 at 2,000,000 read pairs, sidecar and BED output at
+    `--low-mem-ram 1K`.
+
+  These eleven runs used `--deterministic-mapping`.
+
+  The twelfth comparison ran DOGMA-plex 2M sidecar output with the candidate
+  cache on:
+  - Its summary is compared without the four candidate-cache columns. Those
+    columns differ between two v1.1.0 runs as well.
+  - The MACS3 peak-metrics file records each run's own output paths, so it is
+    compared after replacing the run directory; no other byte differs.
 
 ## Versioning and provenance
 
