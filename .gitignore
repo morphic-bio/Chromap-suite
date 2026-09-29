@@ -28,6 +28,7 @@ objs/
 # Test binaries
 tests/test_y_filter
 tests/test_atac_spill_record_roundtrip
+tests/test_lowmem_overflow_edge_cases
 tests/test_atac_mergeable_spill_materializer
 tests/test_macs3_fragment_buckets
 tests/index_load_probe

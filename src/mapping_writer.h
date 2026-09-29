@@ -527,6 +527,26 @@ class MappingWriter {
 #endif
 };
 
+// Abundance of a barcode in the whitelist table used for bulk-level duplicate
+// selection. A barcode that is not in the table has abundance 0: this happens
+// with --output-mappings-not-in-whitelist, and for every barcode when no
+// whitelist is given (the table is then empty). Nothing is read at kh_end.
+inline double WhitelistBarcodeAbundanceOrZero(
+    const khash_t(k64_seq) * barcode_whitelist_lookup_table,
+    uint64_t barcode) {
+  if (barcode_whitelist_lookup_table == nullptr) {
+    return 0.0;
+  }
+  const khiter_t barcode_whitelist_lookup_table_iterator =
+      kh_get(k64_seq, barcode_whitelist_lookup_table, barcode);
+  if (barcode_whitelist_lookup_table_iterator ==
+      kh_end(barcode_whitelist_lookup_table)) {
+    return 0.0;
+  }
+  return kh_value(barcode_whitelist_lookup_table,
+                  barcode_whitelist_lookup_table_iterator);
+}
+
 template <typename MappingRecord>
 size_t MappingWriter<MappingRecord>::FindBestMappingIndexFromDuplicates(
     const khash_t(k64_seq) * barcode_whitelist_lookup_table,
@@ -535,22 +555,15 @@ size_t MappingWriter<MappingRecord>::FindBestMappingIndexFromDuplicates(
   // barcodes in the dups, then by the barcode abundance.
   size_t best_mapping_index = 0;
 
-  khiter_t barcode_whitelist_lookup_table_iterator =
-      kh_get(k64_seq, barcode_whitelist_lookup_table,
-             duplicates[best_mapping_index].GetBarcode());
-
-  double best_mapping_barcode_abundance = kh_value(
+  double best_mapping_barcode_abundance = WhitelistBarcodeAbundanceOrZero(
       barcode_whitelist_lookup_table,
-      barcode_whitelist_lookup_table_iterator);  /// (double)num_sample_barcodes_;
+      duplicates[best_mapping_index].GetBarcode());  /// (double)num_sample_barcodes_;
 
   for (size_t bulk_dup_i = 1; bulk_dup_i < duplicates.size(); ++bulk_dup_i) {
-    barcode_whitelist_lookup_table_iterator =
-        kh_get(k64_seq, barcode_whitelist_lookup_table,
-               duplicates[bulk_dup_i].GetBarcode());
-
-    const double current_mapping_barcode_abundance = kh_value(
-        barcode_whitelist_lookup_table,
-        barcode_whitelist_lookup_table_iterator);  /// (double)num_sample_barcodes_;
+    const double current_mapping_barcode_abundance =
+        WhitelistBarcodeAbundanceOrZero(
+            barcode_whitelist_lookup_table,
+            duplicates[bulk_dup_i].GetBarcode());  /// (double)num_sample_barcodes_;
 
     const bool same_num_dups_with_higer_barcode_abundance =
         duplicates[bulk_dup_i].num_dups_ ==
