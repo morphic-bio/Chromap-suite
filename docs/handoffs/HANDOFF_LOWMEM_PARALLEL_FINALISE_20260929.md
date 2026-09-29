@@ -1,67 +1,74 @@
 # Handoff: parallel low-memory finalisation for paired-end ATAC (2026-09-29)
 
 - Runbook: `docs/runbooks/RUNBOOK_LOWMEM_PARALLEL_FINALISE_20260929.md`. §10
-  has the M-1 results; §11 has the 1.2.0 results.
+  has the M-1 results; §11 has the 1.2.0 results through M4.
 - Design note: `docs/design/LOWMEM_PARALLEL_FINALISE_20260929.md`.
 
-## State (update of 29 September, during M4)
+## State: M4 complete (29 September); stopped for the author
 
 ### Branches
 
-| Branch | Worktree | Head / commits | Notes |
-|---|---|---|---|
-| `feat/lowmem-parallel-finalize-20260929` (implementation) | `/mnt/pikachu/Chromap-suite-lowmem-feat-20260929` | from the design branch, with `fix/v1.1.1-lowmem-edge-cases` merged in (`9d3c30b`) | Local commits up to `ebd474b`; the runbook and handoff are kept here from now on |
-| `fix/v1.1.1-lowmem-edge-cases` (1.1.1) | `/mnt/pikachu/Chromap-suite-v111-fix-20260929` | `25afe27` | Public `origin/master` `71030e9` merged in; whole-tree check clean. Waiting for the author's release |
-| `design/lowmem-parallel-finalise-20260929` | — | `31a10ee` | No longer updated |
+| Branch | Worktree | State |
+|---|---|---|
+| `feat/lowmem-parallel-finalize-20260929` (1.2.0) | `/mnt/pikachu/Chromap-suite-lowmem-feat-20260929` | Local only: nothing pushed, tagged or merged to master. Contains the 1.1.1 fix branch (merged, `9d3c30b`) and `origin/master` `128ead3` (v1.1.1, merged, `600dce4`). Code commits: `f2f1b9f` (per-reference path), `e14c8d3` (lean decode), `ebd474b` (docs, 16-target release gate). |
+| `fix/v1.1.1-lowmem-edge-cases` | `/mnt/pikachu/Chromap-suite-v111-fix-20260929` | Released as v1.1.1 (`128ead3` on `origin/master`). |
+| `design/lowmem-parallel-finalise-20260929` | — | No longer updated. |
 
 ### Validation root
 
 `/mnt/pikachu/lowmem_parallel_validation_20260929`:
 
-- `bin/`: baseline 1.1.1 `chromap_base_v111` (`d0ae41d2…`) and final build
-  `chromap_new_e14c8d3` (`5572046f…`), with `SHA256SUMS`.
-- `runs/` and `compare/`: end-to-end identity runs and their comparisons.
-- `unit/`: unit logs and the baseline goldens.
-- `measure/`: the measurements.
-- `scripts/`: the drivers. These include `run_baseline.sh` and `run_new.sh`,
-  which run in the background with the shared lock.
+| Path | Contents |
+|---|---|
+| `bin/` | Baseline `chromap_base_v111` (`d0ae41d2…`); final build `chromap_new_e14c8d3` (`5572046f…`); `SHA256SUMS` |
+| `compare/m4_summary.tsv` | 51 of 51 comparisons identical, plus the expected open-file error |
+| `unit/` | Unit harness logs, baseline goldens, mutation checks |
+| `measure/` | strace check, lane-1 per-reference table, D2 spill listing |
+| `logs/` | Release gate and smoke runs |
 
-### Milestones
+### Results
 
-- **M0:** done (runbook §11).
-- **M1/M2:** done, commit `f2f1b9f`.
-- **M3:** done, commit `e14c8d3`.
-  - Unit harness: 143 runs pass, including a check against the baseline
-    goldens.
-  - Mutation checks: the tests catch every ordering mistake that matters. The
-    one mutation they miss is harmless; runbook §11 explains why.
-- **M4:** in progress.
-  - Documentation and the 16-target release gate are committed (`ebd474b`).
-  - `make test-release` and the end-to-end runs are running.
+- **Identity.** Every case is byte-identical to the 1.1.1 serial merge:
+  - the synthetic fixture as 400 lanes;
+  - PBMC 100k, and PBMC 100k as 256 lanes;
+  - DOGMA 2M, with and without `--output-mappings-not-in-whitelist`;
+  - DOGMA 50M;
+  - PBMC 3k at full depth;
+  - DOGMA lane 1 at full depth. Its sidecar is also byte-identical to the
+    v1.1.0 production sidecar that Multiomics 0.9.0 wrote for the same lane.
+- **Tests.**
+  - `make test-release`: 16 of 16 targets pass.
+  - The release-pipeline unittest passes.
+  - The fixture smokes pass, including the runs forced to the serial merge.
+  - The unit harness passes 143 runs.
+- **Informal finalisation times** (not benchmarks; shared host, single runs):
 
-### Decisions applied
-
-- D13-D16 are recorded in runbook §7.
-- 1.2.0 builds on 1.1.1 by merge.
-- The N = 1 serial merge holds one permit when hooks are present.
-- Runs that load the genome index take the shared lock.
+  | Case | Serial | Parallel |
+  |---|---|---|
+  | F1 (DOGMA lane 1, full depth) | 680 s | 211 s |
+  | D2 (DOGMA 50M) | 32 s | 13.5 s |
+  | P3 (PBMC 3k, full depth) with `--summary` | 43 s | **76 s** |
+  | P3 without `--summary` | — | 7.6 s |
 
 ## Waiting on the author
 
-1. Releasing 1.1.1: the tag, the push and the GitHub release.
-2. Releasing 1.2.0 after M4 reports: the version bump, release notes, tag and
-   push.
-3. Multiomics adoption. In multiomics-suite:
-   - pass `--chromapAtacLowMemFinalizeThreads` (the library default is 1);
-   - run G-M1 with a build pinned to the 1.2.0 commit.
+1. **Summary contention (performance only).**
+   - The D8 atomic adds contend on the few thousand hot barcode rows in PBMC
+     data.
+   - Proposed fix: each task aggregates its deltas per barcode and applies
+     them with one atomic add per barcode and field when it ends. This needs
+     only transient memory and keeps the output exact. See runbook §11.
+   - Decision needed: fix this before 1.2.0, or not.
+2. **Releasing 1.2.0:** bump `src/version.h` to 1.2.0, date the release notes
+   and changelog, set the Dockerfile version and revision, then tag and push.
+3. **Multiomics adoption** (in multiomics-suite).
+   - Pass `--chromapAtacLowMemFinalizeThreads`; the library default is 1.
+   - Run G-M1 on a build pinned to 1.2.0.
+   - The permit hooks already work for this: STAR's pool stays enabled after
+     mapping, and ATAC is marked complete only after `runChromapAtac` returns,
+     so permits for finalisation are granted.
 
 ## Excluded material
 
 Follow the exclusions in the maintainers' private notes; never read or copy the
 material they name.
-
-## If usage runs short
-
-Stop and update this handoff. The background drivers write each run to
-`V/runs/<case>/<mode>/<binary>` and log progress to `V/logs/run_new.log`.
-Compare finished runs with `V/scripts/compare_case.py BASE NEW MODE OUT.json`.
