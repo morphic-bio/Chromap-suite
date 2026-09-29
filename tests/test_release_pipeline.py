@@ -69,6 +69,12 @@ class PackagingGates(unittest.TestCase):
             deb.assert_not_called()
 
 
+def release_targets():
+    """The targets listed in scripts/release/run_release_tests.sh, in order."""
+    text = (ROOT / "scripts/release/run_release_tests.sh").read_text()
+    return text.split("targets=(", 1)[1].split(")", 1)[0].split()
+
+
 class TestRunnerGates(unittest.TestCase):
     def invoke(self, make_body):
         with tempfile.TemporaryDirectory() as temp:
@@ -98,7 +104,7 @@ class TestRunnerGates(unittest.TestCase):
     def test_optional_external_binseq_skip_is_allowed(self):
         result, rows = self.invoke("echo '[input-format-smoke] SKIP BINSEQ: bqtools absent'")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(rows), 15)
+        self.assertEqual(len(rows), 1 + len(release_targets()))
         self.assertTrue(all(row.endswith("\tPASS") for row in rows[1:]))
 
 
