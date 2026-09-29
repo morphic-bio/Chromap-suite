@@ -1,3 +1,10 @@
+chromap-suite (1.2.0-1) unstable; urgency=medium
+
+  * Merge and deduplicate low-memory ATAC spill files on several threads,
+    one reference per task, with byte-identical output.
+
+ -- Ling-Hong Hung <lhhunghimself@gmail.com>  Tue, 29 Sep 2026 00:00:00 +0000
+
 chromap-suite (1.1.1-1) unstable; urgency=medium
 
   * Stop the low-memory merge when a spill file cannot be opened.

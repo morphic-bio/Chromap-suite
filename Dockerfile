@@ -2,7 +2,7 @@
 
 # Ubuntu 22.04 multi-architecture index (glibc 2.35), resolved 2026-08-27.
 ARG UBUNTU_IMAGE="ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc"
-ARG CHROMAP_SUITE_VERSION="1.1.1"
+ARG CHROMAP_SUITE_VERSION="1.2.0"
 # Integrated source revision; release builds override this with the tagged commit.
 ARG CHROMAP_SUITE_REVISION="fc47c2f0452a3c6788b11965ff24502f4e1b2ff5"
 

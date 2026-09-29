@@ -8,6 +8,11 @@ are in [`docs/RELEASE_NOTES_vX.Y.Z.md`](docs/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-29
+
+Parallel low-memory ATAC merge. See
+[`docs/RELEASE_NOTES_v1.2.0.md`](docs/RELEASE_NOTES_v1.2.0.md).
+
 ### Added
 
 - `--low-mem-finalize-threads N` (`MappingParameters::low_mem_finalize_threads`).

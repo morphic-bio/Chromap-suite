@@ -1,6 +1,6 @@
 # Chromap Suite v1.2.0 Release Notes
 
-Date: not yet released (draft).
+Date: 2026-09-29
 
 Chromap Suite v1.2.0 runs the low-memory (`--low-mem`) merge of paired-end
 barcoded ATAC output on several threads, one reference per task. The output
@@ -95,9 +95,9 @@ fields, with no per-record payload string or BAM fields.
   Every variant writes the same bytes as the serial merge. The serial outputs
   match outputs saved from the unmodified v1.1.1 library.
 - **Output identity with v1.1.1.** 51 comparisons of the parallel merge
-  (repeated in full after the per-task summary aggregation)
   (32 threads, the command-line default, and 1, 2 and 7) against the serial
-  v1.1.1 merge, on the same inputs, are byte-identical. They compare the
+  v1.1.1 merge, on the same inputs, are byte-identical. All 51 were repeated
+  after the per-task summary aggregation was added. They compare the
   sidecar, the fragment text, peaks, summits, the summary and the stderr
   counters. The inputs are:
   - a synthetic scATAC fixture given as 400 lanes (400 spill flushes), with
