@@ -471,6 +471,13 @@ directs, so the silent skip no longer exists anywhere.
 
    Verify with byte-identical summaries under `--deterministic-mapping` (§5).
    Multiomics plans to make its summary opt-in; that is in its own repository.
+
+   **Amended by D17 (29 September).** Tasks do not add each group's counts
+   atomically. Each task aggregates its deltas per barcode in a task-local
+   log, in first-seen order. When the task ends, it adds the deltas of
+   barcodes that already have a row, with one atomic add per barcode and
+   field. The remaining barcodes keep their order and are inserted at
+   assembly, as above.
 3. **Task sink:**
    - a partition file (AEV1 records, or text rows in the same format);
    - a pointer to `buckets[rid]`;
@@ -933,6 +940,7 @@ Stop and report immediately if any of these happens:
 | D13 (29 Sep, after M-1) | "Go ahead with the implementations of the runbooks": M0-M4 run without waiting for review between milestones. Stop only on an output difference outside the recorded `<RUN>` normalisation, a needed change in another repository, or near 90% of the usage limit; stop at the end of M4. |
 | D14 | 1.2.0 builds on 1.1.1 by merge, not rebase. Implementation branch `feat/lowmem-parallel-finalize-20260929` (worktree `/mnt/pikachu/Chromap-suite-lowmem-feat-20260929`) was created from the design branch and `fix/v1.1.1-lowmem-edge-cases` was merged into it (`9d3c30b`). The design branch is no longer updated; the runbook and handoff continue on the implementation branch. |
 | D15 | The N = 1 serial path (the v1.1.0 loop) holds one permit for the whole finalisation when permit hooks are present, as the parallel tasks do. Output stays byte-identical. |
+| D17 (29 Sep, approved by the author after M4) | D8 amended to remove the summary contention found in M4: each task aggregates its summary deltas per barcode in a task-local log (first-seen order) and, when the task ends, adds them to existing rows with one atomic add per barcode and field. Kept from D8: no insertion during the parallel region; barcodes without a row are inserted during the ordered assembly in first-seen order; the pending-resize trigger. The summary CSV must stay byte-identical to 1.1.1. Commit `6787063`. |
 | D16 | Sharing pikachu: any run that loads a genome index or can exceed about 16 GB RSS holds `flock /mnt/pikachu/e2e_bench_20260926/pikachu_timed.lock`; builds use `nice -n 10` and at most `-j16`; nothing is timed. |
 
 ### 7.1 TODO (after 1.2.0)
@@ -1295,8 +1303,61 @@ v1.1.0 output Multiomics 0.9.0 wrote for the same lane
   - The memory is transient: at most the distinct barcodes of the references
     in flight. At lane-1 full depth there are 6.68M (reference, barcode) pairs
     across 159 references in total.
-- Until then, runs with `--summary` on PBMC-like data may prefer
-  `--low-mem-finalize-threads 1`.
+- Resolved by D17; see "D17 re-verification" below.
+
+### D17 re-verification (29 September, commits `6787063`, `e07edd7`)
+
+- **Change.** Per-task summary aggregation, as approved by the author (§7,
+  D17).
+- **Final build.** `V/bin/chromap_new_6787063`, sha256 `f4a6d570…`; lib runner
+  `ccc0047d…`.
+- **Unit harness.**
+  - Seven more cases now pre-seed most summary rows, as mapping does
+    (`e07edd7`). The goldens were regenerated from the unmodified baseline
+    library: `V/unit/goldens_baseline`, with v1 kept as `goldens_baseline_v1`.
+  - 143 runs pass, identical to the serial merge and to the goldens.
+- **Mutation checks (D17).** Each broken build was rebuilt, run against the
+  goldens and reverted.
+
+  | Mutation | Failing runs | Caught? |
+  |---|---|---|
+  | Last tail with loop semantics | 36 | yes |
+  | Tail after partition | 116 | yes |
+  | Reversed new-barcode order | 7 | yes |
+  | New-barcode replay with only the MAPPED put | 81 | yes |
+  | Existing-row LOWMAPQ add dropped | 60 (8 before the pre-seeding) | yes |
+  | Every barcode treated as new (existing rows updated at assembly instead of atomically) | 0 | no |
+
+  The last row is expected. That mutation inserts nothing and adds the same
+  sums, so it is output-equivalent (the pre-D8 list design).
+- **Release gate.** `make test-release` passes 16 of 16
+  (`V/artifacts/release-tests-6787063/tests.tsv`). The release-pipeline
+  unittest passes (13 tests).
+- **Identity.** All 51 comparisons in `V/compare/d17_summary.tsv` pass. That
+  is the same set as M4, and every case writes a summary:
+  - `det` summaries are byte for byte;
+  - default-mode summaries are compared without the cache columns;
+  - `summary.csv.macs3_frag_peaks.tsv` is compared after the `<RUN>`
+    normalisation;
+  - the `ulimit -n 256` run fails as designed.
+
+  The cases include full-depth PBMC 3k, DOGMA-plex 50M and the full-depth
+  DOGMA-plex lane. All ran on pikachu under the lock; Bridges-2 was not
+  needed. The full-lane sidecar is again byte-identical to the Multiomics
+  0.9.0 v1.1.0 production sidecar.
+- **Informal finalisation times.** Single runs on a shared host; not a
+  benchmark.
+
+  | Case | Serial (1.1.1) | Parallel, D8 atomics | Parallel, D17 |
+  |---|---|---|---|
+  | P3 PBMC 3k full, with `--summary` | 43 s | 76 s | **2.3 s** |
+  | F1 full-depth DOGMA lane | 680 s | 211 s | 219 s |
+  | D2 DOGMA 50M, default mode | 32 s | 13.5 s | 16.4 s |
+  | P2c PBMC 100k × 256 lanes | 38 s | 0.5 s | 10.8 s |
+
+  P2c's D17 run mapped 36% slower than its baseline, which points to host
+  contention (page cache and I/O). P2c has only 320k output groups, so the
+  D17 change adds almost no work there.
 
 **Release notes and changelog.**
 - `docs/RELEASE_NOTES_v1.2.0.md` is drafted and undated.

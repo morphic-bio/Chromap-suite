@@ -4,13 +4,13 @@
   has the M-1 results; §11 has the 1.2.0 results through M4.
 - Design note: `docs/design/LOWMEM_PARALLEL_FINALISE_20260929.md`.
 
-## State: M4 complete (29 September); stopped for the author
+## State: M4 and D17 complete (29 September); stopped for the author
 
 ### Branches
 
 | Branch | Worktree | State |
 |---|---|---|
-| `feat/lowmem-parallel-finalize-20260929` (1.2.0) | `/mnt/pikachu/Chromap-suite-lowmem-feat-20260929` | Local only: nothing pushed, tagged or merged to master. Contains the 1.1.1 fix branch (merged, `9d3c30b`) and `origin/master` `128ead3` (v1.1.1, merged, `600dce4`). Code commits: `f2f1b9f` (per-reference path), `e14c8d3` (lean decode), `ebd474b` (docs, 16-target release gate). |
+| `feat/lowmem-parallel-finalize-20260929` (1.2.0) | `/mnt/pikachu/Chromap-suite-lowmem-feat-20260929` | Local only: nothing pushed, tagged or merged to master. Contains the 1.1.1 fix branch (merged, `9d3c30b`) and `origin/master` `128ead3` (v1.1.1, merged, `600dce4`). Code commits: `f2f1b9f` (per-reference path), `e14c8d3` (lean decode), `ebd474b` (docs, 16-target release gate), `6787063` (D17 summary aggregation). |
 | `fix/v1.1.1-lowmem-edge-cases` | `/mnt/pikachu/Chromap-suite-v111-fix-20260929` | Released as v1.1.1 (`128ead3` on `origin/master`). |
 | `design/lowmem-parallel-finalise-20260929` | — | No longer updated. |
 
@@ -50,23 +50,33 @@
   | P3 (PBMC 3k, full depth) with `--summary` | 43 s | **76 s** |
   | P3 without `--summary` | — | 7.6 s |
 
+## D17 (29 September): summary contention fixed
+
+- Approved by the author and implemented in `6787063`. The harness was
+  broadened in `e07edd7`.
+- **Change.** Tasks aggregate summary deltas per barcode and apply them with
+  one atomic add per barcode and field when they end.
+- **Re-verification.** All of these pass:
+  - the unit harness: 143 runs, plus the regenerated baseline goldens;
+  - the mutation checks;
+  - `make test-release` (16 targets) and the pipeline unittest;
+  - all 51 identity comparisons, which include full-depth PBMC 3k, DOGMA 50M
+    and the full-depth lane. The lane sidecar also equals the Multiomics 0.9.0
+    production sidecar.
+- **Timing.** PBMC 3k full with `--summary` now finalises in 2.3 s in parallel,
+  against 43 s serial (informal).
+- **Final binary.** `V/bin/chromap_new_6787063` (`f4a6d570…`).
+
 ## Waiting on the author
 
-1. **Summary contention (performance only).**
-   - The D8 atomic adds contend on the few thousand hot barcode rows in PBMC
-     data.
-   - Proposed fix: each task aggregates its deltas per barcode and applies
-     them with one atomic add per barcode and field when it ends. This needs
-     only transient memory and keeps the output exact. See runbook §11.
-   - Decision needed: fix this before 1.2.0, or not.
-2. **Releasing 1.2.0:** bump `src/version.h` to 1.2.0, date the release notes
-   and changelog, set the Dockerfile version and revision, then tag and push.
-3. **Multiomics adoption** (in multiomics-suite).
-   - Pass `--chromapAtacLowMemFinalizeThreads`; the library default is 1.
-   - Run G-M1 on a build pinned to 1.2.0.
-   - The permit hooks already work for this: STAR's pool stays enabled after
-     mapping, and ATAC is marked complete only after `runChromapAtac` returns,
-     so permits for finalisation are granted.
+1. Releasing 1.2.0:
+   - bump `src/version.h` to 1.2.0;
+   - date the release notes and the changelog;
+   - set the Dockerfile version and source revision;
+   - tag and push.
+2. Multiomics adoption, in multiomics-suite:
+   - `--chromapAtacLowMemFinalizeThreads` (the library default is 1);
+   - G-M1 on a build pinned to 1.2.0.
 
 ## Excluded material
 

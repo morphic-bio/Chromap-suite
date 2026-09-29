@@ -30,7 +30,9 @@ reference order.
 **Byte identity.** The last group of each reference is emitted exactly as the
 serial merge emits it, including the rule the serial merge applies to the
 last reference. Summary rows keep their values and their order:
-- tasks add to existing rows atomically;
+- each task totals its summary counts per barcode;
+- when a task ends, it adds the totals to existing rows with one atomic add
+  per barcode and field;
 - barcodes without a row are inserted afterwards, in the order the serial
   merge inserts them.
 
@@ -65,8 +67,7 @@ fields, with no per-record payload string or BAM fields.
 **Memory.**
 - Task partitions go to disk in the spill directory and are removed as they
   are appended.
-- The summary needs no per-task copies; only barcodes new to the summary are
-  logged.
+- A task holds its per-barcode summary totals only while it runs.
 
 ## Validation
 
@@ -94,6 +95,7 @@ fields, with no per-record payload string or BAM fields.
   Every variant writes the same bytes as the serial merge. The serial outputs
   match outputs saved from the unmodified v1.1.1 library.
 - **Output identity with v1.1.1.** 51 comparisons of the parallel merge
+  (repeated in full after the per-task summary aggregation)
   (32 threads, the command-line default, and 1, 2 and 7) against the serial
   v1.1.1 merge, on the same inputs, are byte-identical. They compare the
   sidecar, the fragment text, peaks, summits, the summary and the stderr
