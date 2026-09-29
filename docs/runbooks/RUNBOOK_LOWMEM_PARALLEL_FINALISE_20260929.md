@@ -6,7 +6,8 @@
   TODO list is in §7.1.
 - **Order of work:**
   1. **M-1**, a Chromap Suite 1.1.1 patch for two v1.1.0 bugs, on its own
-     branch and worktree (§4.0).
+     branch and worktree (§4.0). Done on 29 September; results are in §10.
+     The release is waiting for the author.
   2. M0-M4 for 1.2.0. M0 starts only when the coordinator says so.
 - **Where the documents are:** the design note
   (`docs/design/LOWMEM_PARALLEL_FINALISE_20260929.md`), this runbook and the
@@ -783,6 +784,15 @@ Byte for byte:
 - `peaks.narrowPeak` and `summits.bed`;
 - in `det` mode, `summary.csv`.
 
+Run-path normalisation:
+
+- `summary.csv.macs3_frag_peaks.tsv` (the MACS3 peak-metrics file written
+  beside the summary) records the run's own output paths.
+- Compare it byte for byte after replacing each run's own run directory with
+  `<RUN>`. This is the normalisation the Multiomics G-M1 comparator uses.
+- Its lines are not excluded. Anything other than the run-directory prefix
+  that differs is a difference: stop and report.
+
 Default-mode summaries:
 
 - `summary.csv` is compared with `cachehit`, `fric`, `estfrip` and
@@ -964,6 +974,131 @@ and `src/mapping_writer.h:132` and `:358` do not set the requested size under
 glibc. They have no effect on correctness. This note is here so nobody
 "fixes" them into large per-file buffers.
 
-## 10. M-1 results
+## 10. M-1 results (29 September)
 
-To be filled in when M-1 finishes.
+M-1 is complete and stopped for the author. There is no push, tag or merge.
+
+### Branch and binaries
+
+- **Branch** `fix/v1.1.1-lowmem-edge-cases`, worktree
+  `/mnt/pikachu/Chromap-suite-v111-fix-20260929`, from `v1.1.0` (`a47f077`).
+  Local commits:
+  - `777462b`: the fixes, `tests/test_lowmem_overflow_edge_cases.cc`, and the
+    `test-lowmem-overflow-edge-cases` target in the release gate (15 targets;
+    counts updated in `README.md`, `AGENTS.md` and `docs/releasing.md`);
+  - `73cafcd`: version 1.1.1 in `src/version.h`, the Dockerfile `ARG`,
+    `debian/changelog` and the manual-release default; `CHANGELOG.md`
+    `[1.1.1]`; `docs/RELEASE_NOTES_v1.1.1.md`;
+  - `32e8808`: the validation results in the release notes.
+- **Code changes:**
+  - `src/mapping_writer.cc`: `ExitOnUnopenableOverflowFile`, called from the
+    scan and the merge of the generic
+    `ProcessAndOutputMappingsInLowMemoryFromOverflow`;
+  - `src/overflow_reader.{h,cc}`: `OpenErrno()`;
+  - `src/mapping_writer.h`: `WhitelistBarcodeAbundanceOrZero`, used by
+    `FindBestMappingIndexFromDuplicates`.
+- **Binaries** (`V111/bin`, sha256 in `SHA256SUMS`), both built at
+  `nice -n 10` from clean trees:
+  - `chromap_v110_a47f077`: `08499e2f…`;
+  - `chromap_v111_73cafcd`: `d0ae41d2…`.
+
+  They report `1.1.0` and `1.1.1`; the upstream version is `0.3.3-r519` for
+  both.
+
+### Regression test, v1.1.0 against 1.1.1
+
+`make test-lowmem-overflow-edge-cases`. On v1.1.0, the same test source was
+linked against the `a47f077` library.
+
+| Case | Setup | v1.1.0 | 1.1.1 |
+|---|---|---|---|
+| `missing_spill_file` | 2 references × 3 flushes; one of the 6 spill files removed before the merge | FAIL: exit 0; 5 of 6 records written; no error | PASS: exits with "Cannot open low-memory overflow file …"; spill files removed |
+| `fd_limit` | 1 reference, 40 spill files; `RLIMIT_NOFILE` 24 | FAIL: exit 0; 20 of 40 records written; no error | PASS: exits with the open-file message (files for the reference, the limit, `ulimit -n` / `--low-mem-ram`) |
+| `fd_limit_control` | the same spills, normal limit | PASS: 40 of 40 | PASS: 40 of 40 |
+| `bulk_dedup_empty_whitelist` | bulk-level dedup, empty whitelist table | FAIL: segmentation fault in the whitelist lookup | PASS: keeps the barcode with more duplicates (count 3) |
+| `bulk_dedup_absent_barcode` | bulk-level dedup, barcodes absent from a populated table | FAIL: keeps absent barcode `0x40` over `0x41` (abundance 7) | PASS: absent barcodes have abundance 0 |
+
+Logs: `V111/regression/v110.log`, `V111/regression/v111.log`.
+
+Under valgrind (`ulimit -n 4096`; valgrind fails with the host's limit of
+about 1e9):
+
+- v1.1.0 reports invalid reads in `FindBestMappingIndexFromDuplicates`: 1
+  before the empty-table crash, and 3 in the absent-barcode case.
+  - The absent-barcode case happened to pass under valgrind's allocator, which
+    shows the choice was undefined.
+- 1.1.1 reports 0 errors in all six processes.
+- `fd_limit` cannot be reproduced under valgrind, because valgrind manages the
+  client's file limit. It passes natively.
+
+Logs: `V111/evidence/valgrind_v110`, `V111/evidence/valgrind_v111`.
+
+### Command-line evidence (`V111/evidence/cli`)
+
+Both runs use the synthetic sidecar-smoke fixture.
+
+- **Barcodes, no whitelist, bulk-level dedup, `--low-mem --low-mem-ram 1K`,
+  sidecar output:** v1.1.0 exits 139 (segmentation fault); 1.1.1 exits 0 with
+  399 fragments.
+- **The fixture as 100 lanes, `--low-mem-ram 1K` (300 spill files, 100 per
+  reference), `ulimit -n 64`:**
+  - v1.1.0 exits 0 with 3,241 fragments, the same as without the limit.
+    However, 3,082 of them carry lower duplicate counts: 303,921 in total
+    instead of 460,645.
+  - 1.1.1 exits 255 with: "Cannot open low-memory overflow file …: Too many
+    open files. The low-memory merge opens all spill files of a reference at
+    once (100 for reference 0), and the open-file limit is 64. Raise the limit
+    (ulimit -n) or use a larger --low-mem-ram so that fewer spill files are
+    written". No temp files are left behind.
+
+### Release gate
+
+`make test-release`: 15 of 15 targets pass on `73cafcd`, including the new
+target (`V111/artifacts/release-tests/tests.tsv`).
+
+### Identity, 1.1.1 against v1.1.0
+
+- `V111/compare/summary.tsv`, with per-case JSON in `V111/compare/`.
+- 16 threads.
+- `det` means `--deterministic-mapping`.
+- The run-path normalisation (§5.6) applies to
+  `summary.csv.macs3_frag_peaks.tsv`. In every case the only difference in
+  that file was the run-directory prefix.
+
+| Comparison | Mode | Files compared | Spill files | Mid-batch flushes | Output records | Result |
+|---|---|---|---|---|---|---|
+| S1c_1K: synthetic × 100 lanes, cell-level, sidecar | det | 6 | 300 | 100 | 3,241 | identical |
+| S1b_1K: synthetic × 100 lanes, bulk-level, sidecar | det | 6 | 300 | 100 | 399 | identical |
+| P1s_def: PBMC 100k, sidecar | det | 6 | 126 | 0 | 320,017 | identical |
+| P1s_1K: PBMC 100k, sidecar, 1K | det | 6 | 397 | 4 | 320,017 | identical |
+| P1b_def: PBMC 100k, BED | det | 2 | 126 | 0 | 320,017 | identical |
+| P1b_1K: PBMC 100k, BED, 1K | det | 2 | 397 | 4 | 320,017 | identical |
+| P1bulk_1K: PBMC 100k, bulk-level dedup, sidecar, 1K | det | 6 | 397 | 4 | 319,265 | identical |
+| Pnobc_1K: PBMC 100k paired-end, no barcodes, BED, 1K | det | 1 | 399 | 4 | 325,177 | identical |
+| Pse_1K: PBMC 100k single-end barcoded BED, 1K | det | 2 | 391 | 4 | 291,902 | identical |
+| D1s_1K: DOGMA-plex 2M, sidecar, 1K | det | 6 | 373 | 4 | 1,587,839 | identical |
+| D1b_1K: DOGMA-plex 2M, BED, 1K | det | 2 | 373 | 4 | 1,587,839 | identical |
+| D1s_def: DOGMA-plex 2M, sidecar | default | 6 | 116 | 0 | 1,587,839 | identical (summary without the four cache columns) |
+| Control: D1s_def, v1.1.0 against v1.1.0 | default | 6 | 116 | 0 | 1,587,839 | identical without the cache columns; raw summaries differ, confirming the policy |
+
+- **Files compared:**
+  - sidecar cases: `atac_fragments.bin`, `.chroms.tsv`, `peaks.narrowPeak`,
+    `summits.bed`, `summary.csv` and `summary.csv.macs3_frag_peaks.tsv`;
+  - BED cases: `fragments.tsv` and `summary.csv`;
+  - Pnobc: `fragments.tsv`.
+- Every comparison also required equal stderr counter lines, both exits 0,
+  and empty temp directories.
+- In every `det` case, the raw `summary.csv` bytes are equal.
+
+### Left for the author
+
+- **Releasing 1.1.1:** the tag, the push, the release date, and the
+  Dockerfile's default source revision.
+- **How 1.2.0 picks up 1.1.1:** merge or rebase. No merge or rebase between
+  the branches has been done.
+- **The N = 1 permit question** (§7.1).
+- **Old master runbook.** The public `origin/master` (commit `a88fa44`, part of
+  `v1.1.0`) contains, in
+  `docs/runbooks/RUNBOOK_STAR_MIRRORED_FASTQ_READER_20260928.md`, two lines of
+  the text the coordinator asked to keep out of the public repository. This
+  work's commits add none; see the handoff.
