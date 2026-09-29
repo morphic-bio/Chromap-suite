@@ -684,21 +684,24 @@ std::vector<CaseSpec> BuildCases() {
 
 std::vector<Variant> VariantsFor(const CaseSpec &spec) {
   std::vector<Variant> variants;
-  Variant serial;
-  serial.name = "serial";
-  variants.push_back(serial);
-#ifdef LOWMEM_FINALIZE_HAS_THREADS
+  // U15 exercises the per-reference path's cleanup; the serial merge stops
+  // on the corrupt record without removing its spill files, as in v1.1.x.
   if (spec.name == "U15_task_failure_cleanup") {
+#ifdef LOWMEM_FINALIZE_HAS_THREADS
     Variant v;
     v.name = "t7_failure";
     v.finalize_threads = 7;
     v.expect_failure = true;
     v.expected_message = "invalid ATAC k-way record header";
     v.compare_with_serial = false;
-    variants.clear();
     variants.push_back(v);
+#endif
     return variants;
   }
+  Variant serial;
+  serial.name = "serial";
+  variants.push_back(serial);
+#ifdef LOWMEM_FINALIZE_HAS_THREADS
   const int thread_counts[] = {2, 7, 32, 64};
   for (int t : thread_counts) {
     Variant v;
