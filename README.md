@@ -185,7 +185,7 @@ make LEGACY_OVERFLOW=1
 ### Validation
 
 ```sh
-# Portable release gate: 14 targets with generated fixtures
+# Portable release gate: 15 targets with generated fixtures
 # Requires Python 3, samtools, bgzip and GNU time in addition to build dependencies
 make test-release
 

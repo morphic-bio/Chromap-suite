@@ -106,6 +106,31 @@ Set `CHROMAP_ARTIFACT_ROOT` to relocate its tiny generated artifacts. See
 [`docs/mergeable_atac_spill.md`](../docs/mergeable_atac_spill.md) for the
 worker and materializer CLI contract.
 
+## Low-Memory Overflow Merge Edge Cases
+
+`test_lowmem_overflow_edge_cases.cc` drives the low-memory writer
+(`MappingWriter<AtacSpillRecord>`, sidecar-only) with synthetic spill runs. It
+needs no fixture, and it runs each case in a forked child so that exit status
+and stderr can be checked. It checks the following:
+
+- **An unopenable spill file stops the run.** A spill file that cannot be
+  opened, because it was removed or because the open-file limit is below one
+  reference's spill files, stops the run with an error.
+- **Normal limits keep every record.** The same spills under a normal limit
+  write every record.
+- **Barcodes outside the whitelist table.** Bulk-level duplicate removal gives
+  such barcodes abundance 0. This covers both an empty table and barcodes
+  missing from a populated one.
+
+Run it with:
+
+```bash
+make test-lowmem-overflow-edge-cases
+```
+
+It is part of the release gate. Set `CHROMAP_ARTIFACT_ROOT` to relocate its
+per-case directories. Passing cases remove theirs.
+
 ## CBQ Modality Matrix
 
 `run_cbq_modality_matrix.sh` is the hermetic full-surface CBQ parity gate. It

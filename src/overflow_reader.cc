@@ -1,16 +1,20 @@
 #include "overflow_reader.h"
 
 #include <cassert>
+#include <cerrno>
 #include <cstring>
 
 #include "atac_kway_spill.h"
 #include "atac_spill_record.h"
 #include "utils.h"
 
-OverflowReader::OverflowReader(const std::string& path) 
+OverflowReader::OverflowReader(const std::string& path)
     : path_(path), file_(nullptr) {
+    errno = 0;
     file_ = fopen(path.c_str(), "rb");
-    if (file_ != nullptr) {
+    if (file_ == nullptr) {
+        open_errno_ = errno;
+    } else {
         (void)setvbuf(file_, nullptr, _IOFBF, 8u * 1024u * 1024u);
         (void)ConsumeAtacSpillFilePrefixIfPresent();
     }
