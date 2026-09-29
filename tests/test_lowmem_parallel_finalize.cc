@@ -39,6 +39,7 @@
 #include <string>
 #include <vector>
 
+#include "atac_kway_spill.h"
 #include "atac_spill_record.h"
 #include "khash.h"
 #include "mapping_parameters.h"
@@ -753,6 +754,85 @@ std::vector<Variant> VariantsFor(const CaseSpec &spec) {
   return variants;
 }
 
+#ifdef LOWMEM_FINALIZE_HAS_THREADS
+// U16: the lean decode yields the same fragment fields as the full decode and
+// rejects the same invalid record headers.
+bool SameFragment(const PairedEndMappingWithBarcode &a,
+                  const PairedEndMappingWithBarcode &b) {
+  return a.read_id_ == b.read_id_ && a.cell_barcode_ == b.cell_barcode_ &&
+         a.fragment_start_position_ == b.fragment_start_position_ &&
+         a.fragment_length_ == b.fragment_length_ && a.mapq_ == b.mapq_ &&
+         a.direction_ == b.direction_ && a.is_unique_ == b.is_unique_ &&
+         a.num_dups_ == b.num_dups_ &&
+         a.positive_alignment_length_ == b.positive_alignment_length_ &&
+         a.negative_alignment_length_ == b.negative_alignment_length_;
+}
+
+bool RunLeanDecodeCheck() {
+  std::mt19937_64 rng(91);
+  std::vector<uint8_t> encoded;
+  std::string error;
+  for (int i = 0; i < 20000; ++i) {
+    AtacSpillRecord rec =
+        Rec(rng(), rng() & 0xffffffffULL, static_cast<uint32_t>(rng() % 250000000),
+            static_cast<uint16_t>(1 + rng() % 60000),
+            static_cast<uint8_t>(rng() % 64), static_cast<uint8_t>(rng() % 2),
+            static_cast<uint8_t>(rng() % 2));
+    rec.num_dups_ = static_cast<uint8_t>(rng() % 256);
+    rec.positive_alignment_length_ = static_cast<uint16_t>(rng() % 400);
+    rec.negative_alignment_length_ = static_cast<uint16_t>(rng() % 400);
+    rec.SetYHit((rng() % 2) != 0);
+    if (!EncodeAtacKwaySpillRecord(rec, 0, &encoded, &error) ||
+        encoded.size() != sizeof(AtacKwaySpillRecordHeaderV1)) {
+      std::cerr << "[lowmem-parallel] U16 encode failed: " << error << "\n";
+      return false;
+    }
+    AtacSpillRecord full;
+    PairedEndMappingWithBarcode lean;
+    AtacKwaySpillRecordHeaderV1 header;
+    memcpy(&header, encoded.data(), sizeof(header));
+    if (!DecodeAtacKwaySpillRecord(encoded.data(), encoded.size(), 0, &full,
+                                   &error) ||
+        !DecodeAtacKwaySpillRecordLean(header, 0, &lean, &error) ||
+        !SameFragment(full, lean)) {
+      std::cerr << "[lowmem-parallel] U16 record " << i
+                << " decodes differently (" << error << ")\n";
+      return false;
+    }
+  }
+  // Each invalid header must be rejected by both decoders.
+  AtacSpillRecord base = Rec(5, 0x1000, 1000, 150, 40);
+  if (!EncodeAtacKwaySpillRecord(base, 0, &encoded, &error)) return false;
+  AtacKwaySpillRecordHeaderV1 good;
+  memcpy(&good, encoded.data(), sizeof(good));
+  std::vector<std::pair<std::string, std::function<void(AtacKwaySpillRecordHeaderV1 *)>>> bad = {
+      {"magic", [](AtacKwaySpillRecordHeaderV1 *h) { h->magic ^= 1; }},
+      {"codec version", [](AtacKwaySpillRecordHeaderV1 *h) { h->codec_version = 9; }},
+      {"fixed header bytes", [](AtacKwaySpillRecordHeaderV1 *h) { h->fixed_header_bytes = 40; }},
+      {"zero length", [](AtacKwaySpillRecordHeaderV1 *h) { h->fragment_length = 0; }},
+      {"row flags", [](AtacKwaySpillRecordHeaderV1 *h) { h->row_flags = 2; }},
+      {"quality bytes", [](AtacKwaySpillRecordHeaderV1 *h) { h->barcode_quality_bytes = 1; }},
+      {"n mask", [](AtacKwaySpillRecordHeaderV1 *h) { h->raw_barcode_n_mask = 1; }},
+      {"bam pair bytes", [](AtacKwaySpillRecordHeaderV1 *h) { h->bam_pair_bytes = 4; }},
+  };
+  for (const auto &entry : bad) {
+    AtacKwaySpillRecordHeaderV1 h = good;
+    entry.second(&h);
+    AtacSpillRecord full;
+    PairedEndMappingWithBarcode lean;
+    const bool full_ok = DecodeAtacKwaySpillRecord(&h, sizeof(h), 0, &full, &error);
+    const bool lean_ok = DecodeAtacKwaySpillRecordLean(h, 0, &lean, &error);
+    if (full_ok || lean_ok) {
+      std::cerr << "[lowmem-parallel] U16 invalid " << entry.first
+                << " accepted (full " << full_ok << ", lean " << lean_ok
+                << ")\n";
+      return false;
+    }
+  }
+  return true;
+}
+#endif
+
 }  // namespace
 
 int main() {
@@ -828,6 +908,15 @@ int main() {
               << spec.name << "\n";
     if (case_ok) RemoveTree(root + "/" + spec.name);
   }
+#ifdef LOWMEM_FINALIZE_HAS_THREADS
+  ++runs;
+  if (RunLeanDecodeCheck()) {
+    std::cerr << "[lowmem-parallel] PASS U16_lean_decode\n";
+  } else {
+    std::cerr << "[lowmem-parallel] FAIL U16_lean_decode\n";
+    ++failures;
+  }
+#endif
   if (failures == 0) {
     rmdir(root.c_str());
     std::cerr << "[lowmem-parallel] PASS: " << runs << " runs\n";

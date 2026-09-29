@@ -931,6 +931,19 @@ struct Counters {
 
 template <typename Record>
 struct GroupState {
+  GroupState() {
+    // The mapping constructors leave most fields unset.
+    last_mapping.read_id_ = 0;
+    last_mapping.cell_barcode_ = 0;
+    last_mapping.fragment_start_position_ = 0;
+    last_mapping.fragment_length_ = 0;
+    last_mapping.mapq_ = 0;
+    last_mapping.direction_ = 0;
+    last_mapping.is_unique_ = 0;
+    last_mapping.num_dups_ = 0;
+    last_mapping.positive_alignment_length_ = 0;
+    last_mapping.negative_alignment_length_ = 0;
+  }
   bool active = false;
   Record last_mapping;
   uint32_t num_last_mapping_dups = 0;
@@ -973,6 +986,25 @@ struct FullDecodePolicy {
     }
     if (!DecodeAtacKwaySpillRecord(payload->data(), payload->size(), schema,
                                    record, error)) {
+      return -1;
+    }
+    return 1;
+  }
+};
+
+// Lean decode: the fixed record header straight into the fragment fields;
+// no payload string and no SAMMapping members.
+struct LeanDecodePolicy {
+  typedef PairedEndMappingWithBarcode Record;
+  static int Next(OverflowReader *reader, uint32_t /*expected_rid*/,
+                  uint16_t schema, Record *record, std::string * /*payload*/,
+                  std::string *error) {
+    AtacKwaySpillRecordHeaderV1 header;
+    const int got = reader->ReadNextAtacRecordHeader(&header, error);
+    if (got <= 0) {
+      return got;
+    }
+    if (!DecodeAtacKwaySpillRecordLean(header, schema, record, error)) {
       return -1;
     }
     return 1;
@@ -2590,7 +2622,9 @@ bool AtacLowMemFinalizer::Run(
     p_.macs3_frag_buffer->resize(num_reference_sequences);
   }
 
-  RunTasksAndAssemble<lowmem_finalize_detail::FullDecodePolicy>(
+  // The covered schema has no optional sections, so the lean decode reads
+  // exactly the fields the merge uses (FullDecodePolicy gives the same bytes).
+  RunTasksAndAssemble<lowmem_finalize_detail::LeanDecodePolicy>(
       jobs, schema, plan.workers, reference, barcode_whitelist_lookup_table,
       start_time);
   return true;
