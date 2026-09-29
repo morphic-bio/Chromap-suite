@@ -140,6 +140,43 @@ class SummaryMetadata {
     kh_value(barcode_metadata_, barcode_metadata_iter).counts[type] += change;
   }
 
+  // Support for updating the table from several threads while no key is
+  // inserted (parallel low-memory finalisation). kh_put checks for a resize
+  // before its lookup, even for a key that is already present, so the row
+  // order of Output() depends on when puts happen as well as on the order in
+  // which keys are inserted.
+
+  // True when the next kh_put (for any key) would resize the table first.
+  bool ResizePendingOnNextPut() const {
+    return barcode_metadata_->n_occupied >= barcode_metadata_->upper_bound;
+  }
+
+  // Performs the resize step kh_put takes before its lookup, exactly as the
+  // next UpdateCount would (see KHASH_INIT2 in khash.h).
+  void ApplyPendingResizeLikePut() {
+    khash_t(k64_barcode_metadata) *h = barcode_metadata_;
+    if (h->n_occupied >= h->upper_bound) {
+      if (h->n_buckets > (h->size << 1)) {
+        kh_resize(k64_barcode_metadata, h, h->n_buckets - 1);
+      } else {
+        kh_resize(k64_barcode_metadata, h, h->n_buckets + 1);
+      }
+    }
+  }
+
+  // Read-only lookup; kh_end (End()) when the barcode has no row.
+  khiter_t FindExisting(uint64_t barcode) const {
+    return kh_get(k64_barcode_metadata, barcode_metadata_, barcode);
+  }
+  khiter_t End() const { return kh_end(barcode_metadata_); }
+
+  // Adds to an existing row. Safe from several threads as long as no thread
+  // inserts or resizes at the same time.
+  void AddExistingAtomic(khiter_t iter, int type, uint64_t change) {
+    __atomic_fetch_add(&kh_value(barcode_metadata_, iter).counts[type], change,
+                       __ATOMIC_RELAXED);
+  }
+
   void UpdateNonWhitelistCount(int type, uint64_t change) {
     nonwhitelist_summary_.counts[type] += change;
   }

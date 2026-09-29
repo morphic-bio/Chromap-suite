@@ -118,6 +118,15 @@ bool DecodeAtacKwaySpillRecord(const void *bytes, size_t byte_count,
                                AtacSpillRecord *record,
                                std::string *error);
 
+// Lean decode for spill files without optional sections (no BAM pair, no raw
+// barcode evidence): the fixed 48-byte record header straight into the
+// fragment fields. Accepts and rejects exactly what DecodeAtacKwaySpillRecord
+// does for such files, and yields the same PairedEndMappingWithBarcode fields.
+bool DecodeAtacKwaySpillRecordLean(const AtacKwaySpillRecordHeaderV1 &header,
+                                   uint16_t file_schema_mask,
+                                   PairedEndMappingWithBarcode *record,
+                                   std::string *error);
+
 }  // namespace chromap
 
 #endif  // ATAC_KWAY_SPILL_H_

@@ -684,4 +684,50 @@ bool DecodeAtacKwaySpillRecord(const void *bytes, size_t byte_count,
   return true;
 }
 
+bool DecodeAtacKwaySpillRecordLean(const AtacKwaySpillRecordHeaderV1 &header,
+                                   uint16_t file_schema_mask,
+                                   PairedEndMappingWithBarcode *record,
+                                   std::string *error) {
+  if (record == nullptr) {
+    return Fail("invalid ATAC k-way decode target", error);
+  }
+  // The checks of DecodeAtacKwaySpillRecord, in the same order.
+  if (header.magic != kAtacKwaySpillRecordMagic ||
+      header.codec_version != kAtacKwaySpillRecordCodecVersion ||
+      header.fixed_header_bytes != sizeof(header) ||
+      header.fragment_length == 0 ||
+      (header.row_flags & ~kAtacKwayRowHasYHit) != 0 ||
+      header.barcode_quality_bytes > 32) {
+    return Fail("invalid ATAC k-way record header", error);
+  }
+  const bool file_bam =
+      (file_schema_mask & kAtacSpillSchemaHasBamPair) != 0;
+  const bool file_raw =
+      (file_schema_mask & kAtacSpillSchemaHasRawBarcodeEvidence) != 0;
+  if ((file_bam && header.bam_pair_bytes == 0) ||
+      (!file_bam && header.bam_pair_bytes != 0) ||
+      (file_raw && header.barcode_quality_bytes == 0) ||
+      (!file_raw && (header.barcode_quality_bytes != 0 ||
+                     header.raw_barcode_n_mask != 0))) {
+    return Fail("ATAC k-way record optional sections disagree with schema",
+                error);
+  }
+  if (file_bam || file_raw) {
+    return Fail("lean ATAC k-way decode needs a schema without optional "
+                "sections",
+                error);
+  }
+  record->read_id_ = header.local_read_id;
+  record->cell_barcode_ = header.packed_barcode_key;
+  record->fragment_start_position_ = header.fragment_start;
+  record->fragment_length_ = header.fragment_length;
+  record->positive_alignment_length_ = header.positive_alignment_length;
+  record->negative_alignment_length_ = header.negative_alignment_length;
+  record->num_dups_ = header.duplicate_count;
+  record->mapq_ = header.mapq_direction_unique & 0x3fu;
+  record->direction_ = (header.mapq_direction_unique >> 6) & 1u;
+  record->is_unique_ = (header.mapq_direction_unique >> 7) & 1u;
+  return true;
+}
+
 }  // namespace chromap

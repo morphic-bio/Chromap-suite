@@ -5,6 +5,10 @@
 #include <cstdio>
 #include <cstdint>
 
+namespace chromap {
+struct AtacKwaySpillRecordHeaderV1;
+}
+
 // Simple reader for overflow files
 // Reads length-prefixed records sequentially
 class OverflowReader {
@@ -15,6 +19,13 @@ public:
     // Read next record header and payload
     // Returns false on EOF, true on success
     bool ReadNext(uint32_t& out_rid, std::string& out_payload);
+
+    // ATAC k-way spill files without optional sections: reads the next
+    // fixed-size record header straight into `header`, with the block
+    // framing checks of ReadNext. Returns 1 for a record, 0 at end of file
+    // and -1 with a message on any error (it never exits).
+    int ReadNextAtacRecordHeader(chromap::AtacKwaySpillRecordHeaderV1* header,
+                                 std::string* error);
 
     // When the file begins with AtacSpillFileHeader, the prefix is consumed
     // on the first ReadNext and these reflect the header contents.

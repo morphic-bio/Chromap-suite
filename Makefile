@@ -19,7 +19,7 @@ CXXFLAGS=-std=c++11 -Wall -O3 -fopenmp -msse4.1 -I$(HTSLIB_DIR) -I$(RAPIDMACS_DI
 DEPFLAGS=-MMD -MP
 LDFLAGS=-L$(HTSLIB_DIR) -lhts -lm -lz -lpthread -ldl -lcurl -lcrypto -lbz2 -llzma -ldeflate
 
-core_cpp_source=sequence_batch.cc fastq_bgzf_input.cc materialized_reference.cc cbq_reader.cc cbq_batch_producer.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc atac_kway_spill.cc atac_mergeable_spill.cc atac_hot_spill.cc atac_materialized_binary.cc atac_spill_compactor.cc atac_spill_materializer.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
+core_cpp_source=sequence_batch.cc fastq_bgzf_input.cc materialized_reference.cc cbq_reader.cc cbq_batch_producer.cc index.cc minimizer_generator.cc candidate_processor.cc alignment.cc feature_barcode_matrix.cc ksw.cc draft_mapping_generator.cc mapping_generator.cc mapping_writer.cc overflow_writer.cc overflow_reader.cc atac_kway_spill.cc atac_mergeable_spill.cc atac_hot_spill.cc atac_materialized_binary.cc atac_spill_compactor.cc atac_spill_materializer.cc atac_lowmem_finalize.cc bam_sorter.cc y_noy_path_utils.cc chromap.cc
 driver_cpp_source=chromap_driver.cc
 libchromap_cpp_source=libchromap.cc
 # BGZF FASTQ reader mirrored from STAR Suite; see src/star_input/MIRROR.md.
@@ -107,7 +107,7 @@ $(objs_dir)/star_input/%.o: $(src_dir)/star_input/%.cpp
 
 -include $(deps)
 
-.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-lowmem-overflow-edge-cases test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-macs3-fragment-buckets test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke test-atac-sidecar-only-smoke test-fastq-intake-smoke \
+.PHONY: clean test-unit test-materialized-reference test-atac-spill-record-roundtrip test-lowmem-overflow-edge-cases test-lowmem-parallel-finalize test-atac-mergeable-spill-materializer test-atac-runtime-spill-schema-harness test-frag-compact-store test-macs3-fragment-buckets test-input-format-smoke test-cbq-range-reader test-cbq-atac-smoke test-cbq-modality-matrix test-cbq-atac-100k test-libchromap-core-smoke test-atac-sidecar-only-smoke test-fastq-intake-smoke \
 	 prepare-encode-downsample-fixtures test-encode-downsample-smoke \
 	 prepare-encode-cross-assay-fixtures test-encode-cross-assay-smoke \
 	 test-encode-cbq-cross-assay-smoke \
@@ -209,6 +209,16 @@ test-lowmem-overflow-edge-cases: dir $(libchromap) $(RAPIDMACS_LIB)
 	$(CXX) $(CXXFLAGS) -I$(src_dir) tests/test_lowmem_overflow_edge_cases.cc \
 		$(libchromap) $(RAPIDMACS_LIB) -o tests/test_lowmem_overflow_edge_cases $(LDFLAGS)
 	./tests/test_lowmem_overflow_edge_cases
+
+# Parallel low-memory ATAC finalisation: per-reference tasks on 1-64 threads,
+# host permits and open-file limits must write the same bytes as the serial
+# merge. Hermetic; each case and variant runs in a forked child.
+test-lowmem-parallel-finalize: dir $(libchromap) $(RAPIDMACS_LIB)
+	@mkdir -p tests
+	$(CXX) $(CXXFLAGS) -DLOWMEM_FINALIZE_HAS_THREADS -I$(src_dir) \
+		tests/test_lowmem_parallel_finalize.cc $(libchromap) $(RAPIDMACS_LIB) \
+		-o tests/test_lowmem_parallel_finalize $(LDFLAGS)
+	./tests/test_lowmem_parallel_finalize
 
 tests/test_atac_mergeable_spill_materializer: tests/test_atac_mergeable_spill_materializer.cc $(libchromap) $(RAPIDMACS_LIB)
 	$(CXX) $(CXXFLAGS) -I$(src_dir) $< $(libchromap) $(RAPIDMACS_LIB) \

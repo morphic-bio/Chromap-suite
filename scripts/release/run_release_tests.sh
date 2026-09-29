@@ -13,7 +13,7 @@ targets=(
   test-unit test-barcode-sampling test-materialized-reference
   test-frag-compact-store test-macs3-fragment-buckets test-macs3-frag-qvalue-cli
   test-atac-spill-record-roundtrip test-atac-mergeable-spill-materializer
-  test-lowmem-overflow-edge-cases
+  test-lowmem-overflow-edge-cases test-lowmem-parallel-finalize
   test-fastq-intake-smoke test-input-format-smoke test-atac-sidecar-only-smoke
   test-libchromap-core-smoke test-cbq-atac-smoke test-cbq-modality-matrix
 )

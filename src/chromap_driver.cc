@@ -15,6 +15,7 @@
 
 #include "chromap.h"
 #include "cxxopts.hpp"
+#include "atac_lowmem_finalize.h"
 #include "macs3_fragment_buckets.h"
 #include "rapidmacs/fragment_input.h"
 #include "rapidmacs/frag_compact_store.h"
@@ -89,6 +90,12 @@ void AddMappingOptions(cxxopts::Options &options) {
           "low-mem-ram",
           "Max RAM for low-mem spill buffer before writing temp files [default: 1G; 512M for SAM/PAF/PAIRS]",
           cxxopts::value<std::string>(), "SIZE")(
+          "low-mem-finalize-threads",
+          "Threads for the --low-mem merge of paired-end barcoded ATAC output "
+          "(sidecar-only, BED or TagAlign), one task per reference; 0 uses "
+          "--num-threads, 1 merges serially; output is the same for every "
+          "value [0]",
+          cxxopts::value<int>(), "INT")(
           "bc-error-threshold",
           "Max Hamming distance allowed to correct a barcode [1]",
           cxxopts::value<int>(),
@@ -900,6 +907,16 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
     std::string sizeStr = result["low-mem-ram"].as<std::string>();
     mapping_parameters.low_mem_ram_limit = ParseSizeString(sizeStr, "--low-mem-ram");
   }
+  // The command line runs the low-memory merge on --num-threads by default;
+  // the library field defaults to 1 so that embedding hosts opt in.
+  mapping_parameters.low_mem_finalize_threads = 0;
+  if (result.count("low-mem-finalize-threads")) {
+    const int threads = result["low-mem-finalize-threads"].as<int>();
+    if (threads < 0) {
+      chromap::ExitWithMessage("--low-mem-finalize-threads must be >= 0");
+    }
+    mapping_parameters.low_mem_finalize_threads = threads;
+  }
   if (result.count("cell-by-bin")) {
     mapping_parameters.cell_by_bin = true;
   }
@@ -1680,6 +1697,8 @@ void ChromapDriver::ParseArgsAndRun(int argc, char *argv[]) {
           std::make_shared<std::vector<std::string>>();
     }
 
+    // The low-memory merge keeps every spill file of a reference open.
+    chromap::RaiseOpenFileSoftLimitToHard();
     chromap::Chromap chromap_for_mapping(mapping_parameters);
 
     if (!mapping_parameters.HasPairedEndInput()) {

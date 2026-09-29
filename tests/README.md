@@ -131,6 +131,50 @@ make test-lowmem-overflow-edge-cases
 It is part of the release gate. Set `CHROMAP_ARTIFACT_ROOT` to relocate its
 per-case directories. Passing cases remove theirs.
 
+## Parallel Low-Memory ATAC Merge
+
+`test_lowmem_parallel_finalize.cc` checks that the per-reference low-memory
+merge (`--low-mem-finalize-threads`) writes the same bytes as the serial merge.
+It runs synthetic spill runs through `MappingWriter<AtacSpillRecord>` in a
+forked child per case and variant and compares these outputs between the
+variants:
+
+- the sidecar or the BED/TagAlign text;
+- the summary CSV;
+- the in-memory MACS3 buckets;
+- the stderr counters.
+
+The variants are:
+
+- the serial merge;
+- 2, 7, 32 and 64 threads;
+- the automatic setting;
+- fake host permits with pools of 1 and 3;
+- open-file limits that reduce the workers, or leave too few for one
+  reference.
+
+The cases cover:
+
+- 400 spill flushes;
+- duplicates across a reference boundary;
+- identical records in several files;
+- bulk-level duplicate removal, including barcodes outside the whitelist;
+- the end-of-stream rule for the last reference, and empty references;
+- more than 255 duplicates;
+- summary rows that are new, pre-existing, and pending a table resize;
+- Tn5 shift off, and no duplicate removal;
+- BED text with a translate table, and TagAlign;
+- a failing task, which must remove its temporary files.
+
+The harness also checks that the lean spill decoder agrees with the full
+decoder. With `LOWMEM_TEST_GOLDENS_DIR` set, it compares the serial outputs
+with outputs saved from an earlier library; `LOWMEM_TEST_WRITE_GOLDENS` saves
+them instead.
+
+```bash
+make test-lowmem-parallel-finalize
+```
+
 ## CBQ Modality Matrix
 
 `run_cbq_modality_matrix.sh` is the hermetic full-surface CBQ parity gate. It

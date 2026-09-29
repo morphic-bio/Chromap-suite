@@ -177,3 +177,64 @@ bool OverflowReader::ReadNext(uint32_t& out_rid, std::string& out_payload) {
     out_rid = rid;
     return true;
 }
+
+int OverflowReader::ReadNextAtacRecordHeader(
+    chromap::AtacKwaySpillRecordHeaderV1* header, std::string* error) {
+    if (!file_) {
+        *error = "low-memory spill file is not open: " + path_;
+        return -1;
+    }
+    if (!ConsumeAtacSpillFilePrefixIfPresent() ||
+        !file_has_atac_kway_header_) {
+        *error = "not an ATAC k-way spill file: " + path_;
+        return -1;
+    }
+    if (atac_kway_block_records_remaining_ == 0) {
+        if (atac_kway_block_bytes_remaining_ != 0) {
+            *error = "ATAC k-way spill block has trailing bytes";
+            return -1;
+        }
+        chromap::AtacKwaySpillBlockHeaderV1 block = {};
+        const size_t got = fread(&block, 1, sizeof(block), file_);
+        if (got == 0 && feof(file_)) {
+            return 0;
+        }
+        if (got != sizeof(block) ||
+            block.magic != chromap::kAtacKwaySpillBlockMagic ||
+            block.record_count == 0 || block.payload_bytes == 0 ||
+            block.reserved != 0) {
+            *error = "Invalid or truncated ATAC k-way spill block header";
+            return -1;
+        }
+        atac_kway_block_records_remaining_ = block.record_count;
+        atac_kway_block_bytes_remaining_ = block.payload_bytes;
+    }
+    uint32_t byte_len = 0;
+    if (atac_kway_block_bytes_remaining_ < sizeof(byte_len) ||
+        fread(&byte_len, sizeof(byte_len), 1, file_) != 1 ||
+        byte_len == 0 ||
+        byte_len > atac_kway_block_bytes_remaining_ - sizeof(byte_len)) {
+        *error = "Invalid ATAC k-way spill record length";
+        return -1;
+    }
+    if (byte_len != sizeof(*header)) {
+        *error = "ATAC k-way spill record of " + std::to_string(byte_len) +
+                 " bytes; the lean reader expects " +
+                 std::to_string(sizeof(*header)) +
+                 "-byte records (no optional sections)";
+        return -1;
+    }
+    if (fread(header, 1, byte_len, file_) != byte_len) {
+        *error = "Truncated ATAC k-way spill record payload";
+        return -1;
+    }
+    atac_kway_block_bytes_remaining_ -=
+        static_cast<uint32_t>(sizeof(byte_len) + byte_len);
+    --atac_kway_block_records_remaining_;
+    if (atac_kway_block_records_remaining_ == 0 &&
+        atac_kway_block_bytes_remaining_ != 0) {
+        *error = "ATAC k-way spill block count/size mismatch";
+        return -1;
+    }
+    return 1;
+}

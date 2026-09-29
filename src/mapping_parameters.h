@@ -118,6 +118,13 @@ struct MappingParameters {
   MappingOutputFormat mapping_output_format = MAPPINGFORMAT_BED;
   bool low_memory_mode = false;
   uint64_t low_mem_ram_limit = 0;  // 0 = use default spill threshold
+  // Threads for the low-memory merge (k-way merge, dedup and output) of
+  // paired-end barcoded ATAC spills (sidecar-only, BED or TagAlign output):
+  // one task per reference. 0 = num_threads; 1 = the serial merge. The
+  // library default is 1 so that an embedding host opts in; the chromap CLI
+  // defaults to 0. With permit hooks, every finalisation task (and the serial
+  // merge) runs under a host permit. Output is byte-identical for every value.
+  int low_mem_finalize_threads = 1;
   bool cell_by_bin = false;
   int bin_size = 5000;
   uint16_t depth_cutoff_to_call_peak = 3;
