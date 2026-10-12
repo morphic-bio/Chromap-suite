@@ -8,7 +8,10 @@ are in [`docs/RELEASE_NOTES_vX.Y.Z.md`](docs/).
 
 ## [Unreleased]
 
-The embedded RapidMACS moves to v1.0.2.
+## [1.2.1] - 2026-10-12
+
+The embedded RapidMACS moves to v1.0.2. See
+[`docs/RELEASE_NOTES_v1.2.1.md`](docs/RELEASE_NOTES_v1.2.1.md).
 
 ### Changed
 
