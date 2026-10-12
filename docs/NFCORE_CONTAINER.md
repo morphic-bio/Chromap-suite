@@ -5,8 +5,11 @@ pinned to:
 
 - Chromap Suite integration commit `fc47c2f0452a3c6788b11965ff24502f4e1b2ff5`
   by default; release builds label the exact tagged commit.
-- RapidMACS `v1.0.1` plus one documentation commit,
-  `34df44818853a1beb59e98b0848813e38a4a8c51`.
+- RapidMACS `v1.0.2`, `1021e0eb0a781dbcccf00ebc69b72caf5d625dc8`: the
+  `third_party/rapidmacs` submodule of the source that is built. Chromap Suite
+  v1.1.0 to v1.2.0 embed `34df44818853a1beb59e98b0848813e38a4a8c51` (RapidMACS
+  `v1.0.1` plus one documentation commit), so an image built from one of those
+  tags, such as the v1.1.0 image described below, contains that revision.
 - Ubuntu 22.04 multi-architecture index
   `sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc`.
 
@@ -126,10 +129,11 @@ a versioned set of mergeable shards plus exact sample, input and ordinal
 identity; a dedicated component and fixture will be clearer than folding that
 distributed gather contract into the ordinary aligner.
 
-RapidMACS v1.0.1 does not provide a standalone `--version` option. The nf-core
-module therefore reports the enclosing Chromap Suite release with `chromap
---version`; this is `1.1.0`, and the image pins RapidMACS to the v1.0.1-based
-commit listed above.
+RapidMACS does not provide a standalone `--version` option (v1.0.1 and
+v1.0.2). The nf-core module therefore reports the enclosing Chromap Suite
+release with `chromap --version`. Each Chromap Suite release pins one RapidMACS
+commit: `1.1.0` to `1.2.0` pin the v1.0.1-based commit listed above, and the
+current source pins v1.0.2.
 
 ## STAR Suite 1.7.1 composition gate
 

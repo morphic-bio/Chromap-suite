@@ -8,6 +8,36 @@ are in [`docs/RELEASE_NOTES_vX.Y.Z.md`](docs/).
 
 ## [Unreleased]
 
+The embedded RapidMACS moves to v1.0.2.
+
+### Changed
+
+- `third_party/rapidmacs` moves from `34df448` (RapidMACS v1.0.1 plus one
+  documentation commit) to v1.0.2 (`1021e0e`). It supplies the packaged
+  `rapidmacs` command (also installed as `chromap_callpeaks`), `librapidmacs`
+  and its headers.
+- The peaks and summits that `chromap` writes with `--call-macs3-frag-peaks`
+  are unchanged, byte for byte. Chromap calls the fragment pipeline without a
+  count cap and does not call the single-end BED path.
+- Programs that link `librapidmacs` must be rebuilt and relinked: the shared
+  narrowPeak and summits writer has one more optional argument.
+
+### Fixed
+
+Three cases in which the packaged `rapidmacs` command and `librapidmacs`
+differed from MACS3 3.0.3 `callpeak`:
+
+- Single-end BED input with a numeric `--keep-dup`: a chromosome strand that
+  holds exactly one tag is no longer counted in the tag total that scales the
+  genome-wide background. The tag stays in the pile-up. Fold enrichment, P and
+  q scores can change, and with them the results that depend on a threshold.
+- Single-end BED input with `--pvalue`: the fifth column of the summits file
+  is -log10 P. It was -log10 q.
+- Fragment input with a count cap (`--frag-pileup-max-count N`;
+  `frag_pileup_max_count` in the library; MACS3's `--max-count N`): the cap
+  also applies to the fragment ends that place summits. Summit positions, and
+  the scores reported at them, can change.
+
 ## [1.2.0] - 2026-09-29
 
 Parallel low-memory ATAC merge. See
