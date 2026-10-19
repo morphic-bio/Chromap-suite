@@ -1,6 +1,6 @@
 # Chromap Suite v1.2.1 Release Notes
 
-Date: 2026-10-12 (draft; the date is set when the release is made).
+Date: 2026-10-19
 
 Chromap Suite v1.2.1 moves the embedded RapidMACS from `34df448` (v1.0.1 plus
 one documentation commit) to v1.0.2. Chromap's own source is unchanged.
@@ -66,14 +66,15 @@ reaches RapidMACS only through the fragment pipeline:
 
 ## Validation
 
-All checks ran on one host. Outputs were compared between clean builds of
-v1.2.0 and of the same source with RapidMACS moved to v1.0.2, before the
-version was set. The tests ran on the release source.
+The checks ran on one amd64 host with Ubuntu 22.04; the package build and its
+check ran in Ubuntu 24.04 containers. They ran twice. On 12 October, outputs
+were compared between clean builds of v1.2.0 and of the same source with
+RapidMACS moved to v1.0.2, before the version was set. On 19 October, the
+checks below were repeated on the release source. The results agree.
 
-- **Output identity with v1.2.0.** The peak tests and eight further `chromap`
-  runs wrote the same bytes before and after the move. That covers all 286
-  files that hold peaks, summits, fragments, bedGraphs or BAM records. The
-  runs are:
+- **Output identity with v1.2.0.** Clean builds of v1.2.0 and of the release
+  source each ran the peak tests and eight further `chromap` runs, with the
+  same inputs and the same thread count. The runs are:
   - the eleven `test-peak-*-100k` targets;
   - `test-peak-integration-matrix-100k`: 12 combinations of peak source,
     workspace and `--low-mem`, with BAM and with BED output (2,047 peaks in
@@ -85,14 +86,33 @@ version was set. The tests ran on the release source.
     cell-level and bulk-level duplicate removal, the sweep workspace,
     `--low-mem` and `--macs3-frag-no-uint8-counts`.
 
-  454 files were compared. The others that differ are 41 logs and timing
-  files, and 18 mapping summaries that are equal once the four
-  candidate-cache columns are removed. Those columns also differ between two
-  runs of one build.
-- **The release source.** The integration matrix, run again on the release
-  source, wrote the same 12 narrowPeak and 12 summits files as v1.2.0.
-- **Tests.** The 16-target release gate, `make test-smoke` and
-  `make test-unit` pass.
+  All 56 narrowPeak and summits files of those runs are byte-identical: 50
+  that `chromap` wrote in 25 runs with `--call-macs3-frag-peaks` (2,047 to
+  3,584 peaks), and 6 that the packaged `rapidmacs` command wrote from the
+  same fragments. Of the 454 files compared, 296 are byte-identical, among
+  them every narrowPeak, BED, bedGraph, fragment and BAM file (252 files).
+  The other 158 are:
+  - 83 tables, MACS3 `.xls` files and command lists that record the path of
+    the build or of its output directory. They are equal once those paths are
+    replaced by one placeholder; the two builds ran from separate
+    directories.
+  - 57 logs and timing files.
+  - 18 mapping summaries that are equal once the four candidate-cache columns
+    are removed. Those columns also differ between two runs of the same
+    v1.2.0 binary.
+- **Tests.** On the release source, the 16-target release gate and
+  `make test-smoke` pass. `make test-smoke` includes `make test-unit` and the
+  integration matrix on the 100K fixtures. The release-pipeline regression
+  tests (`tests/test_release_pipeline.py`, 13 tests) pass, and `v1.2.1`
+  matches `src/version.h` and has release notes.
+- **Packages.** `scripts/release/run_build_container.sh` built the release
+  source on Ubuntu 24.04, ran the 16-target gate, checked the staged binaries
+  and a consumer of the packaged SDK, and wrote the tarball and the `.deb`.
+  `scripts/release/check_artifacts_in_container.sh` then tested both in a
+  clean Ubuntu 24.04 container: the tarball with only its declared runtime
+  dependencies, and the `.deb` installed, run and purged. The Ubuntu 22.04
+  build, the Debian source package and the image smoke test run in the
+  release workflow.
 - **RapidMACS regression tests.** RapidMACS's two new tests pass with the
   packaged `rapidmacs` command. They compare complete narrowPeak and summits
   files with RapidMACS's stored MACS3 3.0.3 outputs, byte for byte:
