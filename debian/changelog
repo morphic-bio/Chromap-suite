@@ -1,3 +1,9 @@
+chromap-suite (1.2.1-1) unstable; urgency=medium
+
+  * Move the embedded RapidMACS to v1.0.2.
+
+ -- Ling-Hong Hung <lhhunghimself@gmail.com>  Mon, 19 Oct 2026 00:00:00 +0000
+
 chromap-suite (1.2.0-1) unstable; urgency=medium
 
   * Merge and deduplicate low-memory ATAC spill files on several threads,
